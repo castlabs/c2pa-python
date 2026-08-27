@@ -37,8 +37,9 @@ from pathlib import Path
 
 # The crate in c2pa-rs that produces the native library.
 FFI_PACKAGE = "c2pa-c-ffi"
-# Extra c2pa-c-ffi features to enable on top of the crate defaults
-FFI_FEATURES = "file_io"
+# Extra c2pa-c-ffi features to enable on top of the crate defaults. Keep the
+# upstream-compatible default; experimental checkouts opt in explicitly.
+FFI_FEATURES = os.environ.get("C2PA_FFI_FEATURES", "file_io")
 ROOT_ARTIFACTS_DIR = Path("artifacts")
 # Where the package loads the library from at runtime for an editable install.
 PACKAGE_LIBS_DIR = Path("src/c2pa/libs")
@@ -102,6 +103,17 @@ def resolve_c2pa_rs_path(cli_path=None):
     return path
 
 
+def resolve_cargo_target_dir(c2pa_rs_path):
+    """Return Cargo's target directory, honoring CARGO_TARGET_DIR."""
+    raw = os.environ.get("CARGO_TARGET_DIR")
+    if not raw:
+        return c2pa_rs_path / "target"
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = c2pa_rs_path / path
+    return path.resolve()
+
+
 def clean_workspace(c2pa_rs_path):
     """Remove all prior c2pa-rs build artifacts (cleans workspace).
     """
@@ -148,11 +160,12 @@ def build_universal_macos(c2pa_rs_path, debug=False):
     Returns the path to the universal libc2pa_c.dylib.
     """
     profile = "debug" if debug else "release"
+    target_dir = resolve_cargo_target_dir(c2pa_rs_path)
     triples = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
     per_arch_libs = []
     for triple in triples:
         run_cargo(c2pa_rs_path, ["--target", triple], debug=debug)
-        lib = c2pa_rs_path / "target" / triple / profile / LIB_NAMES["darwin"]
+        lib = target_dir / triple / profile / LIB_NAMES["darwin"]
         if not lib.is_file():
             print(
                 f"Error: expected built library not found: {lib}\n"
@@ -160,7 +173,7 @@ def build_universal_macos(c2pa_rs_path, debug=False):
             sys.exit(1)
         per_arch_libs.append(lib)
 
-    universal = c2pa_rs_path / "target" / profile / LIB_NAMES["darwin"]
+    universal = target_dir / profile / LIB_NAMES["darwin"]
     universal.parent.mkdir(parents=True, exist_ok=True)
     lipo_cmd = ["lipo", "-create", *map(str, per_arch_libs),
                 "-output", str(universal)]
@@ -181,7 +194,7 @@ def build_native(c2pa_rs_path, debug=False):
     profile = "debug" if debug else "release"
     run_cargo(c2pa_rs_path, debug=debug)
     lib_name = LIB_NAMES[platform.system().lower()]
-    lib = c2pa_rs_path / "target" / profile / lib_name
+    lib = resolve_cargo_target_dir(c2pa_rs_path) / profile / lib_name
     if not lib.is_file():
         print(f"Error: expected built library not found: {lib}")
         sys.exit(1)

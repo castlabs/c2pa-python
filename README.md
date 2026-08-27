@@ -8,6 +8,7 @@ The [c2pa-python](https://github.com/contentauth/c2pa-python) repository provide
 Features:
 
 - Create and sign C2PA manifests using various signing algorithms.
+- Sign C2PA 2.4 live-video Verifiable Segment Info (VSI) when supported by the native library.
 - Verify C2PA manifests and extract metadata.
 - Add assertions and ingredients to assets.
 - Examples and unit tests to demonstrate usage.
@@ -72,10 +73,19 @@ export C2PA_RS_PATH=/path/to/c2pa-rs
 make build-from-source C2PA_RS_PATH=$C2PA_RS_PATH
 ```
 
-This does a clean build of the `c2pa-c-ffi` crate (with the `file_io` feature, which the Python wrapper requires), stages the resulting library under both `artifacts/` and `src/c2pa/libs/`, and installs the package in editable mode, replacing any prebuilt artifacts from `make download-native-artifacts`. By default, the build uses the release profile; to build the debug profile instead, pass `EXTRA_BUILD_ARGS="--debug"`:
+This does a clean build of the `c2pa-c-ffi` crate with the upstream-compatible `file_io` feature, stages the resulting library under both `artifacts/` and `src/c2pa/libs/`, and installs the package in editable mode, replacing any prebuilt artifacts from `make download-native-artifacts`. By default, the build uses the release profile; to build the debug profile instead, pass `EXTRA_BUILD_ARGS="--debug"`:
 
 ```sh
 make build-from-source C2PA_RS_PATH=$C2PA_RS_PATH EXTRA_BUILD_ARGS="--debug"
+```
+
+The source build honors `CARGO_TARGET_DIR`, which can keep temporary Cargo output outside the checkout. Native artifact downloads default to `contentauth/c2pa-rs`; set `C2PA_NATIVE_REPOSITORY=owner/repository` to use a compatible GitHub release repository without changing the default.
+
+To build the paired experimental live-video fork, opt in explicitly:
+
+```sh
+export C2PA_FFI_FEATURES=file_io,unstable_live_video
+make build-from-source C2PA_RS_PATH=$C2PA_RS_PATH
 ```
 
 ### Note on targets for macOS
@@ -87,6 +97,10 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 ```
 
 To build a single-architecture library instead, set `C2PA_LIBS_PLATFORM` to a specific platform (for example `aarch64-apple-darwin`).
+
+## Live-video VSI signing
+
+`has_live_video_vsi()` reports whether the loaded native library contains the experimental API. When available, `LiveVideoVsiSession` signs initialization and media segment bytes using a 32-byte local Ed25519 session-key seed and a `Context` configured with the manifest signer. See [Using the Python library](docs/usage.md#live-video-vsi-signing).
 
 ## Examples
 

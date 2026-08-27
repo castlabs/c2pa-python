@@ -15,14 +15,50 @@ import os
 import sys
 import requests  # type: ignore
 from pathlib import Path
+from pathlib import PurePosixPath
 import zipfile
 import io
 
 # Constants
-REPO_OWNER = "contentauth"
-REPO_NAME = "c2pa-rs"
+NATIVE_REPOSITORY = os.environ.get(
+    "C2PA_NATIVE_REPOSITORY", "contentauth/c2pa-rs"
+).strip().strip("/")
+try:
+    REPO_OWNER, REPO_NAME = NATIVE_REPOSITORY.split("/", 1)
+except ValueError as e:
+    raise ValueError(
+        "C2PA_NATIVE_REPOSITORY must have the form owner/repository"
+    ) from e
+if not REPO_OWNER or not REPO_NAME or "/" in REPO_NAME:
+    raise ValueError(
+        "C2PA_NATIVE_REPOSITORY must have the form owner/repository"
+    )
 GITHUB_API_BASE = "https://api.github.com"
 ARTIFACTS_DIR = Path("artifacts")
+
+
+def _safe_extract_zip(zip_ref: zipfile.ZipFile, destination: Path) -> None:
+    """Extract regular files without allowing archive path traversal."""
+    root = destination.resolve()
+    for info in zip_ref.infolist():
+        if info.is_dir():
+            continue
+        name = info.filename
+        member = PurePosixPath(name)
+        mode = (info.external_attr >> 16) & 0o170000
+        if (
+            member.is_absolute()
+            or ".." in member.parts
+            or "\\" in name
+            or mode == 0o120000
+        ):
+            raise ValueError(f"Unsafe native artifact archive member: {name!r}")
+        target = (root / Path(*member.parts)).resolve()
+        if not target.is_relative_to(root):
+            raise ValueError(f"Native artifact escapes destination: {name!r}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with zip_ref.open(info) as source, target.open("wb") as output:
+            output.write(source.read())
 
 
 def get_latest_release() -> dict:
@@ -41,7 +77,10 @@ def download_artifact(url: str, platform_name: str) -> None:
     print(f"Downloading artifact for {platform_name}...")
 
     # Create platform directory
-    platform_dir = ARTIFACTS_DIR / platform_name
+    artifacts_root = ARTIFACTS_DIR.resolve()
+    platform_dir = (artifacts_root / platform_name).resolve()
+    if not platform_dir.is_relative_to(artifacts_root) or platform_dir == artifacts_root:
+        raise ValueError(f"Unsafe native artifact platform name: {platform_name!r}")
     platform_dir.mkdir(parents=True, exist_ok=True)
 
     # Download the zip file
@@ -50,8 +89,7 @@ def download_artifact(url: str, platform_name: str) -> None:
 
     # Extract the zip file
     with zipfile.ZipFile(io.BytesIO(response.content)) as zip_ref:
-        # Extract all files to the platform directory
-        zip_ref.extractall(platform_dir)
+        _safe_extract_zip(zip_ref, platform_dir)
 
     print(f"Successfully downloaded and extracted artifacts for {platform_name}")
 

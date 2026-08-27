@@ -31,6 +31,8 @@ from .c2pa import (
     Context,
     ContextBuilder,
     ContextProvider,
+    LiveVideoVsiSession,
+    has_live_video_vsi,
     sdk_version,
     load_settings
 )  # NOQA
@@ -50,6 +52,8 @@ __all__ = [
     'Context',
     'ContextBuilder',
     'ContextProvider',
+    'LiveVideoVsiSession',
+    'has_live_video_vsi',
     'sdk_version',
     'load_settings'
 ]

@@ -100,6 +100,17 @@ _REQUIRED_FUNCTIONS = [
     'c2pa_free',
 ]
 
+# Optional C2PA 2.4 live-video VSI API. These symbols are intentionally not in
+# _REQUIRED_FUNCTIONS so wheels containing the default upstream native library
+# continue to import.
+_LIVE_VIDEO_VSI_FUNCTIONS = (
+    'c2pa_live_video_vsi_signer_create_ed25519',
+    'c2pa_live_video_vsi_signer_sign_init_segment',
+    'c2pa_live_video_vsi_signer_sign_media_segment',
+    'c2pa_live_video_vsi_signer_next_sequence_number',
+    'c2pa_live_video_vsi_signer_active_manifest_id',
+)
+
 
 def _validate_library_exports(lib):
     """Validate that all required functions are present in the loaded library.
@@ -164,6 +175,9 @@ else:
     _lib = dynamically_load_library(_lib_name_default)
 
 _validate_library_exports(_lib)
+_LIVE_VIDEO_VSI_AVAILABLE = all(
+    hasattr(_lib, name) for name in _LIVE_VIDEO_VSI_FUNCTIONS
+)
 
 
 class C2paSeekMode(enum.IntEnum):
@@ -805,6 +819,11 @@ class C2paContext(ctypes.Structure):
     """Opaque structure for context."""
     _fields_ = []  # Empty as it's opaque in the C API
 
+
+class C2paLiveVideoVsiSigner(ctypes.Structure):
+    """Opaque structure for a live-video VSI signing session."""
+    _fields_ = []  # Empty as it's opaque in the C API
+
 # Helper function to set function prototypes
 
 
@@ -1050,6 +1069,49 @@ _setup_function(
      ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
     ctypes.c_int64
 )
+
+if _LIVE_VIDEO_VSI_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_live_video_vsi_signer_create_ed25519,
+        [ctypes.POINTER(C2paContext),
+         ctypes.c_char_p,
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t,
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t,
+         ctypes.c_uint64,
+         ctypes.c_uint64],
+        ctypes.POINTER(C2paLiveVideoVsiSigner)
+    )
+    _setup_function(
+        _lib.c2pa_live_video_vsi_signer_sign_init_segment,
+        [ctypes.POINTER(C2paLiveVideoVsiSigner),
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t,
+         ctypes.c_char_p,
+         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
+        ctypes.c_int64
+    )
+    _setup_function(
+        _lib.c2pa_live_video_vsi_signer_sign_media_segment,
+        [ctypes.POINTER(C2paLiveVideoVsiSigner),
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t,
+         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
+        ctypes.c_int64
+    )
+    _setup_function(
+        _lib.c2pa_live_video_vsi_signer_next_sequence_number,
+        [ctypes.POINTER(C2paLiveVideoVsiSigner),
+         ctypes.POINTER(ctypes.c_uint64)],
+        ctypes.c_int
+    )
+    _setup_function(
+        _lib.c2pa_live_video_vsi_signer_active_manifest_id,
+        [ctypes.POINTER(C2paLiveVideoVsiSigner),
+         ctypes.POINTER(ctypes.c_char_p)],
+        ctypes.c_int
+    )
 
 
 class C2paError(Exception):
@@ -1776,6 +1838,235 @@ class Context(ManagedResource, ContextProvider):
         """Return the raw C2paContext pointer."""
         self._ensure_valid_state()
         return self._handle
+
+
+def has_live_video_vsi() -> bool:
+    """Return whether the loaded native library provides live-video VSI."""
+    return _LIVE_VIDEO_VSI_AVAILABLE
+
+
+class LiveVideoVsiSession(ManagedResource):
+    """Stateful C2PA 2.4 Verifiable Segment Info signing session.
+
+    The session uses a local Ed25519 session key while the signer configured on
+    ``context`` signs the initialization manifest. Calls on one session must be
+    externally serialized.
+    """
+
+    _UINT32_MAX = 2**32 - 1
+    _UINT64_MAX = 2**64 - 1
+
+    def __init__(
+        self,
+        manifest_json: Union[str, dict],
+        context: 'Context',
+        seed: bytes,
+        kid: bytes,
+        min_sequence_number: int,
+        validity_period_secs: int,
+    ):
+        """Create a live-video VSI signing session.
+
+        Args:
+            manifest_json: Base manifest as a dictionary or JSON string.
+            context: Active Context created with an explicit Signer.
+            seed: Exactly 32 bytes of Ed25519 session-key seed material.
+            kid: Non-empty binary session-key identifier.
+            min_sequence_number: First media sequence number (0 through
+                ``2**32 - 1``).
+            validity_period_secs: Session-key validity in seconds (1 through
+                ``2**64 - 1``).
+
+        The caller retains ownership of ``context``. The session keeps the
+        Context and any Python signer callback alive but never closes them.
+        """
+        super().__init__()
+        self._init_attrs()
+
+        if not has_live_video_vsi():
+            raise C2paError.NotSupported(
+                "Live-video VSI is unavailable in the loaded native library; "
+                "build c2pa-c-ffi with the unstable_live_video feature"
+            )
+        if not isinstance(manifest_json, (str, dict)):
+            raise TypeError("manifest_json must be a str or dict")
+        manifest_bytes = _to_utf8_bytes(manifest_json, "live-video manifest JSON")
+        if not manifest_bytes:
+            raise ValueError("manifest_json must not be empty")
+        if b'\0' in manifest_bytes:
+            raise ValueError("manifest_json must not contain NUL characters")
+
+        if not isinstance(context, Context):
+            raise TypeError("context must be a Context")
+        if not context.is_valid:
+            raise C2paError("context must be active")
+        if not context.has_signer:
+            raise C2paError(
+                "LiveVideoVsiSession requires a Context with an explicit signer"
+            )
+
+        if not isinstance(seed, bytes):
+            raise TypeError("seed must be bytes")
+        if len(seed) != 32:
+            raise ValueError("seed must contain exactly 32 bytes")
+        if not isinstance(kid, bytes):
+            raise TypeError("kid must be bytes")
+        if not kid:
+            raise ValueError("kid must not be empty")
+
+        if isinstance(min_sequence_number, bool) or not isinstance(
+            min_sequence_number, int
+        ):
+            raise TypeError("min_sequence_number must be an int")
+        if not 0 <= min_sequence_number <= self._UINT32_MAX:
+            raise ValueError(
+                "min_sequence_number must be between 0 and 2**32 - 1"
+            )
+        if isinstance(validity_period_secs, bool) or not isinstance(
+            validity_period_secs, int
+        ):
+            raise TypeError("validity_period_secs must be an int")
+        if not 1 <= validity_period_secs <= self._UINT64_MAX:
+            raise ValueError(
+                "validity_period_secs must be between 1 and 2**64 - 1"
+            )
+
+        seed_array = (ctypes.c_ubyte * len(seed)).from_buffer_copy(seed)
+        kid_array = (ctypes.c_ubyte * len(kid)).from_buffer_copy(kid)
+
+        # The native session retains an Arc<Context>. Pin the corresponding
+        # Python objects as well, including a callback independently of Context
+        # so explicit caller-side Context.close() cannot collect it early.
+        self._context = context
+        self._signer_callback_cb = context._signer_callback_cb
+        self._create_and_activate(
+            lambda: _lib.c2pa_live_video_vsi_signer_create_ed25519(
+                context.execution_context,
+                manifest_bytes,
+                seed_array,
+                len(seed),
+                kid_array,
+                len(kid),
+                min_sequence_number,
+                validity_period_secs,
+            ),
+            "Failed to create live-video VSI session",
+        )
+
+    def _init_attrs(self):
+        super()._init_attrs()
+        self._context = None
+        self._signer_callback_cb = None
+
+    def _release(self):
+        """Drop borrowed Python references without closing the Context."""
+        self._signer_callback_cb = None
+        self._context = None
+
+    @staticmethod
+    def _segment_array(segment: bytes, name: str):
+        if not isinstance(segment, bytes):
+            raise TypeError(f"{name} must be bytes")
+        if not segment:
+            raise ValueError(f"{name} must not be empty")
+        return (ctypes.c_ubyte * len(segment)).from_buffer_copy(segment)
+
+    def _copy_signed_output(self, ffi_call, error_message: str) -> bytes:
+        output = ctypes.POINTER(ctypes.c_ubyte)()
+        length = ffi_call(ctypes.byref(output))
+        _check_ffi_operation_result(
+            length, error_message, check=lambda result: result < 0)
+
+        # A failing native call owns no valid output. The check above raises
+        # before this point, so only successful returned pointers are freed.
+        if not output:
+            if length == 0:
+                return b""
+            raise C2paError(f"{error_message}: native output pointer is null")
+        try:
+            return ctypes.string_at(output, length)
+        finally:
+            ManagedResource._free_native_ptr(output)
+
+    def sign_init_segment(
+        self,
+        init_segment: bytes,
+        format: str = "video/mp4",
+    ) -> bytes:
+        """Sign an initialization segment and establish the manifest ID."""
+        self._ensure_valid_state()
+        init_array = self._segment_array(init_segment, "init_segment")
+        if not isinstance(format, str):
+            raise TypeError("format must be a str")
+        format_bytes = _encode_format(
+            format, type(self).__name__, allow_autodetect=False)
+        if b'\0' in format_bytes:
+            raise ValueError("format must not contain NUL characters")
+
+        return self._copy_signed_output(
+            lambda output: (
+                _lib.c2pa_live_video_vsi_signer_sign_init_segment(
+                    self._handle,
+                    init_array,
+                    len(init_segment),
+                    format_bytes,
+                    output,
+                )
+            ),
+            "Failed to sign live-video initialization segment",
+        )
+
+    def sign_media_segment(self, media_segment: bytes) -> bytes:
+        """Sign one media segment and advance the sequence on success."""
+        self._ensure_valid_state()
+        media_array = self._segment_array(media_segment, "media_segment")
+        return self._copy_signed_output(
+            lambda output: (
+                _lib.c2pa_live_video_vsi_signer_sign_media_segment(
+                    self._handle,
+                    media_array,
+                    len(media_segment),
+                    output,
+                )
+            ),
+            "Failed to sign live-video media segment",
+        )
+
+    @property
+    def next_sequence_number(self) -> int:
+        """Sequence number that will be assigned to the next media segment."""
+        self._ensure_valid_state()
+        sequence_number = ctypes.c_uint64()
+        result = _lib.c2pa_live_video_vsi_signer_next_sequence_number(
+            self._handle, ctypes.byref(sequence_number))
+        _check_ffi_operation_result(
+            result,
+            "Failed to read live-video VSI sequence number",
+            check=lambda status: status != 0,
+        )
+        return sequence_number.value
+
+    @property
+    def active_manifest_id(self) -> Optional[str]:
+        """Active init-manifest ID, or None before init signing."""
+        self._ensure_valid_state()
+        manifest_id = ctypes.c_char_p()
+        result = _lib.c2pa_live_video_vsi_signer_active_manifest_id(
+            self._handle, ctypes.byref(manifest_id))
+        _check_ffi_operation_result(
+            result,
+            "Failed to read live-video VSI manifest ID",
+            check=lambda status: status != 0,
+        )
+        if not manifest_id:
+            return None
+        try:
+            return ctypes.string_at(manifest_id).decode('utf-8')
+        except UnicodeError as e:
+            raise C2paError.Encoding(
+                f"Invalid UTF-8 in live-video VSI manifest ID: {e}")
+        finally:
+            ManagedResource._free_native_ptr(manifest_id)
 
 
 class Stream:

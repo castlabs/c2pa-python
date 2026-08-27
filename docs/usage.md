@@ -146,6 +146,36 @@ The built-in `Context` class is the standard `ContextProvider` implementation. C
 
 The `load_settings()` function is deprecated. Replace it with `Settings` and `Context`. See [Migrating from load_settings](context-settings.md#migrating-from-load_settings) for details.
 
+## Live-video VSI signing
+
+The experimental `LiveVideoVsiSession` API signs C2PA 2.4 Verifiable Segment Info directly from initialization and media segment bytes. It requires a native library built with `unstable_live_video` and an active `Context` that consumed an explicit manifest `Signer`.
+
+```py
+from c2pa import Context, LiveVideoVsiSession, has_live_video_vsi
+
+if not has_live_video_vsi():
+    raise RuntimeError("loaded native library has no live-video VSI support")
+
+context = Context(signer=manifest_signer)
+try:
+    with LiveVideoVsiSession(
+        manifest_json,
+        context,
+        seed=session_seed,  # exactly 32 bytes
+        kid=b"session-key-1",
+        min_sequence_number=1,
+        validity_period_secs=3600,
+    ) as session:
+        signed_init = session.sign_init_segment(init_bytes)
+        manifest_id = session.active_manifest_id
+        signed_media = session.sign_media_segment(media_bytes)
+        next_sequence = session.next_sequence_number
+finally:
+    context.close()
+```
+
+The initialization bytes must be an unsigned initialization segment. The session retains the native context and any Python signer callback while active but does not close the caller-owned `Context`. Calls on the same session must be externally serialized.
+
 ## File-based operation
 
 ### Read and validate C2PA data

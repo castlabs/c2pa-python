@@ -15,7 +15,7 @@ A new wrapper around a native resource inherits from `ManagedResource` and follo
 
 ## Definitions
 
-A **native pointer** is an address that says where a piece of memory lives. The C2PA SDK is a Python wrapper around a Rust library (the "native" library), and that library allocates memory Python cannot see. When the SDK creates a `Reader`, `Builder`, `Signer`, `Context`, or `Settings`, the Python object holds a native pointer to memory that the native library allocated and manages. Python's garbage collector tracks the Python object but knows nothing about the native memory behind the pointer, so it cannot free it.
+A **native pointer** is an address that says where a piece of memory lives. The C2PA SDK is a Python wrapper around a Rust library (the "native" library), and that library allocates memory Python cannot see. When the SDK creates a `Reader`, `Builder`, `Signer`, `Context`, `Settings`, or `LiveVideoVsiSession`, the Python object holds a native pointer to memory that the native library allocated and manages. Python's garbage collector tracks the Python object but knows nothing about the native memory behind the pointer, so it cannot free it.
 
 The **native side** of the Rust library is reached through its C FFI.
 
@@ -31,7 +31,7 @@ A pointer is **consumed** when a native call takes ownership of the pointer pass
 
 ### Native pointers in a Python wrapper
 
-The C2PA Python SDK is a wrapper around a native Rust library that exposes a C FFI. When the SDK creates a `Reader`, `Builder`, `Signer`, `Context`, or `Settings` object, that object holds a **pointer** to memory allocated on the native side (by the native library).
+The C2PA Python SDK is a wrapper around a native Rust library that exposes a C FFI. When the SDK creates a `Reader`, `Builder`, `Signer`, `Context`, `Settings`, or `LiveVideoVsiSession` object, that object holds a **pointer** to memory allocated on the native side (by the native library).
 
 ### How Python's garbage collector works
 
@@ -66,6 +66,7 @@ classDiagram
     ManagedResource <|-- Reader
     ManagedResource <|-- Builder
     ManagedResource <|-- Signer
+    ManagedResource <|-- LiveVideoVsiSession
 
     ContextProvider <|-- Context
 ```
@@ -134,7 +135,7 @@ The PID stamp is fork-only: it compares process IDs, and two threads in the same
 
 When a Python object passes a callback or pointer to the native library, that reference must stay alive for as long as the native side might use it. Python's garbage collector has no way to know that native code is still holding a reference to a Python callback.
 
-The SDK solves this by storing these references as instance attributes on the owning object. For example, `Stream` stores its four callback objects (`_read_cb`, `_seek_cb`, `_write_cb`, `_flush_cb`) as instance attributes. As long as the `Stream` object is alive, its callbacks have a nonzero reference count and will not be collected. Similarly, when a `Signer` is consumed by a `Context`, the Context copies the signer's `_callback_cb` to its own `_signer_callback_cb` attribute so the callback survives even though the Signer object is now closed.
+The SDK solves this by storing these references as instance attributes on the owning object. For example, `Stream` stores its four callback objects (`_read_cb`, `_seek_cb`, `_write_cb`, `_flush_cb`) as instance attributes. As long as the `Stream` object is alive, its callbacks have a nonzero reference count and will not be collected. Similarly, when a `Signer` is consumed by a `Context`, the Context copies the signer's `_callback_cb` to its own `_signer_callback_cb` attribute so the callback survives even though the Signer object is now closed. `LiveVideoVsiSession` then pins both its borrowed Context and that callback for the session lifetime without closing the caller-owned Context.
 
 During cleanup, `_release()` sets these attributes to `None`, which drops the reference count on the callback objects and allows them to be collected. In the cleanup sequence, `_release()` runs first, then `c2pa_free` frees the native pointer. `_release()` goes first so that subclass-specific resources (open file handles, stream wrappers) are torn down before the native pointer they depend on is freed.
 

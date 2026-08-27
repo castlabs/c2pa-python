@@ -69,6 +69,14 @@ classDiagram
         +close()
     }
 
+    class LiveVideoVsiSession {
+        +sign_init_segment(bytes, format) bytes
+        +sign_media_segment(bytes) bytes
+        +next_sequence_number int
+        +active_manifest_id str | None
+        +close()
+    }
+
     class C2paSignerInfo {
         <<ctypes.Structure>>
         +alg
@@ -122,6 +130,7 @@ classDiagram
     ContextProvider <|-- Context : extends
     Settings --> Context : optional input
     Signer --> Context : optional, consumed
+    Context --> LiveVideoVsiSession : borrowed with signer
     C2paSignerInfo --> Signer : creates via from_info
     C2paSigningAlg --> C2paSignerInfo : alg field
     C2paSigningAlg --> Signer : from_callback alg

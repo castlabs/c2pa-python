@@ -36,6 +36,7 @@ warnings.simplefilter("ignore", category=DeprecationWarning)
 
 from c2pa import Builder, C2paError as Error, Reader, C2paSigningAlg as SigningAlg, C2paSignerInfo, Signer, sdk_version, C2paBuilderIntent, C2paDigitalSourceType
 from c2pa import Settings, Context, ContextBuilder, ContextProvider
+from c2pa import LiveVideoVsiSession, has_live_video_vsi
 from c2pa.c2pa import Stream, LifecycleState, ManagedResource, load_settings, create_signer, create_signer_from_info, ed25519_sign, format_embeddable, _get_mime_type_from_path, _encode_format, _format_ffi_arg
 import c2pa.c2pa as c2pa_module
 from pathlib import Path
@@ -6433,7 +6434,9 @@ class TestContextAPIs(unittest.TestCase):
         )
         return Signer.from_info(info)
 
-    def _ctx_make_callback_signer(self):
+    def _ctx_make_callback_signer(
+        self, tsa_url="http://timestamp.digicert.com",
+    ):
         """Create a callback-based Signer for context tests."""
         certs_path = os.path.join(
             FIXTURES_DIR, "es256_certs.pem"
@@ -6471,7 +6474,7 @@ class TestContextAPIs(unittest.TestCase):
             sign_cb,
             SigningAlg.ES256,
             certs.decode('utf-8'),
-            "http://timestamp.digicert.com",
+            tsa_url,
         )
 
     def _ctx_make_ed25519_signer(self):
@@ -6774,6 +6777,272 @@ class TestContextWithSigner(TestContextAPIs):
         self.assertTrue(context.has_signer)
         self.assertEqual(signer._lifecycle_state, LifecycleState.CLOSED)
         context.close()
+
+
+class TestLiveVideoVsiCapability(unittest.TestCase):
+
+    def test_stable_export_validation_does_not_require_live_video(self):
+        class StableOnlyLibrary:
+            def __getattr__(self, name):
+                if name in c2pa_module._LIVE_VIDEO_VSI_FUNCTIONS:
+                    raise AttributeError(name)
+                return getattr(c2pa_module._lib, name)
+
+        c2pa_module._validate_library_exports(StableOnlyLibrary())
+
+    def test_missing_capability_has_clear_constructor_error(self):
+        available = c2pa_module._LIVE_VIDEO_VSI_AVAILABLE
+        c2pa_module._LIVE_VIDEO_VSI_AVAILABLE = False
+        try:
+            self.assertFalse(has_live_video_vsi())
+            with self.assertRaises(Error.NotSupported) as error:
+                LiveVideoVsiSession(
+                    {}, None, b"s" * 32, b"kid", 1, 60,
+                )
+            self.assertIn("unstable_live_video", str(error.exception))
+        finally:
+            c2pa_module._LIVE_VIDEO_VSI_AVAILABLE = available
+
+
+@unittest.skipUnless(
+    has_live_video_vsi(),
+    "native library does not provide unstable live-video VSI",
+)
+class TestLiveVideoVsiSession(TestContextAPIs):
+
+    live_manifest = {
+        "assertions": [{
+            "label": "c2pa.actions",
+            "data": {
+                "actions": [{
+                    "action": "c2pa.created",
+                    "digitalSourceType": (
+                        "http://c2pa.org/digitalsourcetype/empty"
+                    ),
+                }],
+            },
+        }],
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(FIXTURES_DIR, "dashinit.mp4"), "rb") as f:
+            signed_init = f.read()
+        with open(os.path.join(FIXTURES_DIR, "dash1.m4s"), "rb") as f:
+            cls.media_segment = f.read()
+
+        # dashinit.mp4 already carries a legacy C2PA uuid manifest plus mfra
+        # and free boxes. A new live session starts from an unsigned init, so
+        # retain the fixture's structural ftyp and moov boxes in memory.
+        cls.init_segment = cls._unsigned_init_segment(signed_init)
+
+    @staticmethod
+    def _unsigned_init_segment(segment):
+        kept = []
+        offset = 0
+        while offset < len(segment):
+            if len(segment) - offset < 8:
+                raise AssertionError("truncated top-level BMFF box")
+            size = int.from_bytes(segment[offset:offset + 4], "big")
+            box_type = segment[offset + 4:offset + 8]
+            header_size = 8
+            if size == 1:
+                if len(segment) - offset < 16:
+                    raise AssertionError("truncated extended BMFF box")
+                size = int.from_bytes(segment[offset + 8:offset + 16], "big")
+                header_size = 16
+            elif size == 0:
+                size = len(segment) - offset
+            if size < header_size or offset + size > len(segment):
+                raise AssertionError("invalid top-level BMFF box size")
+            if box_type in (b"ftyp", b"moov"):
+                kept.append(segment[offset:offset + size])
+            offset += size
+        if len(kept) != 2:
+            raise AssertionError("expected ftyp and moov in DASH init fixture")
+        return b"".join(kept)
+
+    def _make_context(self, callback=False):
+        settings = Settings()
+        settings.set("verify.verify_trust", "false")
+        if callback:
+            signer = self._ctx_make_callback_signer(tsa_url=None)
+        else:
+            # Live-video tests must not make an RFC 3161 network request.
+            with open(
+                os.path.join(FIXTURES_DIR, "ed25519.pub"), "rb"
+            ) as f:
+                certs = f.read()
+            with open(
+                os.path.join(FIXTURES_DIR, "ed25519.pem"), "rb"
+            ) as f:
+                key = f.read()
+            signer = Signer.from_info(C2paSignerInfo(
+                alg=b"ed25519",
+                sign_cert=certs,
+                private_key=key,
+                ta_url=None,
+            ))
+        try:
+            return Context(settings=settings, signer=signer)
+        finally:
+            settings.close()
+
+    def _make_session(self, context):
+        return LiveVideoVsiSession(
+            self.live_manifest,
+            context,
+            b"\x07" * 32,
+            b"python-vsi-session-key",
+            1,
+            3600,
+        )
+
+    def test_create_context_manager_and_close(self):
+        context = self._make_context()
+        self.addCleanup(context.close)
+
+        with self._make_session(context) as session:
+            self.assertTrue(session.is_valid)
+            self.assertEqual(session.next_sequence_number, 1)
+            self.assertIsNone(session.active_manifest_id)
+
+        self.assertFalse(session.is_valid)
+        session.close()
+        self.assertTrue(context.is_valid)
+        with self.assertRaises(Error):
+            _ = session.next_sequence_number
+
+    def test_sign_init_media_counter_and_manifest_id(self):
+        context = self._make_context()
+        self.addCleanup(context.close)
+        with self._make_session(context) as session:
+            signed_init = session.sign_init_segment(self.init_segment)
+            self.assertIsInstance(signed_init, bytes)
+            self.assertGreater(len(signed_init), len(self.init_segment))
+            self.assertIsNotNone(session.active_manifest_id)
+            self.assertTrue(session.active_manifest_id.startswith("urn:c2pa:"))
+
+            signed_media = session.sign_media_segment(self.media_segment)
+            self.assertIsInstance(signed_media, bytes)
+            self.assertGreater(len(signed_media), len(self.media_segment))
+            self.assertEqual(session.next_sequence_number, 2)
+
+    def test_media_before_init_does_not_advance_or_free_output(self):
+        context = self._make_context()
+        self.addCleanup(context.close)
+        session = self._make_session(context)
+        self.addCleanup(session.close)
+        frees = []
+        real_free = ManagedResource._free_native_ptr
+        ManagedResource._free_native_ptr = staticmethod(frees.append)
+        try:
+            with self.assertRaises(Error):
+                session.sign_media_segment(self.media_segment)
+        finally:
+            ManagedResource._free_native_ptr = real_free
+
+        self.assertEqual(frees, [])
+        self.assertTrue(session.is_valid)
+        self.assertEqual(session.next_sequence_number, 1)
+
+    def test_constructor_validates_seed_kid_and_ranges(self):
+        context = self._make_context()
+        self.addCleanup(context.close)
+        defaults = {
+            "manifest_json": self.live_manifest,
+            "context": context,
+            "seed": b"s" * 32,
+            "kid": b"kid",
+            "min_sequence_number": 1,
+            "validity_period_secs": 60,
+        }
+
+        def assert_invalid(error_type, **changes):
+            args = defaults | changes
+            with self.assertRaises(error_type):
+                LiveVideoVsiSession(**args)
+
+        assert_invalid(TypeError, seed=bytearray(b"s" * 32))
+        assert_invalid(ValueError, seed=b"s" * 31)
+        assert_invalid(ValueError, seed=b"s" * 33)
+        assert_invalid(TypeError, kid="kid")
+        assert_invalid(ValueError, kid=b"")
+        assert_invalid(TypeError, min_sequence_number=True)
+        assert_invalid(TypeError, min_sequence_number=1.0)
+        assert_invalid(ValueError, min_sequence_number=-1)
+        assert_invalid(ValueError, min_sequence_number=2**32)
+        assert_invalid(TypeError, validity_period_secs=True)
+        assert_invalid(TypeError, validity_period_secs=1.0)
+        assert_invalid(ValueError, validity_period_secs=0)
+        assert_invalid(ValueError, validity_period_secs=2**64)
+
+    def test_constructor_validates_manifest_and_context(self):
+        context = self._make_context()
+        self.addCleanup(context.close)
+        with self.assertRaises(TypeError):
+            LiveVideoVsiSession(
+                [], context, b"s" * 32, b"kid", 1, 60,
+            )
+        with self.assertRaises(ValueError):
+            LiveVideoVsiSession(
+                "", context, b"s" * 32, b"kid", 1, 60,
+            )
+        with self.assertRaises(ValueError):
+            LiveVideoVsiSession(
+                "{}\0", context, b"s" * 32, b"kid", 1, 60,
+            )
+
+        default_context = Context()
+        try:
+            with self.assertRaises(Error):
+                LiveVideoVsiSession(
+                    {}, default_context, b"s" * 32, b"kid", 1, 60,
+                )
+        finally:
+            default_context.close()
+
+        with self.assertRaises(TypeError):
+            LiveVideoVsiSession(
+                {}, object(), b"s" * 32, b"kid", 1, 60,
+            )
+
+    def test_segment_and_format_validation(self):
+        context = self._make_context()
+        self.addCleanup(context.close)
+        with self._make_session(context) as session:
+            with self.assertRaises(TypeError):
+                session.sign_init_segment(bytearray(self.init_segment))
+            with self.assertRaises(ValueError):
+                session.sign_init_segment(b"")
+            with self.assertRaises(TypeError):
+                session.sign_init_segment(self.init_segment, b"video/mp4")
+            with self.assertRaises(Error.NotSupported):
+                session.sign_init_segment(self.init_segment, "")
+            with self.assertRaises(ValueError):
+                session.sign_init_segment(self.init_segment, "video/mp4\0")
+            with self.assertRaises(TypeError):
+                session.sign_media_segment(bytearray(self.media_segment))
+            with self.assertRaises(ValueError):
+                session.sign_media_segment(b"")
+
+    def test_callback_signer_survives_caller_context_close(self):
+        import weakref
+
+        context = self._make_context(callback=True)
+        session = self._make_session(context)
+        callback_ref = weakref.ref(session._signer_callback_cb)
+        try:
+            context.close()
+            del context
+            gc.collect()
+            self.assertIsNotNone(callback_ref())
+            signed_init = session.sign_init_segment(self.init_segment)
+            self.assertGreater(len(signed_init), len(self.init_segment))
+        finally:
+            session.close()
+        gc.collect()
+        self.assertIsNone(callback_ref())
 
 
 class TestReaderWithContext(TestContextAPIs):
