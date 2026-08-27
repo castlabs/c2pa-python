@@ -19,6 +19,7 @@ import json
 import logging
 import sys
 import os
+import threading
 import warnings
 import weakref
 from abc import ABC, abstractmethod
@@ -111,6 +112,12 @@ _LIVE_VIDEO_VSI_FUNCTIONS = (
     'c2pa_live_video_vsi_signer_active_manifest_id',
 )
 
+# Castlabs dynamic-assertion extension. Keep this optional so the package can
+# still be imported with standard upstream native libraries.
+_DYNAMIC_ASSERTION_FUNCTIONS = (
+    'c2pa_signer_add_dynamic_assertion',
+)
+
 
 def _validate_library_exports(lib):
     """Validate that all required functions are present in the loaded library.
@@ -177,6 +184,9 @@ else:
 _validate_library_exports(_lib)
 _LIVE_VIDEO_VSI_AVAILABLE = all(
     hasattr(_lib, name) for name in _LIVE_VIDEO_VSI_FUNCTIONS
+)
+_DYNAMIC_ASSERTIONS_AVAILABLE = all(
+    hasattr(_lib, name) for name in _DYNAMIC_ASSERTION_FUNCTIONS
 )
 
 
@@ -658,6 +668,15 @@ SignerCallback = ctypes.CFUNCTYPE(
     ctypes.c_ssize_t, ctypes.c_void_p, ctypes.POINTER(
         ctypes.c_ubyte), ctypes.c_size_t, ctypes.POINTER(
             ctypes.c_ubyte), ctypes.c_size_t)
+DynamicAssertionCallback = ctypes.CFUNCTYPE(
+    ctypes.c_ssize_t,
+    ctypes.c_void_p,
+    ctypes.c_char_p,
+    ctypes.c_size_t,
+    ctypes.c_char_p,
+    ctypes.POINTER(ctypes.c_ubyte),
+    ctypes.c_size_t,
+)
 
 
 class StreamContext(ctypes.Structure):
@@ -981,6 +1000,15 @@ _setup_function(
     _lib.c2pa_signature_free, [
         ctypes.POINTER(
             ctypes.c_ubyte)], None)
+if _DYNAMIC_ASSERTIONS_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_signer_add_dynamic_assertion,
+        [ctypes.POINTER(C2paSigner),
+         ctypes.c_void_p,
+         DynamicAssertionCallback,
+         ctypes.c_char_p,
+         ctypes.c_size_t],
+        ctypes.c_int)
 _setup_function(
     _lib.c2pa_builder_supported_mime_types,
     [ctypes.POINTER(ctypes.c_size_t)],
@@ -1763,7 +1791,11 @@ class Context(ManagedResource, ContextProvider):
                 if signer is not None:
                     signer._ensure_valid_state()
                     # A rejected signer is retained, not closed and leaked.
+                    # Copy each list before consuming because Signer._release()
+                    # clears its own callback references.
                     self._signer_callback_cb = signer._callback_cb
+                    self._dynamic_assertion_cbs = list(
+                        signer._dynamic_assertion_cbs)
                     signer._consume_no_replacement(
                         lambda h: _lib.c2pa_context_builder_set_signer(
                             nb._handle, h),
@@ -1780,10 +1812,12 @@ class Context(ManagedResource, ContextProvider):
         super()._init_attrs()
         self._has_signer = False
         self._signer_callback_cb = None
+        self._dynamic_assertion_cbs = []
 
     def _release(self):
         """Release Context-specific resources."""
         self._signer_callback_cb = None
+        self._dynamic_assertion_cbs.clear()
 
     @classmethod
     def builder(cls) -> 'ContextBuilder':
@@ -1843,6 +1877,11 @@ class Context(ManagedResource, ContextProvider):
 def has_live_video_vsi() -> bool:
     """Return whether the loaded native library provides live-video VSI."""
     return _LIVE_VIDEO_VSI_AVAILABLE
+
+
+def has_dynamic_assertions() -> bool:
+    """Return whether the loaded native library supports dynamic assertions."""
+    return _DYNAMIC_ASSERTIONS_AVAILABLE
 
 
 class LiveVideoVsiSession(ManagedResource):
@@ -1939,6 +1978,7 @@ class LiveVideoVsiSession(ManagedResource):
         # so explicit caller-side Context.close() cannot collect it early.
         self._context = context
         self._signer_callback_cb = context._signer_callback_cb
+        self._dynamic_assertion_cbs = list(context._dynamic_assertion_cbs)
         self._create_and_activate(
             lambda: _lib.c2pa_live_video_vsi_signer_create_ed25519(
                 context.execution_context,
@@ -1957,10 +1997,12 @@ class LiveVideoVsiSession(ManagedResource):
         super()._init_attrs()
         self._context = None
         self._signer_callback_cb = None
+        self._dynamic_assertion_cbs = []
 
     def _release(self):
         """Drop borrowed Python references without closing the Context."""
         self._signer_callback_cb = None
+        self._dynamic_assertion_cbs.clear()
         self._context = None
 
     @staticmethod
@@ -1972,8 +2014,15 @@ class LiveVideoVsiSession(ManagedResource):
         return (ctypes.c_ubyte * len(segment)).from_buffer_copy(segment)
 
     def _copy_signed_output(self, ffi_call, error_message: str) -> bytes:
+        for _, error_state, _ in self._dynamic_assertion_cbs:
+            error_state.exception = None
         output = ctypes.POINTER(ctypes.c_ubyte)()
         length = ffi_call(ctypes.byref(output))
+        if length < 0:
+            for _, error_state, _ in self._dynamic_assertion_cbs:
+                callback_error = getattr(error_state, 'exception', None)
+                if callback_error is not None:
+                    raise callback_error
         _check_ffi_operation_result(
             length, error_message, check=lambda result: result < 0)
 
@@ -3485,11 +3534,14 @@ class Signer(ManagedResource):
         # from_callback() replaces this with the real callback, which has to
         # outlive the signer that calls it.
         self._callback_cb = None
+        # Each tuple pins the ctypes callback, its thread-local exception
+        # state, and the original Python callback for the native lifetime.
+        self._dynamic_assertion_cbs = []
 
     def _release(self):
         """Release Signer-specific resources (callback reference)."""
-        if self._callback_cb:
-            self._callback_cb = None
+        self._callback_cb = None
+        self._dynamic_assertion_cbs.clear()
 
     def reserve_size(self) -> int:
         """Get the size to reserve for signatures from this signer.
@@ -3510,6 +3562,126 @@ class Signer(ManagedResource):
             check=lambda r: r < 0)
 
         return result
+
+    def add_dynamic_assertion(
+        self,
+        callback: Callable[[str, int, list[dict]], bytes],
+        label: str = "cawg.identity",
+        reserve_size: int = 8192,
+    ) -> None:
+        """Register a callback that produces CBOR assertion content.
+
+        The callback runs during signing as ``callback(label, reserve_size,
+        partial_claim)``. ``partial_claim`` is a list of dictionaries with
+        ``url``, ``alg``, and base64-encoded ``hash`` entries. Registrations,
+        including repeated labels, run in registration order.
+
+        Args:
+            callback: Callable returning CBOR-encoded bytes.
+            label: Preferred assertion label.
+            reserve_size: Maximum callback result size in bytes.
+
+        Raises:
+            C2paError.NotSupported: If the native library lacks the Castlabs
+                dynamic-assertion extension.
+            C2paError: If native registration fails.
+        """
+        self._ensure_valid_state()
+
+        if not has_dynamic_assertions():
+            raise C2paError.NotSupported(
+                "Dynamic assertions are unavailable in the loaded native "
+                "library; use the Castlabs c2pa-rs fork with "
+                "c2pa_signer_add_dynamic_assertion support"
+            )
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+        if not isinstance(label, str):
+            raise TypeError("label must be a str")
+        if not label:
+            raise ValueError("label must not be empty")
+        if '\0' in label:
+            raise ValueError("label must not contain NUL characters")
+        if isinstance(reserve_size, bool) or not isinstance(reserve_size, int):
+            raise TypeError("reserve_size must be an int")
+        if reserve_size <= 0:
+            raise ValueError("reserve_size must be greater than zero")
+
+        error_state = threading.local()
+        error_state.exception = None
+
+        def wrapped_callback(
+            context,
+            c_label,
+            c_reserve_size,
+            partial_claim_json,
+            out_data,
+            out_data_max_len,
+        ):
+            error_state.exception = None
+            try:
+                if not c_label:
+                    raise C2paError.Assertion(
+                        "Dynamic assertion callback received a null label")
+                if not partial_claim_json:
+                    raise C2paError.Assertion(
+                        "Dynamic assertion callback received a null partial claim")
+
+                callback_label = c_label.decode('utf-8')
+                partial_claim = json.loads(
+                    partial_claim_json.decode('utf-8'))
+                if not isinstance(partial_claim, list):
+                    raise C2paError.Assertion(
+                        "Dynamic assertion partial claim must be a list")
+
+                result = callback(
+                    callback_label, int(c_reserve_size), partial_claim)
+                if not isinstance(result, bytes):
+                    raise C2paError.Assertion(
+                        "Dynamic assertion callback must return bytes")
+
+                result_size = len(result)
+                if result_size > out_data_max_len:
+                    raise C2paError.Assertion(
+                        f"Dynamic assertion callback for '{callback_label}' "
+                        f"returned {result_size} bytes, exceeding reserved "
+                        f"size {out_data_max_len}")
+                if result_size and not out_data:
+                    raise C2paError.Assertion(
+                        "Dynamic assertion callback received a null output buffer")
+
+                if result_size:
+                    ctypes.memmove(out_data, result, result_size)
+                return result_size
+            except Exception as error:
+                error_state.exception = error
+                logger.error(
+                    "Error in dynamic assertion callback for '%s': %s",
+                    label,
+                    error,
+                    exc_info=True,
+                )
+                return -1
+
+        callback_cb = DynamicAssertionCallback(wrapped_callback)
+        label_bytes = label.encode('utf-8')
+        result = _lib.c2pa_signer_add_dynamic_assertion(
+            self._handle,
+            None,
+            callback_cb,
+            label_bytes,
+            reserve_size,
+        )
+        _check_ffi_operation_result(
+            result,
+            "Failed to add dynamic assertion",
+            check=lambda status: status != 0,
+        )
+
+        # Retain only successful registrations. The tuple explicitly owns all
+        # Python state that native code may call or that signing may re-raise.
+        self._dynamic_assertion_cbs.append(
+            (callback_cb, error_state, callback))
 
 
 class Builder(ManagedResource):
@@ -3655,6 +3827,10 @@ class Builder(ManagedResource):
         self._init_attrs()
 
         self._context = context
+        self._signer_callback_cb = getattr(
+            context, '_signer_callback_cb', None)
+        self._dynamic_assertion_cbs = list(getattr(
+            context, '_dynamic_assertion_cbs', ()))
         self._has_context_signer = (
             context is not None
             and hasattr(context, 'has_signer')
@@ -3693,12 +3869,16 @@ class Builder(ManagedResource):
     def _init_attrs(self):
         super()._init_attrs()
         self._context = None
+        self._signer_callback_cb = None
+        self._dynamic_assertion_cbs = []
         self._has_context_signer = False
 
     def _release(self):
         """Release the Builder's reference to its Context."""
         # The Context is not ours to close, only to stop pinning.
         self._context = None
+        self._signer_callback_cb = None
+        self._dynamic_assertion_cbs.clear()
 
     def set_no_embed(self):
         """Set the no-embed flag.
@@ -4013,6 +4193,14 @@ class Builder(ManagedResource):
             if not hasattr(signer, '_handle') or not signer._handle:
                 raise C2paError("Invalid or closed signer")
 
+        dynamic_assertion_cbs = list(
+            signer._dynamic_assertion_cbs
+            if signer is not None
+            else self._dynamic_assertion_cbs
+        )
+        for _, error_state, _ in dynamic_assertion_cbs:
+            error_state.exception = None
+
         # allow_autodetect=False, so this never returns None (raises instead).
         format_arg = _format_ffi_arg(
             _encode_format(format, "Builder", allow_autodetect=False))
@@ -4043,6 +4231,12 @@ class Builder(ManagedResource):
         except Exception as e:
             self.close()
             raise C2paError(f"Error during signing: {e}") from e
+
+        if result < 0:
+            for _, error_state, _ in dynamic_assertion_cbs:
+                callback_error = getattr(error_state, 'exception', None)
+                if callback_error is not None:
+                    raise callback_error
 
         _check_ffi_operation_result(
             result,
@@ -4449,6 +4643,7 @@ __all__ = [
     'Reader',
     'Builder',
     'Signer',
+    'has_dynamic_assertions',
     'load_settings',
     'format_embeddable',
     'version',

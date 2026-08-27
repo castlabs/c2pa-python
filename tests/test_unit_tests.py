@@ -36,7 +36,11 @@ warnings.simplefilter("ignore", category=DeprecationWarning)
 
 from c2pa import Builder, C2paError as Error, Reader, C2paSigningAlg as SigningAlg, C2paSignerInfo, Signer, sdk_version, C2paBuilderIntent, C2paDigitalSourceType
 from c2pa import Settings, Context, ContextBuilder, ContextProvider
-from c2pa import LiveVideoVsiSession, has_live_video_vsi
+from c2pa import (
+    LiveVideoVsiSession,
+    has_dynamic_assertions,
+    has_live_video_vsi,
+)
 from c2pa.c2pa import Stream, LifecycleState, ManagedResource, load_settings, create_signer, create_signer_from_info, ed25519_sign, format_embeddable, _get_mime_type_from_path, _encode_format, _format_ffi_arg
 import c2pa.c2pa as c2pa_module
 from pathlib import Path
@@ -6779,6 +6783,208 @@ class TestContextWithSigner(TestContextAPIs):
         context.close()
 
 
+class TestDynamicAssertionCapability(TestContextAPIs):
+    def test_standard_export_validation_does_not_require_dynamic_assertions(self):
+        class StandardLibrary:
+            def __getattr__(self, name):
+                if name in c2pa_module._DYNAMIC_ASSERTION_FUNCTIONS:
+                    raise AttributeError(name)
+                return getattr(c2pa_module._lib, name)
+
+        c2pa_module._validate_library_exports(StandardLibrary())
+
+    def test_missing_capability_has_clear_signer_error(self):
+        signer = self._ctx_make_signer()
+        self.addCleanup(signer.close)
+        available = c2pa_module._DYNAMIC_ASSERTIONS_AVAILABLE
+        c2pa_module._DYNAMIC_ASSERTIONS_AVAILABLE = False
+        try:
+            self.assertFalse(has_dynamic_assertions())
+            with self.assertRaises(Error.NotSupported) as raised:
+                signer.add_dynamic_assertion(lambda *_: b"\xf6")
+        finally:
+            c2pa_module._DYNAMIC_ASSERTIONS_AVAILABLE = available
+        self.assertIn(
+            "c2pa_signer_add_dynamic_assertion", str(raised.exception))
+
+
+@unittest.skipUnless(
+    has_dynamic_assertions(),
+    "native library does not provide dynamic assertions",
+)
+class TestDynamicAssertions(TestContextAPIs):
+    def _make_signer(self):
+        with open(os.path.join(FIXTURES_DIR, "es256_certs.pem"), "rb") as f:
+            certs = f.read()
+        with open(os.path.join(FIXTURES_DIR, "es256_private.key"), "rb") as f:
+            key = f.read()
+        return Signer.from_info(C2paSignerInfo(
+            b"es256", certs, key, None))
+
+    def test_callback_shape_and_defaults(self):
+        signer = self._make_signer()
+        self.addCleanup(signer.close)
+        received = []
+        cbor = b"\xa1\x62id\x01"
+
+        def callback(label, reserve_size, partial_claim):
+            received.append((label, reserve_size, partial_claim))
+            return cbor
+
+        signer.add_dynamic_assertion(callback)
+        callback_cb, error_state, retained_callback = (
+            signer._dynamic_assertion_cbs[0])
+        partial_claim = [{
+            "url": "self#jumbf=/c2pa/assertions/c2pa.actions",
+            "alg": "sha256",
+            "hash": "AQID",
+        }]
+        output = (ctypes.c_ubyte * 8192)()
+
+        written = callback_cb(
+            None,
+            b"cawg.identity",
+            8192,
+            json.dumps(partial_claim).encode("utf-8"),
+            output,
+            len(output),
+        )
+
+        self.assertEqual(written, len(cbor))
+        self.assertEqual(bytes(output[:written]), cbor)
+        self.assertEqual(
+            received, [("cawg.identity", 8192, partial_claim)])
+        self.assertIs(retained_callback, callback)
+        self.assertIsNone(error_state.exception)
+
+    def test_same_label_order_and_lifetime_after_context_consumes_signer(self):
+        import base64
+        import weakref
+
+        signer = self._make_signer()
+        calls = []
+
+        def make_callback(identifier):
+            def callback(label, reserve_size, partial_claim):
+                calls.append((identifier, label, reserve_size, partial_claim))
+                return bytes((0xa1, 0x62, ord('i'), ord('d'), identifier))
+            return callback
+
+        first = make_callback(1)
+        second = make_callback(2)
+        first_ref = weakref.ref(first)
+        second_ref = weakref.ref(second)
+        signer.add_dynamic_assertion(
+            first, label="com.example.dynamic", reserve_size=64)
+        signer.add_dynamic_assertion(
+            second, label="com.example.dynamic", reserve_size=64)
+        del first, second
+
+        context = Context(signer=signer)
+        self.assertEqual(signer._dynamic_assertion_cbs, [])
+        del signer
+        gc.collect()
+        self.assertIsNotNone(first_ref())
+        self.assertIsNotNone(second_ref())
+
+        builder = Builder(self.test_manifest, context=context)
+        # Builder owns an independent native context and callback pins.
+        context.close()
+        del context
+        gc.collect()
+        self.assertIsNotNone(first_ref())
+        self.assertIsNotNone(second_ref())
+
+        with open(DEFAULT_TEST_FILE, "rb") as source:
+            builder.sign("image/jpeg", source, io.BytesIO())
+
+        self.assertEqual(
+            [(entry[0], entry[1], entry[2]) for entry in calls],
+            [
+                (1, "com.example.dynamic", 64),
+                (2, "com.example.dynamic__1", 64),
+            ],
+        )
+        for _, _, _, partial_claim in calls:
+            for entry in partial_claim:
+                self.assertEqual(set(entry), {"url", "alg", "hash"})
+                self.assertIsInstance(entry["url"], str)
+                self.assertIsInstance(entry["alg"], str)
+                base64.b64decode(entry["hash"], validate=True)
+
+        first_claim = calls[0][3]
+        self.assertFalse(any(
+            entry["url"].endswith("/com.example.dynamic")
+            for entry in first_claim
+        ))
+        second_claim = calls[1][3]
+        self.assertTrue(any(
+            entry["url"].endswith("/com.example.dynamic")
+            for entry in second_claim
+        ))
+        self.assertFalse(any(
+            entry["url"].endswith("/com.example.dynamic__1")
+            for entry in second_claim
+        ))
+
+        gc.collect()
+        self.assertIsNone(first_ref())
+        self.assertIsNone(second_ref())
+
+    def test_oversized_result_is_rejected(self):
+        signer = self._make_signer()
+        self.addCleanup(signer.close)
+        signer.add_dynamic_assertion(
+            lambda label, reserve_size, partial_claim: b"x" * 65,
+            label="com.example.oversized",
+            reserve_size=64,
+        )
+        builder = Builder(self.test_manifest)
+
+        with open(DEFAULT_TEST_FILE, "rb") as source:
+            with self.assertRaises(Error.Assertion) as raised:
+                builder.sign(signer, "image/jpeg", source, io.BytesIO())
+
+        self.assertIn("returned 65 bytes", str(raised.exception))
+        self.assertIn("reserved size 64", str(raised.exception))
+
+    def test_original_callback_exception_is_reraised(self):
+        class CallbackFailure(RuntimeError):
+            pass
+
+        failure = CallbackFailure("dynamic assertion failed")
+        signer = self._make_signer()
+        self.addCleanup(signer.close)
+
+        def callback(label, reserve_size, partial_claim):
+            raise failure
+
+        signer.add_dynamic_assertion(
+            callback, label="com.example.error", reserve_size=64)
+        builder = Builder(self.test_manifest)
+
+        with open(DEFAULT_TEST_FILE, "rb") as source:
+            with self.assertRaises(CallbackFailure) as raised:
+                builder.sign(signer, "image/jpeg", source, io.BytesIO())
+
+        self.assertIs(raised.exception, failure)
+
+    def test_closed_and_uninitialized_resources(self):
+        signer = self._make_signer()
+        signer.close()
+        with self.assertRaises(Error) as raised:
+            signer.add_dynamic_assertion(lambda *_: b"\xf6")
+        self.assertIn("Signer is closed", str(raised.exception))
+
+        uninitialized = object.__new__(Signer)
+        ManagedResource.__init__(uninitialized)
+        uninitialized._init_attrs()
+        with self.assertRaises(Error) as raised:
+            uninitialized.add_dynamic_assertion(lambda *_: b"\xf6")
+        self.assertIn("not properly initialized", str(raised.exception))
+        uninitialized.close()
+
+
 class TestLiveVideoVsiCapability(unittest.TestCase):
 
     def test_stable_export_validation_does_not_require_live_video(self):
@@ -7043,6 +7249,38 @@ class TestLiveVideoVsiSession(TestContextAPIs):
             session.close()
         gc.collect()
         self.assertIsNone(callback_ref())
+
+    @unittest.skipUnless(
+        has_dynamic_assertions(),
+        "native library does not provide dynamic assertions",
+    )
+    def test_dynamic_assertion_exception_is_reraised_during_init_signing(self):
+        class CallbackFailure(RuntimeError):
+            pass
+
+        failure = CallbackFailure("live dynamic assertion failed")
+        with open(os.path.join(FIXTURES_DIR, "es256_certs.pem"), "rb") as f:
+            certs = f.read()
+        with open(os.path.join(FIXTURES_DIR, "es256_private.key"), "rb") as f:
+            key = f.read()
+        signer = Signer.from_info(C2paSignerInfo(b"es256", certs, key, None))
+        signer.add_dynamic_assertion(
+            lambda *_: (_ for _ in ()).throw(failure),
+            label="com.example.live-error",
+            reserve_size=64,
+        )
+        settings = Settings()
+        settings.set("verify.verify_trust", "false")
+        try:
+            context = Context(settings=settings, signer=signer)
+        finally:
+            settings.close()
+        self.addCleanup(context.close)
+
+        with self._make_session(context) as session:
+            with self.assertRaises(CallbackFailure) as raised:
+                session.sign_init_segment(self.init_segment)
+        self.assertIs(raised.exception, failure)
 
 
 class TestReaderWithContext(TestContextAPIs):

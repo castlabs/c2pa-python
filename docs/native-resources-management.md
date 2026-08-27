@@ -135,7 +135,7 @@ The PID stamp is fork-only: it compares process IDs, and two threads in the same
 
 When a Python object passes a callback or pointer to the native library, that reference must stay alive for as long as the native side might use it. Python's garbage collector has no way to know that native code is still holding a reference to a Python callback.
 
-The SDK solves this by storing these references as instance attributes on the owning object. For example, `Stream` stores its four callback objects (`_read_cb`, `_seek_cb`, `_write_cb`, `_flush_cb`) as instance attributes. As long as the `Stream` object is alive, its callbacks have a nonzero reference count and will not be collected. Similarly, when a `Signer` is consumed by a `Context`, the Context copies the signer's `_callback_cb` to its own `_signer_callback_cb` attribute so the callback survives even though the Signer object is now closed. `LiveVideoVsiSession` then pins both its borrowed Context and that callback for the session lifetime without closing the caller-owned Context.
+The SDK solves this by storing these references as instance attributes on the owning object. For example, `Stream` stores its four callback objects (`_read_cb`, `_seek_cb`, `_write_cb`, `_flush_cb`) as instance attributes. As long as the `Stream` object is alive, its callbacks have a nonzero reference count and will not be collected. Similarly, when a `Signer` is consumed by a `Context`, the Context copies the signer's claim callback and DynamicAssertion registrations before consumption, so the ctypes callbacks, original Python callbacks, and per-thread exception state survive even though the Signer object is now closed. A `Builder` or `LiveVideoVsiSession` created from that Context pins its own copies for its native lifetime, including when the caller explicitly closes the Context.
 
 During cleanup, `_release()` sets these attributes to `None`, which drops the reference count on the callback objects and allows them to be collected. In the cleanup sequence, `_release()` runs first, then `c2pa_free` frees the native pointer. `_release()` goes first so that subclass-specific resources (open file handles, stream wrappers) are torn down before the native pointer they depend on is freed.
 
@@ -339,8 +339,8 @@ sequenceDiagram
     C->>X: Context(settings, signer)
     X->>B: with _NativeBuilder() (owns the builder, close() frees it on any failure)
     X->>S: _ensure_valid_state()
-    X->>X: copy signer._callback_cb to _signer_callback_cb
-    Note right of X: Pin the callback first:<br/>the Signer is about to be consumed
+    X->>X: copy claim callback and DynamicAssertion registrations
+    Note right of X: Pin all callback state first:<br/>the Signer is about to be consumed
     X->>S: _consume_no_replacement(set_signer)
     S->>N: c2pa_context_builder_set_signer(builder_ptr, handle)
 
@@ -362,7 +362,7 @@ sequenceDiagram
 
 Details in that sequence that are easy to get wrong:
 
-- The callback is copied to the Context *before* the transfer. A successful consume runs `_release()`, which drops the Signer's reference to the callback; a Context that copied it afterwards would be pointing at a callback nothing keeps alive.
+- Callback references are copied to the Context *before* the transfer. A successful consume runs `_release()`, which drops the Signer's claim callback and DynamicAssertion registration list; copying either afterwards would leave native code with a callable that Python may already have collected. The DynamicAssertion registration tuples also carry the original Python callback and its exception state so callback failures can be re-raised after the FFI signing call returns.
 - `set_signer` does not always take the pointer. A pre-consume rejection (`UntrackedPointer:` / `WrongPointerType:`) leaves the Signer `ACTIVE` and retained, so the triage must read the native error before deciding to close it. Treating every failure as "consumed" would close a signer the native side never took.
 - A `ctypes.ArgumentError` from `set_signer` is re-raised untouched by `_invoke_consume`: marshalling failed, the native function never ran, and the Signer still owns its handle. Only calls that reached native go through the consumed/retained triage.
 - The builder is never held as a raw local across the signer and build calls. `_NativeBuilder`'s `with` block owns it: a settings error, a retained-signer error, a build rejection, or an async interrupt all free it through `close()`, and a successful build consumes it so `close()` is then a no-op. The old raw-pointer recovery block that used to free `builder_ptr` on the un-reached-build path is gone.

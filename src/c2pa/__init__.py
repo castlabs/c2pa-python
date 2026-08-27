@@ -32,6 +32,7 @@ from .c2pa import (
     ContextBuilder,
     ContextProvider,
     LiveVideoVsiSession,
+    has_dynamic_assertions,
     has_live_video_vsi,
     sdk_version,
     load_settings
@@ -53,6 +54,7 @@ __all__ = [
     'ContextBuilder',
     'ContextProvider',
     'LiveVideoVsiSession',
+    'has_dynamic_assertions',
     'has_live_video_vsi',
     'sdk_version',
     'load_settings'

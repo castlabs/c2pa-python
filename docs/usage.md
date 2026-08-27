@@ -146,6 +146,35 @@ The built-in `Context` class is the standard `ContextProvider` implementation. C
 
 The `load_settings()` function is deprecated. Replace it with `Settings` and `Context`. See [Migrating from load_settings](context-settings.md#migrating-from-load_settings) for details.
 
+## Dynamic assertions
+
+The Castlabs native fork can generate assertion content after the preliminary claim and its assertion hashes exist. Check the native capability before registering a callback:
+
+```py
+from c2pa import C2paError, has_dynamic_assertions
+
+if not has_dynamic_assertions():
+    raise C2paError.NotSupported("native library has no dynamic assertions")
+
+def identity_assertion(label, reserve_size, partial_claim):
+    # Each entry has url, alg, and a standard-base64 hash.
+    referenced_assertions = [
+        entry for entry in partial_claim
+        if entry["url"].endswith("/c2pa.actions")
+    ]
+    return build_identity_assertion_cbor(label, referenced_assertions)
+
+signer.add_dynamic_assertion(
+    identity_assertion,
+    label="cawg.identity",
+    reserve_size=8192,
+)
+```
+
+The callback signature is `(label: str, reserve_size: int, partial_claim: list[dict]) -> bytes`. It must return CBOR bytes no larger than `reserve_size`; oversized output is rejected rather than truncated. Multiple callbacks may use the same preferred label and run in registration order. The native layer resolves later instances with `__N` suffixes, and later callbacks see the final hashes produced by earlier callbacks.
+
+Dynamic callbacks and their error state follow the signer into a `Context` when the signer is consumed. A Python exception raised by a callback is re-raised after the native signing operation fails. Without the Castlabs symbol, registration raises `C2paError.NotSupported`; importing the package with a standard upstream native binary remains supported.
+
 ## Live-video VSI signing
 
 The experimental `LiveVideoVsiSession` API signs C2PA 2.4 Verifiable Segment Info directly from initialization and media segment bytes. It requires a native library built with `unstable_live_video` and an active `Context` that consumed an explicit manifest `Signer`.

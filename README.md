@@ -8,6 +8,7 @@ The [c2pa-python](https://github.com/contentauth/c2pa-python) repository provide
 Features:
 
 - Create and sign C2PA manifests using various signing algorithms.
+- Generate CBOR assertions at signing time with DynamicAssertion callbacks when supported by the native library.
 - Sign C2PA 2.4 live-video Verifiable Segment Info (VSI) when supported by the native library.
 - Verify C2PA manifests and extract metadata.
 - Add assertions and ingredients to assets.
@@ -101,6 +102,10 @@ To build a single-architecture library instead, set `C2PA_LIBS_PLATFORM` to a sp
 ## Live-video VSI signing
 
 `has_live_video_vsi()` reports whether the loaded native library contains the experimental API. When available, `LiveVideoVsiSession` signs initialization and media segment bytes using a 32-byte local Ed25519 session-key seed and a `Context` configured with the manifest signer. See [Using the Python library](docs/usage.md#live-video-vsi-signing).
+
+## Dynamic assertions
+
+`has_dynamic_assertions()` reports whether the loaded native library contains the Castlabs DynamicAssertion extension. When available, `Signer.add_dynamic_assertion()` registers a callback that receives the partial claim during signing and returns CBOR assertion bytes. Standard upstream native binaries remain importable, but calling this method with one raises `C2paError.NotSupported`. See [Using the Python library](docs/usage.md#dynamic-assertions).
 
 ## Examples
 

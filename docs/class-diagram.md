@@ -66,6 +66,7 @@ classDiagram
         +from_info(signer_info) Signer$
         +from_callback(callback, alg, certs, tsa_url) Signer$
         +reserve_size() int
+        +add_dynamic_assertion(callback, label, reserve_size)
         +close()
     }
 
