@@ -10,6 +10,7 @@ Features:
 - Create and sign C2PA manifests using various signing algorithms.
 - Generate CBOR assertions at signing time with DynamicAssertion callbacks when supported by the native library.
 - Sign C2PA 2.4 live-video Verifiable Segment Info (VSI) when supported by the native library.
+- Sign and validate fragmented BMFF file sets when supported by the native library.
 - Verify C2PA manifests and extract metadata.
 - Add assertions and ingredients to assets.
 - Examples and unit tests to demonstrate usage.
@@ -106,6 +107,10 @@ To build a single-architecture library instead, set `C2PA_LIBS_PLATFORM` to a sp
 ## Dynamic assertions
 
 `has_dynamic_assertions()` reports whether the loaded native library contains the Castlabs DynamicAssertion extension. When available, `Signer.add_dynamic_assertion()` registers a callback that receives the partial claim during signing and returns CBOR assertion bytes. Standard upstream native binaries remain importable, but calling this method with one raises `C2paError.NotSupported`. See [Using the Python library](docs/usage.md#dynamic-assertions).
+
+## Fragmented BMFF file sets
+
+`has_fragmented_files()` reports whether the loaded native library contains the Castlabs fragmented file APIs. When available, `Builder.sign_fragmented()` signs an initialization segment and its media-fragment glob, while `Reader.from_fragmented_files()` validates the signed file set. Standard upstream native binaries remain importable; unavailable operations raise `C2paError.NotSupported`. See [Using the Python library](docs/usage.md#fragmented-bmff-file-sets).
 
 ## Examples
 

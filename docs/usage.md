@@ -205,6 +205,41 @@ finally:
 
 The initialization bytes must be an unsigned initialization segment. The session retains the native context and any Python signer callback while active but does not close the caller-owned `Context`. Calls on the same session must be externally serialized.
 
+## Fragmented BMFF file sets
+
+The Castlabs native fork can sign and validate DASH/HLS-style fragmented BMFF file sets. Check the native capability before using these file-based APIs:
+
+```py
+from pathlib import Path
+
+from c2pa import Builder, Context, Reader, has_fragmented_files
+
+if not has_fragmented_files():
+    raise RuntimeError("loaded native library has no fragmented file APIs")
+
+output_dir = Path("signed")
+with Builder(manifest_json, context=signing_context) as builder:
+    manifest_bytes = builder.sign_fragmented(
+        signer,
+        asset_path="rendition/init.mp4",
+        fragments_glob="segment-*.m4s",
+        output_dir=output_dir,
+    )
+
+# Native output preserves the input parent directory below output_dir.
+signed_dir = output_dir / "rendition"
+with Reader.from_fragmented_files(
+    signed_dir / "init.mp4",
+    sorted(signed_dir.glob("segment-*.m4s")),
+    context=verification_context,
+) as reader:
+    print(reader.json())
+```
+
+`asset_path` must be one literal existing initialization-segment file; only `fragments_glob` is a glob. A native sign attempt closes the single-use `Builder` but borrows and leaves the explicit `Signer` active. The returned manifest buffer is copied into Python-owned `bytes` and released natively.
+
+Pass an active `Context` to `Reader.from_fragmented_files()` to use explicit verification and trust settings. Omitting `context` preserves the legacy thread-local settings behavior. The reader requires at least one explicit fragment path and retains the supplied Context and callback references until the reader closes.
+
 ## File-based operation
 
 ### Read and validate C2PA data

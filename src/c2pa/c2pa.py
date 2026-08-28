@@ -23,6 +23,7 @@ import threading
 import warnings
 import weakref
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Optional, Union, Callable, Any, overload
 import io
@@ -118,6 +119,18 @@ _DYNAMIC_ASSERTION_FUNCTIONS = (
     'c2pa_signer_add_dynamic_assertion',
 )
 
+# Castlabs fragmented BMFF file-set APIs. These require the native ``file_io``
+# feature and are optional so standard upstream wheels remain importable.
+_FRAGMENTED_SIGN_FUNCTIONS = (
+    'c2pa_builder_sign_fragmented',
+)
+_FRAGMENTED_READER_FUNCTIONS = (
+    'c2pa_reader_from_fragmented_files',
+)
+_FRAGMENTED_CONTEXT_READER_FUNCTIONS = (
+    'c2pa_reader_from_fragmented_files_context',
+)
+
 
 def _validate_library_exports(lib):
     """Validate that all required functions are present in the loaded library.
@@ -187,6 +200,15 @@ _LIVE_VIDEO_VSI_AVAILABLE = all(
 )
 _DYNAMIC_ASSERTIONS_AVAILABLE = all(
     hasattr(_lib, name) for name in _DYNAMIC_ASSERTION_FUNCTIONS
+)
+_FRAGMENTED_SIGN_AVAILABLE = all(
+    hasattr(_lib, name) for name in _FRAGMENTED_SIGN_FUNCTIONS
+)
+_FRAGMENTED_READER_AVAILABLE = all(
+    hasattr(_lib, name) for name in _FRAGMENTED_READER_FUNCTIONS
+)
+_FRAGMENTED_CONTEXT_READER_AVAILABLE = all(
+    hasattr(_lib, name) for name in _FRAGMENTED_CONTEXT_READER_FUNCTIONS
 )
 
 
@@ -914,6 +936,23 @@ _setup_function(
     [ctypes.POINTER(C2paReader)],
     ctypes.c_void_p
 )
+if _FRAGMENTED_READER_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_reader_from_fragmented_files,
+        [ctypes.c_char_p,
+         ctypes.POINTER(ctypes.c_char_p),
+         ctypes.c_size_t],
+        ctypes.POINTER(C2paReader)
+    )
+if _FRAGMENTED_CONTEXT_READER_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_reader_from_fragmented_files_context,
+        [ctypes.POINTER(C2paContext),
+         ctypes.c_char_p,
+         ctypes.POINTER(ctypes.c_char_p),
+         ctypes.c_size_t],
+        ctypes.POINTER(C2paReader)
+    )
 
 # Set up Builder function prototypes
 _setup_function(
@@ -1097,6 +1136,17 @@ _setup_function(
      ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
     ctypes.c_int64
 )
+if _FRAGMENTED_SIGN_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_builder_sign_fragmented,
+        [ctypes.POINTER(C2paBuilder),
+         ctypes.POINTER(C2paSigner),
+         ctypes.c_char_p,
+         ctypes.c_char_p,
+         ctypes.c_char_p,
+         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
+        ctypes.c_int64
+    )
 
 if _LIVE_VIDEO_VSI_AVAILABLE:
     _setup_function(
@@ -1468,6 +1518,27 @@ def _to_utf8_bytes(data: Union[str, dict],
         return data.encode('utf-8')
     except UnicodeError as e:
         raise C2paError.Encoding(f"Invalid UTF-8 in {error_context}: {e}")
+
+
+def _encode_path(value: Union[str, os.PathLike], name: str) -> tuple[str, bytes]:
+    """Validate a text filesystem path and encode it for the C ABI."""
+    if isinstance(value, str):
+        path = value
+    elif isinstance(value, os.PathLike):
+        path = os.fspath(value)
+        if not isinstance(path, str):
+            raise TypeError(f"{name} must resolve to a str path")
+    else:
+        raise TypeError(f"{name} must be a str or path-like object")
+    if not path:
+        raise ValueError(f"{name} must not be empty")
+    if '\0' in path:
+        raise ValueError(f"{name} must not contain NUL characters")
+    try:
+        return path, path.encode('utf-8')
+    except UnicodeError as error:
+        raise C2paError.Encoding(
+            f"Invalid UTF-8 in {name}: {error}") from error
 
 
 def sdk_version() -> str:
@@ -1882,6 +1953,15 @@ def has_live_video_vsi() -> bool:
 def has_dynamic_assertions() -> bool:
     """Return whether the loaded native library supports dynamic assertions."""
     return _DYNAMIC_ASSERTIONS_AVAILABLE
+
+
+def has_fragmented_files() -> bool:
+    """Return whether all fragmented BMFF file-set APIs are available."""
+    return (
+        _FRAGMENTED_SIGN_AVAILABLE
+        and _FRAGMENTED_READER_AVAILABLE
+        and _FRAGMENTED_CONTEXT_READER_AVAILABLE
+    )
 
 
 class LiveVideoVsiSession(ManagedResource):
@@ -2748,6 +2828,96 @@ class Reader(ManagedResource):
         except C2paError.ManifestNotFound:
             return None
 
+    @classmethod
+    def from_fragmented_files(
+        cls,
+        asset_path: Union[str, Path],
+        fragments: Sequence[Union[str, Path]],
+        context: Optional['ContextProvider'] = None,
+    ) -> 'Reader':
+        """Create a Reader for a fragmented BMFF file set.
+
+        ``asset_path`` identifies one initialization segment and ``fragments``
+        contains the explicit media-fragment paths. Passing a Context uses the
+        explicit native Context API; omitting it uses the legacy thread-local
+        settings API.
+
+        Args:
+            asset_path: Literal path to the initialization segment.
+            fragments: Non-empty sequence of literal fragment paths.
+            context: Optional active ContextProvider carrying verification and
+                trust settings.
+
+        Returns:
+            A ready-to-use Reader that owns the returned native handle.
+
+        Raises:
+            C2paError.NotSupported: If the required native API is unavailable.
+            TypeError: If paths, fragments, or context have invalid types.
+            ValueError: If a path or the fragments sequence is empty or
+                contains a NUL character.
+            C2paError: If the native reader cannot be created.
+        """
+        _, asset_path_bytes = _encode_path(asset_path, "asset_path")
+
+        if isinstance(fragments, (str, bytes, bytearray)) or not isinstance(
+            fragments, Sequence
+        ):
+            raise TypeError("fragments must be a sequence of paths")
+        if not fragments:
+            raise ValueError("fragments must not be empty")
+
+        fragment_bytes = [
+            _encode_path(fragment, f"fragments[{index}]")[1]
+            for index, fragment in enumerate(fragments)
+        ]
+        fragment_array = (ctypes.c_char_p * len(fragment_bytes))(
+            *fragment_bytes)
+
+        if context is None:
+            if not _FRAGMENTED_READER_AVAILABLE:
+                raise C2paError.NotSupported(
+                    "Fragmented file reading is unavailable in the loaded "
+                    "native library; use the Castlabs c2pa-rs fork built "
+                    "with the file_io feature"
+                )
+            reader_ptr = _lib.c2pa_reader_from_fragmented_files(
+                asset_path_bytes, fragment_array, len(fragment_bytes))
+        else:
+            if not isinstance(context, ContextProvider):
+                raise TypeError("context must implement ContextProvider")
+            if not context.is_valid:
+                raise C2paError("Context is not valid")
+            if not _FRAGMENTED_CONTEXT_READER_AVAILABLE:
+                raise C2paError.NotSupported(
+                    "Context-based fragmented file reading is unavailable in "
+                    "the loaded native library; use the Castlabs c2pa-rs fork "
+                    "built with the file_io feature"
+                )
+            reader_ptr = _lib.c2pa_reader_from_fragmented_files_context(
+                context.execution_context,
+                asset_path_bytes,
+                fragment_array,
+                len(fragment_bytes),
+            )
+
+        _check_ffi_operation_result(
+            reader_ptr, Reader._ERROR_MESSAGES['reader_error'])
+        try:
+            reader = cls._wrap_native_handle(reader_ptr)
+        except Exception:
+            ManagedResource._free_native_ptr(reader_ptr)
+            raise
+
+        # The native Reader owns a shared Context. Pin the corresponding
+        # Python Context and callback state for the same lifetime.
+        reader._context = context
+        reader._signer_callback_cb = getattr(
+            context, '_signer_callback_cb', None)
+        reader._dynamic_assertion_cbs = list(getattr(
+            context, '_dynamic_assertion_cbs', ()))
+        return reader
+
     @overload
     def __init__(
         self,
@@ -2995,6 +3165,8 @@ class Reader(ManagedResource):
         self._manifest_data_cache = None
 
         self._context = None
+        self._signer_callback_cb = None
+        self._dynamic_assertion_cbs = []
 
     def _close_streams(self):
         """Close owned stream and backing file if present."""
@@ -3022,6 +3194,8 @@ class Reader(ManagedResource):
         self._close_streams()
         # The Context is not ours to close, only to stop pinning.
         self._context = None
+        self._signer_callback_cb = None
+        self._dynamic_assertion_cbs.clear()
 
     def _get_cached_manifest_data(self) -> Optional[dict]:
         """Get the cached manifest data, fetching and parsing if not cached.
@@ -4388,6 +4562,106 @@ class Builder(ManagedResource):
                 "First argument must be a Signer or a format string (MIME type)."
             )
 
+    def sign_fragmented(
+        self,
+        signer: Signer,
+        asset_path: Union[str, Path],
+        fragments_glob: Union[str, Path],
+        output_dir: Union[str, Path],
+    ) -> bytes:
+        """Sign a fragmented BMFF file set and return its manifest bytes.
+
+        The native library writes signed files below
+        ``<output_dir>/<asset-parent-name>/``. This compatibility API accepts
+        one literal existing initialization segment and an explicit Signer.
+        Like :meth:`sign`, an attempted native signing operation closes this
+        single-use Builder while leaving the borrowed Signer active.
+
+        Args:
+            signer: Active Signer borrowed for this operation.
+            asset_path: Literal path to an existing initialization segment.
+            fragments_glob: Fragment filename glob relative to the asset's
+                parent directory.
+            output_dir: Root directory for the nested signed output.
+
+        Returns:
+            The embedded C2PA manifest bytes.
+
+        Raises:
+            C2paError.NotSupported: If the native API is unavailable.
+            TypeError: If signer or path inputs have invalid types.
+            ValueError: If a path is empty, contains a NUL character, or
+                ``asset_path`` is not one literal existing file.
+            C2paError: If signing fails.
+        """
+        self._ensure_valid_state()
+        if not isinstance(signer, Signer):
+            raise TypeError("signer must be a Signer")
+        signer._ensure_valid_state()
+        if not _FRAGMENTED_SIGN_AVAILABLE:
+            raise C2paError.NotSupported(
+                "Fragmented file signing is unavailable in the loaded native "
+                "library; use the Castlabs c2pa-rs fork built with the "
+                "file_io feature"
+            )
+
+        asset_path_str, asset_path_bytes = _encode_path(
+            asset_path, "asset_path")
+        _, fragments_glob_bytes = _encode_path(
+            fragments_glob, "fragments_glob")
+        _, output_dir_bytes = _encode_path(output_dir, "output_dir")
+        if any(character in asset_path_str for character in "*?[]"):
+            raise ValueError(
+                "asset_path must be one literal initialization-segment path")
+        if not Path(asset_path_str).is_file():
+            raise ValueError(
+                "asset_path must identify an existing regular file")
+
+        dynamic_assertion_cbs = list(signer._dynamic_assertion_cbs)
+        for _, error_state, _ in dynamic_assertion_cbs:
+            error_state.exception = None
+
+        manifest_bytes_ptr = ctypes.POINTER(ctypes.c_ubyte)()
+        try:
+            try:
+                result = _lib.c2pa_builder_sign_fragmented(
+                    self._handle,
+                    signer._handle,
+                    asset_path_bytes,
+                    fragments_glob_bytes,
+                    output_dir_bytes,
+                    ctypes.byref(manifest_bytes_ptr),
+                )
+            except Exception as error:
+                raise C2paError(
+                    f"Error during fragmented signing: {error}") from error
+
+            if result < 0:
+                for _, error_state, _ in dynamic_assertion_cbs:
+                    callback_error = getattr(error_state, 'exception', None)
+                    if callback_error is not None:
+                        raise callback_error
+
+            _check_ffi_operation_result(
+                result,
+                "Error during fragmented signing",
+                check=lambda value: value < 0,
+            )
+            if result == 0:
+                return b""
+            if not manifest_bytes_ptr:
+                raise C2paError(
+                    "Error during fragmented signing: native output pointer "
+                    "is null")
+            return ctypes.string_at(manifest_bytes_ptr, result)
+        finally:
+            # The native call borrows both handles. Builder is single-use and
+            # closes after an attempted sign; Signer remains caller-owned.
+            self.close()
+            if manifest_bytes_ptr:
+                ManagedResource._free_native_ptr(manifest_bytes_ptr)
+                manifest_bytes_ptr = ctypes.POINTER(ctypes.c_ubyte)()
+
     @overload
     def sign_file(
         self,
@@ -4644,6 +4918,7 @@ __all__ = [
     'Builder',
     'Signer',
     'has_dynamic_assertions',
+    'has_fragmented_files',
     'load_settings',
     'format_embeddable',
     'version',

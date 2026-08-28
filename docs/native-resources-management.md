@@ -135,7 +135,7 @@ The PID stamp is fork-only: it compares process IDs, and two threads in the same
 
 When a Python object passes a callback or pointer to the native library, that reference must stay alive for as long as the native side might use it. Python's garbage collector has no way to know that native code is still holding a reference to a Python callback.
 
-The SDK solves this by storing these references as instance attributes on the owning object. For example, `Stream` stores its four callback objects (`_read_cb`, `_seek_cb`, `_write_cb`, `_flush_cb`) as instance attributes. As long as the `Stream` object is alive, its callbacks have a nonzero reference count and will not be collected. Similarly, when a `Signer` is consumed by a `Context`, the Context copies the signer's claim callback and DynamicAssertion registrations before consumption, so the ctypes callbacks, original Python callbacks, and per-thread exception state survive even though the Signer object is now closed. A `Builder` or `LiveVideoVsiSession` created from that Context pins its own copies for its native lifetime, including when the caller explicitly closes the Context.
+The SDK solves this by storing these references as instance attributes on the owning object. For example, `Stream` stores its four callback objects (`_read_cb`, `_seek_cb`, `_write_cb`, `_flush_cb`) as instance attributes. As long as the `Stream` object is alive, its callbacks have a nonzero reference count and will not be collected. Similarly, when a `Signer` is consumed by a `Context`, the Context copies the signer's claim callback and DynamicAssertion registrations before consumption, so the ctypes callbacks, original Python callbacks, and per-thread exception state survive even though the Signer object is now closed. A `Builder`, `LiveVideoVsiSession`, or fragmented-file `Reader` created from that Context pins its own copies for its native lifetime, including when the caller explicitly closes the Context.
 
 During cleanup, `_release()` sets these attributes to `None`, which drops the reference count on the callback objects and allows them to be collected. In the cleanup sequence, `_release()` runs first, then `c2pa_free` frees the native pointer. `_release()` goes first so that subclass-specific resources (open file handles, stream wrappers) are torn down before the native pointer they depend on is freed.
 
@@ -298,7 +298,7 @@ When the Reader is closed, it first releases its own resources (open file handle
 
 ## Builder lifecycle
 
-A `Builder` follows the same pattern as Reader, with one difference: **signing closes the builder**. A Builder is single-use, so after signing it cannot be reused.
+A `Builder` follows the same pattern as Reader, with one difference: **signing closes the builder**. A Builder is single-use, so after `sign()` or `sign_fragmented()` attempts native signing it cannot be reused. Preflight validation failures leave it active because no native sign was attempted.
 
 ```mermaid
 stateDiagram-v2
@@ -316,7 +316,7 @@ stateDiagram-v2
 
 While `ACTIVE`, callers can use `.add_ingredient()`, `.add_action()`, etc. repeatedly. `.sign()` closes the Builder when it returns, on both the success and the failure path. Closing without signing frees the pointer the same way.
 
-The native sign call borrows the builder's pointer rather than taking ownership of it, so `Builder` never marks it consumed and the pointer is freed normally through `c2pa_free`. The close enforces single use; it is not a memory-management requirement.
+The native sign calls borrow the builder's pointer rather than taking ownership of it, so `Builder` never marks it consumed and the pointer is freed normally through `c2pa_free`. The close enforces single use; it is not a memory-management requirement. `sign_fragmented()` also borrows its explicit Signer, which remains active, and copies its tracked output buffer before freeing that buffer once through `c2pa_free`.
 
 ## Ownership transfer
 
@@ -487,7 +487,7 @@ Examples from the codebase:
 
 | Class | What `_release()` cleans up |
 | --- | --- |
-| Reader | Drops the manifest caches, closes owned file handles and stream wrappers, and drops the reference to the Context |
+| Reader | Drops the manifest caches, closes owned file handles and stream wrappers, and drops Context and callback references |
 | Builder | Drops the reference to the Context |
 | Context | Drops the reference to the signer callback. `has_signer` is left as it was: it records how the Context was configured, and stays readable after close. |
 | Signer | Drops the reference to the signing callback |
