@@ -81,6 +81,14 @@ This does a clean build of the `c2pa-c-ffi` crate with the upstream-compatible `
 make build-from-source C2PA_RS_PATH=$C2PA_RS_PATH EXTRA_BUILD_ARGS="--debug"
 ```
 
+When running the tests against an unreleased source build whose SDK version differs from `c2pa-native-version.txt`, explicitly provide the expected source version:
+
+```sh
+C2PA_SOURCE_BUILD_VERSION=0.91.0-dev python3 tests/test_unit_tests.py
+```
+
+The version test validates the loaded library against this value. When the variable is unset, it continues to validate downloaded release artifacts against `c2pa-native-version.txt`.
+
 The source build honors `CARGO_TARGET_DIR`, which can keep temporary Cargo output outside the checkout. Native artifact downloads default to `contentauth/c2pa-rs`; set `C2PA_NATIVE_REPOSITORY=owner/repository` to use a compatible GitHub release repository without changing the default.
 
 To build the paired experimental live-video fork, opt in explicitly:

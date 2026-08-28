@@ -94,10 +94,35 @@ def parse_native_version():
     return raw.split('v', 1)[1] if 'v' in raw else raw
 
 
+def _empty_created_action():
+    return {
+        "action": "c2pa.created",
+        "digitalSourceType": "http://c2pa.org/digitalsourcetype/empty",
+    }
+
+
+def _empty_created_action_assertion():
+    return {
+        "label": "c2pa.actions.v2",
+        "data": {"actions": [_empty_created_action()]},
+    }
+
+
 class TestC2paSdk(unittest.TestCase):
     def test_sdk_version(self):
         # This test verifies the native libraries used match the expected version.
-        self.assertIn(parse_native_version(), sdk_version())
+        source_build_version = os.environ.get("C2PA_SOURCE_BUILD_VERSION")
+        if source_build_version is None:
+            expected_version = parse_native_version()
+        else:
+            expected_version = source_build_version.strip()
+            self.assertTrue(
+                expected_version,
+                "C2PA_SOURCE_BUILD_VERSION must not be empty",
+            )
+            self.assertEqual(expected_version, sdk_version())
+            return
+        self.assertIn(expected_version, sdk_version())
 
 
 class TestIsReadableStream(unittest.TestCase):
@@ -2634,7 +2659,7 @@ class TestBuilderWithSigner(unittest.TestCase):
     def test_add_ingredient_from_archive_roundtrip(self):
         manifest = {
             "claim_generator_info": [{"name": "c2pa-test", "version": "0.1.0"}],
-            "assertions": [],
+            "assertions": [_empty_created_action_assertion()],
         }
         builder = Builder.from_json(manifest)
         ingredient_json = {
@@ -2667,7 +2692,7 @@ class TestBuilderWithSigner(unittest.TestCase):
     def test_add_ingredient_from_archive_preserves_instance_id(self):
         manifest = {
             "claim_generator_info": [{"name": "c2pa-test", "version": "0.1.0"}],
-            "assertions": [],
+            "assertions": [_empty_created_action_assertion()],
         }
         archive_builder = Builder.from_json(manifest)
         ingredient_json = {
@@ -2700,7 +2725,7 @@ class TestBuilderWithSigner(unittest.TestCase):
     def test_add_ingredient_from_archive_preserves_instance_id_component_of(self):
         manifest = {
             "claim_generator_info": [{"name": "c2pa-test", "version": "1.0"}],
-            "assertions": [],
+            "assertions": [_empty_created_action_assertion()],
         }
         archive_builder = Builder.from_json(manifest)
         ingredient_json = {
@@ -2734,7 +2759,7 @@ class TestBuilderWithSigner(unittest.TestCase):
     def test_add_ingredient_from_archive_preserves_instance_id_input_to(self):
         manifest = {
             "claim_generator_info": [{"name": "c2pa-test", "version": "1.0"}],
-            "assertions": [],
+            "assertions": [_empty_created_action_assertion()],
         }
         archive_builder = Builder.from_json(manifest)
         ingredient_json = {
@@ -2768,7 +2793,7 @@ class TestBuilderWithSigner(unittest.TestCase):
     def test_add_ingredient_from_archive_roundtrip_parent_of(self):
         manifest = {
             "claim_generator_info": [{"name": "c2pa-test", "version": "1.0"}],
-            "assertions": [],
+            "assertions": [_empty_created_action_assertion()],
         }
         builder = Builder.from_json(manifest)
         ingredient_json = {
@@ -2802,7 +2827,7 @@ class TestBuilderWithSigner(unittest.TestCase):
     def test_add_ingredient_from_archive_roundtrip_input_to(self):
         manifest = {
             "claim_generator_info": [{"name": "c2pa-test", "version": "1.0"}],
-            "assertions": [],
+            "assertions": [_empty_created_action_assertion()],
         }
         builder = Builder.from_json(manifest)
         ingredient_json = {
@@ -2968,7 +2993,7 @@ class TestBuilderWithSigner(unittest.TestCase):
     def test_add_two_ingredient_archives_to_one_builder(self):
         manifest = {
             "claim_generator_info": [{"name": "c2pa-test", "version": "1.0"}],
-            "assertions": [],
+            "assertions": [_empty_created_action_assertion()],
         }
         archives = []
         for title, instance_id in [("A.jpg", "ingredient-A"), ("B.jpg", "ingredient-B")]:
@@ -3006,7 +3031,7 @@ class TestBuilderWithSigner(unittest.TestCase):
     def test_write_ingredient_archive_only_contains_requested_ingredient(self):
         manifest = {
             "claim_generator_info": [{"name": "c2pa-test", "version": "1.0"}],
-            "assertions": [],
+            "assertions": [_empty_created_action_assertion()],
         }
         archive_builder = Builder.from_json(manifest)
         for title, instance_id in [("A.jpg", "ingredient-A"), ("B.jpg", "ingredient-B")]:
@@ -5551,6 +5576,7 @@ class TestBuilderWithSigner(unittest.TestCase):
                     "label": "c2pa.actions.v2",
                     "data": {
                         "actions": [
+                            _empty_created_action(),
                             {
                                 "action": "c2pa.placed",
                                 "parameters": {
@@ -5694,16 +5720,16 @@ class TestBuilderWithSigner(unittest.TestCase):
                     "data": {
                         "actions": [
                             {
-                                "action": "c2pa.placed",
-                                "parameters": {
-                                    "ingredientIds": ["ingredient-for-placed"]
-                                },
-                            },
-                            {
                                 "action": "c2pa.opened",
                                 "digitalSourceType": "http://cv.iptc.org/newscodes/digitalsourcetype/digitalCreation",
                                 "parameters": {
                                     "ingredientIds": ["ingredient-for-opened"]
+                                },
+                            },
+                            {
+                                "action": "c2pa.placed",
+                                "parameters": {
+                                    "ingredientIds": ["ingredient-for-placed"]
                                 },
                             },
                         ]
@@ -5786,6 +5812,7 @@ class TestBuilderWithSigner(unittest.TestCase):
                     "label": "c2pa.actions.v2",
                     "data": {
                         "actions": [
+                            _empty_created_action(),
                             {
                                 "action": "c2pa.placed",
                                 "parameters": {
