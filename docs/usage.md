@@ -205,6 +205,51 @@ finally:
 
 The initialization bytes must be an unsigned initialization segment. The session retains the native context and any Python signer callback while active but does not close the caller-owned `Context`. Calls on the same session must be externally serialized.
 
+For a non-exportable Ed25519 or ES256 session key, use the callback
+constructor. The callback receives the exact final COSE Sig_structure plus
+an explicit purpose and sequence; it returns a 64-byte raw signature (ES256
+uses P1363 `r || s`, not DER):
+
+```py
+from c2pa import C2paSigningAlg, LiveVideoVsiSession
+
+def sign_vsi(purpose, sequence_number, sig_structure):
+    # purpose is "signer_binding" (sequence None) or "vsi" (uint32 sequence)
+    return remote_keystore_sign(purpose, sequence_number, sig_structure)
+
+with LiveVideoVsiSession.from_callback(
+    manifest_json,
+    context,
+    callback=sign_vsi,
+    algorithm=C2paSigningAlg.ES256,
+    public_cose_key=public_cose_key_cbor,
+    kid=b"remote-session-generation-1",
+    min_sequence_number=1,
+    created_at="2026-08-29T12:00:00Z",
+    validity_period_secs=3600,
+) as session:
+    signed_init = session.sign_init_segment(init_bytes)
+    signed_media = session.sign_media_segment(media_bytes)
+```
+
+Native code verifies every callback result against `public_cose_key` before
+returning output or advancing counters. Python callback exceptions are
+re-raised as the original exception object.
+
+To resume after a process restart, construct the session with the same key
+metadata/handle and recover from published artifacts:
+
+```py
+session.recover(signed_init, last_committed_signed_media)
+# `restore` is an alias of `recover`.
+```
+
+Recovery validates the init manifest, session key and signer binding, and the
+last media segment's signature, BMFF hash, manifest ID, sequence, timing, and
+event ID. It never invokes the session-key callback. Omitting the last media
+artifact is safe only when no media from the session has ever been published;
+durable callers must refuse recovery when publication state is unknown.
+
 ## Fragmented BMFF file sets
 
 The Castlabs native fork can sign and validate DASH/HLS-style fragmented BMFF file sets. Check the native capability before using these file-based APIs:

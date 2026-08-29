@@ -71,8 +71,11 @@ classDiagram
     }
 
     class LiveVideoVsiSession {
+        +from_callback(manifest, context, callback, algorithm, key, kid, ...) LiveVideoVsiSession$
         +sign_init_segment(bytes, format) bytes
         +sign_media_segment(bytes) bytes
+        +recover(signed_init, previous_media, format)
+        +restore(signed_init, previous_media, format)
         +next_sequence_number int
         +active_manifest_id str | None
         +close()

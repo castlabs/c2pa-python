@@ -112,6 +112,12 @@ _LIVE_VIDEO_VSI_FUNCTIONS = (
     'c2pa_live_video_vsi_signer_next_sequence_number',
     'c2pa_live_video_vsi_signer_active_manifest_id',
 )
+_LIVE_VIDEO_VSI_CALLBACK_FUNCTIONS = (
+    'c2pa_live_video_vsi_signer_create_callback',
+)
+_LIVE_VIDEO_VSI_RECOVERY_FUNCTIONS = (
+    'c2pa_live_video_vsi_signer_recover',
+)
 
 # Castlabs dynamic-assertion extension. Keep this optional so the package can
 # still be imported with standard upstream native libraries.
@@ -197,6 +203,12 @@ else:
 _validate_library_exports(_lib)
 _LIVE_VIDEO_VSI_AVAILABLE = all(
     hasattr(_lib, name) for name in _LIVE_VIDEO_VSI_FUNCTIONS
+)
+_LIVE_VIDEO_VSI_CALLBACK_AVAILABLE = all(
+    hasattr(_lib, name) for name in _LIVE_VIDEO_VSI_CALLBACK_FUNCTIONS
+)
+_LIVE_VIDEO_VSI_RECOVERY_AVAILABLE = all(
+    hasattr(_lib, name) for name in _LIVE_VIDEO_VSI_RECOVERY_FUNCTIONS
 )
 _DYNAMIC_ASSERTIONS_AVAILABLE = all(
     hasattr(_lib, name) for name in _DYNAMIC_ASSERTION_FUNCTIONS
@@ -699,6 +711,16 @@ DynamicAssertionCallback = ctypes.CFUNCTYPE(
     ctypes.POINTER(ctypes.c_ubyte),
     ctypes.c_size_t,
 )
+LiveVideoVsiSignCallback = ctypes.CFUNCTYPE(
+    ctypes.c_ssize_t,
+    ctypes.c_void_p,
+    ctypes.c_int,
+    ctypes.c_uint64,
+    ctypes.POINTER(ctypes.c_ubyte),
+    ctypes.c_size_t,
+    ctypes.POINTER(ctypes.c_ubyte),
+    ctypes.c_size_t,
+)
 
 
 class StreamContext(ctypes.Structure):
@@ -1188,6 +1210,34 @@ if _LIVE_VIDEO_VSI_AVAILABLE:
         _lib.c2pa_live_video_vsi_signer_active_manifest_id,
         [ctypes.POINTER(C2paLiveVideoVsiSigner),
          ctypes.POINTER(ctypes.c_char_p)],
+        ctypes.c_int
+    )
+if _LIVE_VIDEO_VSI_CALLBACK_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_live_video_vsi_signer_create_callback,
+        [ctypes.POINTER(C2paContext),
+         ctypes.c_char_p,
+         ctypes.c_int,
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t,
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t,
+         ctypes.c_uint64,
+         ctypes.c_char_p,
+         ctypes.c_uint64,
+         ctypes.c_void_p,
+         LiveVideoVsiSignCallback],
+        ctypes.POINTER(C2paLiveVideoVsiSigner)
+    )
+if _LIVE_VIDEO_VSI_RECOVERY_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_live_video_vsi_signer_recover,
+        [ctypes.POINTER(C2paLiveVideoVsiSigner),
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t,
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t,
+         ctypes.c_char_p],
         ctypes.c_int
     )
 
@@ -1967,13 +2017,14 @@ def has_fragmented_files() -> bool:
 class LiveVideoVsiSession(ManagedResource):
     """Stateful C2PA 2.4 Verifiable Segment Info signing session.
 
-    The session uses a local Ed25519 session key while the signer configured on
-    ``context`` signs the initialization manifest. Calls on one session must be
-    externally serialized.
+    The session uses either a local Ed25519 seed or a purpose-aware Ed25519/ES256
+    callback while the signer configured on ``context`` signs the initialization
+    manifest. Calls on one session must be externally serialized.
     """
 
     _UINT32_MAX = 2**32 - 1
     _UINT64_MAX = 2**64 - 1
+    _NO_SEQUENCE = _UINT64_MAX
 
     def __init__(
         self,
@@ -2073,16 +2124,203 @@ class LiveVideoVsiSession(ManagedResource):
             "Failed to create live-video VSI session",
         )
 
+    @classmethod
+    def from_callback(
+        cls,
+        manifest_json: Union[str, dict],
+        context: 'Context',
+        callback: Callable[[str, Optional[int], bytes], bytes],
+        algorithm: Union[C2paSigningAlg, str],
+        public_cose_key: bytes,
+        kid: bytes,
+        min_sequence_number: int,
+        created_at: str,
+        validity_period_secs: int,
+    ) -> 'LiveVideoVsiSession':
+        """Create a VSI session backed by a synchronous signing callback.
+
+        The callback receives ``(purpose, sequence_number, sig_structure)``.
+        ``purpose`` is ``"signer_binding"`` with a ``None`` sequence or
+        ``"vsi"`` with the media sequence number. It must return exactly 64
+        raw signature bytes (Ed25519 or ES256 P1363 ``r || s``).
+
+        The callback receives the exact final COSE Sig_structure. Native code
+        verifies every returned signature against ``public_cose_key`` before
+        producing output or advancing state. Calls on one session must remain
+        externally serialized.
+        """
+        if not (
+            _LIVE_VIDEO_VSI_AVAILABLE
+            and _LIVE_VIDEO_VSI_CALLBACK_AVAILABLE
+        ):
+            raise C2paError.NotSupported(
+                "Live-video VSI callback signing is unavailable in the loaded "
+                "native library; use a c2pa-c-ffi build with callback VSI support"
+            )
+        if not isinstance(manifest_json, (str, dict)):
+            raise TypeError("manifest_json must be a str or dict")
+        manifest_bytes = _to_utf8_bytes(
+            manifest_json, "live-video manifest JSON")
+        if not manifest_bytes:
+            raise ValueError("manifest_json must not be empty")
+        if b'\0' in manifest_bytes:
+            raise ValueError("manifest_json must not contain NUL characters")
+        if not isinstance(context, Context):
+            raise TypeError("context must be a Context")
+        if not context.is_valid:
+            raise C2paError("context must be active")
+        if not context.has_signer:
+            raise C2paError(
+                "LiveVideoVsiSession requires a Context with an explicit signer"
+            )
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+
+        if isinstance(algorithm, str):
+            normalized = algorithm.lower().replace('-', '')
+            algorithms = {
+                'es256': C2paSigningAlg.ES256,
+                'ed25519': C2paSigningAlg.ED25519,
+                'eddsa': C2paSigningAlg.ED25519,
+            }
+            try:
+                algorithm = algorithms[normalized]
+            except KeyError as error:
+                raise ValueError(
+                    "algorithm must be ES256 or Ed25519") from error
+        if not isinstance(algorithm, C2paSigningAlg):
+            raise TypeError("algorithm must be a C2paSigningAlg or str")
+        if algorithm not in (C2paSigningAlg.ES256, C2paSigningAlg.ED25519):
+            raise ValueError("algorithm must be ES256 or Ed25519")
+        if not isinstance(public_cose_key, bytes):
+            raise TypeError("public_cose_key must be bytes")
+        if not public_cose_key:
+            raise ValueError("public_cose_key must not be empty")
+        if not isinstance(kid, bytes):
+            raise TypeError("kid must be bytes")
+        if not kid:
+            raise ValueError("kid must not be empty")
+        if isinstance(min_sequence_number, bool) or not isinstance(
+            min_sequence_number, int
+        ):
+            raise TypeError("min_sequence_number must be an int")
+        if not 0 <= min_sequence_number <= cls._UINT32_MAX:
+            raise ValueError(
+                "min_sequence_number must be between 0 and 2**32 - 1"
+            )
+        if not isinstance(created_at, str):
+            raise TypeError("created_at must be a str")
+        if not created_at:
+            raise ValueError("created_at must not be empty")
+        if '\0' in created_at:
+            raise ValueError("created_at must not contain NUL characters")
+        created_at_bytes = _to_utf8_bytes(created_at, "VSI created_at")
+        if isinstance(validity_period_secs, bool) or not isinstance(
+            validity_period_secs, int
+        ):
+            raise TypeError("validity_period_secs must be an int")
+        if not 1 <= validity_period_secs <= cls._UINT64_MAX:
+            raise ValueError(
+                "validity_period_secs must be between 1 and 2**64 - 1"
+            )
+
+        error_state = threading.local()
+        error_state.exception = None
+
+        def wrapped_callback(
+            user_data,
+            native_purpose,
+            sequence_number,
+            tbs,
+            tbs_len,
+            signature,
+            signature_capacity,
+        ):
+            error_state.exception = None
+            try:
+                if not tbs or tbs_len <= 0:
+                    raise C2paError("VSI callback received an empty Sig_structure")
+                if not signature or signature_capacity < 64:
+                    raise C2paError("VSI callback received an invalid output buffer")
+                if native_purpose == 0:
+                    purpose = "signer_binding"
+                    sequence = None
+                    if sequence_number != cls._NO_SEQUENCE:
+                        raise C2paError(
+                            "signer_binding callback received a media sequence")
+                elif native_purpose == 1:
+                    purpose = "vsi"
+                    sequence = int(sequence_number)
+                    if sequence > cls._UINT32_MAX:
+                        raise C2paError("VSI callback sequence exceeds uint32")
+                else:
+                    raise C2paError(
+                        f"VSI callback received unknown purpose {native_purpose}")
+
+                sig_structure = ctypes.string_at(tbs, tbs_len)
+                result = callback(purpose, sequence, sig_structure)
+                if not isinstance(result, bytes):
+                    raise TypeError("VSI callback must return bytes")
+                if len(result) != 64:
+                    raise ValueError(
+                        "VSI callback must return exactly 64 signature bytes")
+                ctypes.memmove(signature, result, len(result))
+                return len(result)
+            except Exception as error:
+                error_state.exception = error
+                logger.error(
+                    "Error in live-video VSI %s callback: %s",
+                    locals().get('purpose', 'unknown'),
+                    error,
+                    exc_info=True,
+                )
+                return -1
+
+        callback_cb = LiveVideoVsiSignCallback(wrapped_callback)
+        public_key_array = (
+            ctypes.c_ubyte * len(public_cose_key)
+        ).from_buffer_copy(public_cose_key)
+        kid_array = (ctypes.c_ubyte * len(kid)).from_buffer_copy(kid)
+
+        instance = cls.__new__(cls)
+        ManagedResource.__init__(instance)
+        instance._init_attrs()
+        instance._context = context
+        instance._signer_callback_cb = context._signer_callback_cb
+        instance._dynamic_assertion_cbs = list(
+            context._dynamic_assertion_cbs)
+        instance._vsi_callback = (callback_cb, error_state, callback)
+        instance._create_and_activate(
+            lambda: _lib.c2pa_live_video_vsi_signer_create_callback(
+                context.execution_context,
+                manifest_bytes,
+                algorithm,
+                public_key_array,
+                len(public_cose_key),
+                kid_array,
+                len(kid),
+                min_sequence_number,
+                created_at_bytes,
+                validity_period_secs,
+                None,
+                callback_cb,
+            ),
+            "Failed to create callback live-video VSI session",
+        )
+        return instance
+
     def _init_attrs(self):
         super()._init_attrs()
         self._context = None
         self._signer_callback_cb = None
         self._dynamic_assertion_cbs = []
+        self._vsi_callback = None
 
     def _release(self):
         """Drop borrowed Python references without closing the Context."""
         self._signer_callback_cb = None
         self._dynamic_assertion_cbs.clear()
+        self._vsi_callback = None
         self._context = None
 
     @staticmethod
@@ -2094,11 +2332,18 @@ class LiveVideoVsiSession(ManagedResource):
         return (ctypes.c_ubyte * len(segment)).from_buffer_copy(segment)
 
     def _copy_signed_output(self, ffi_call, error_message: str) -> bytes:
+        if self._vsi_callback is not None:
+            self._vsi_callback[1].exception = None
         for _, error_state, _ in self._dynamic_assertion_cbs:
             error_state.exception = None
         output = ctypes.POINTER(ctypes.c_ubyte)()
         length = ffi_call(ctypes.byref(output))
         if length < 0:
+            if self._vsi_callback is not None:
+                callback_error = getattr(
+                    self._vsi_callback[1], 'exception', None)
+                if callback_error is not None:
+                    raise callback_error
             for _, error_state, _ in self._dynamic_assertion_cbs:
                 callback_error = getattr(error_state, 'exception', None)
                 if callback_error is not None:
@@ -2160,6 +2405,58 @@ class LiveVideoVsiSession(ManagedResource):
             ),
             "Failed to sign live-video media segment",
         )
+
+    def recover(
+        self,
+        signed_init_segment: bytes,
+        previous_media_segment: Optional[bytes] = None,
+        format: str = "video/mp4",
+    ) -> None:
+        """Restore state from previously published signed artifacts.
+
+        ``signed_init_segment`` is mandatory. Supply the complete last
+        committed media segment after any media publication. Omitting it is
+        safe only when no media from this session has ever been published;
+        init-only recovery resets the initial sequence and event counters.
+        Native recovery validates all artifacts and does not invoke the
+        session signing callback.
+        """
+        self._ensure_valid_state()
+        if not _LIVE_VIDEO_VSI_RECOVERY_AVAILABLE:
+            raise C2paError.NotSupported(
+                "Live-video VSI recovery is unavailable in the loaded native library"
+            )
+        init_array = self._segment_array(
+            signed_init_segment, "signed_init_segment")
+        if previous_media_segment is None:
+            previous_array = None
+            previous_length = 0
+        else:
+            previous_array = self._segment_array(
+                previous_media_segment, "previous_media_segment")
+            previous_length = len(previous_media_segment)
+        if not isinstance(format, str):
+            raise TypeError("format must be a str")
+        format_bytes = _encode_format(
+            format, type(self).__name__, allow_autodetect=False)
+        if b'\0' in format_bytes:
+            raise ValueError("format must not contain NUL characters")
+
+        result = _lib.c2pa_live_video_vsi_signer_recover(
+            self._handle,
+            init_array,
+            len(signed_init_segment),
+            previous_array,
+            previous_length,
+            format_bytes,
+        )
+        _check_ffi_operation_result(
+            result,
+            "Failed to recover live-video VSI session",
+            check=lambda status: status != 0,
+        )
+
+    restore = recover
 
     @property
     def next_sequence_number(self) -> int:

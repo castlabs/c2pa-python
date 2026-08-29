@@ -30,6 +30,8 @@ import tempfile
 import shutil
 import ctypes
 import threading
+from datetime import datetime, timezone
+from cryptography.hazmat.primitives.asymmetric import utils as asymmetric_utils
 
 # Suppress deprecation warnings
 warnings.simplefilter("ignore", category=DeprecationWarning)
@@ -7036,6 +7038,21 @@ class TestLiveVideoVsiCapability(unittest.TestCase):
         finally:
             c2pa_module._LIVE_VIDEO_VSI_AVAILABLE = available
 
+    def test_callback_and_recovery_capabilities_are_independent(self):
+        callback_available = c2pa_module._LIVE_VIDEO_VSI_CALLBACK_AVAILABLE
+        recovery_available = c2pa_module._LIVE_VIDEO_VSI_RECOVERY_AVAILABLE
+        c2pa_module._LIVE_VIDEO_VSI_CALLBACK_AVAILABLE = False
+        c2pa_module._LIVE_VIDEO_VSI_RECOVERY_AVAILABLE = False
+        try:
+            with self.assertRaises(Error.NotSupported):
+                LiveVideoVsiSession.from_callback(
+                    {}, None, lambda *_: b"", SigningAlg.ES256,
+                    b"key", b"kid", 1, "2026-01-01T00:00:00Z", 60,
+                )
+        finally:
+            c2pa_module._LIVE_VIDEO_VSI_CALLBACK_AVAILABLE = callback_available
+            c2pa_module._LIVE_VIDEO_VSI_RECOVERY_AVAILABLE = recovery_available
+
 
 @unittest.skipUnless(
     has_live_video_vsi(),
@@ -7131,6 +7148,61 @@ class TestLiveVideoVsiSession(TestContextAPIs):
             3600,
         )
 
+    @staticmethod
+    def _es256_cose_key(private_key, kid):
+        numbers = private_key.public_key().public_numbers()
+        x = numbers.x.to_bytes(32, "big")
+        y = numbers.y.to_bytes(32, "big")
+        if len(kid) >= 24:
+            raise AssertionError("test kid must fit the one-byte CBOR length")
+        return b"".join((
+            b"\xa6",              # map(6)
+            b"\x01\x02",         # 1: kty EC2
+            b"\x02", bytes((0x40 + len(kid),)), kid,  # 2: kid
+            b"\x03\x26",         # 3: alg ES256 (-7)
+            b"\x20\x01",         # -1: crv P-256
+            b"\x21\x58\x20", x, # -2: x
+            b"\x22\x58\x20", y, # -3: y
+        ))
+
+    @staticmethod
+    def _next_media_sequence(media_segment, sequence_number):
+        media = bytearray(media_segment)
+        box_type = media.find(b"mfhd")
+        if box_type < 0:
+            raise AssertionError("media fixture has no mfhd")
+        sequence_offset = box_type + 8
+        media[sequence_offset:sequence_offset + 4] = sequence_number.to_bytes(
+            4, "big")
+        return bytes(media)
+
+    def _callback_session_material(self):
+        private_key = ec.generate_private_key(ec.SECP256R1())
+        kid = b"python-es256-vsi"
+        created_at = datetime.now(timezone.utc).isoformat().replace(
+            "+00:00", "Z")
+
+        def sign(tbs):
+            der = private_key.sign(tbs, ec.ECDSA(hashes.SHA256()))
+            r, s = asymmetric_utils.decode_dss_signature(der)
+            return r.to_bytes(32, "big") + s.to_bytes(32, "big")
+
+        return private_key, kid, created_at, sign
+
+    def _make_callback_session(self, context, callback, private_key, kid,
+                               created_at):
+        return LiveVideoVsiSession.from_callback(
+            self.live_manifest,
+            context,
+            callback,
+            SigningAlg.ES256,
+            self._es256_cose_key(private_key, kid),
+            kid,
+            1,
+            created_at,
+            3600,
+        )
+
     def test_create_context_manager_and_close(self):
         context = self._make_context()
         self.addCleanup(context.close)
@@ -7160,6 +7232,165 @@ class TestLiveVideoVsiSession(TestContextAPIs):
             self.assertIsInstance(signed_media, bytes)
             self.assertGreater(len(signed_media), len(self.media_segment))
             self.assertEqual(session.next_sequence_number, 2)
+
+    def test_callback_signs_explicit_purposes_and_sequences(self):
+        context = self._make_context()
+        self.addCleanup(context.close)
+        private_key, kid, created_at, sign = self._callback_session_material()
+        observations = []
+
+        def callback(purpose, sequence_number, sig_structure):
+            observations.append((purpose, sequence_number, sig_structure))
+            return sign(sig_structure)
+
+        with self._make_callback_session(
+            context, callback, private_key, kid, created_at,
+        ) as session:
+            self.assertEqual(observations, [])
+            session.sign_init_segment(self.init_segment)
+            session.sign_media_segment(self.media_segment)
+            self.assertEqual(
+                [(purpose, sequence) for purpose, sequence, _ in observations],
+                [("signer_binding", None), ("vsi", 1)],
+            )
+            self.assertTrue(all(tbs for _, _, tbs in observations))
+            self.assertEqual(session.next_sequence_number, 2)
+
+    def test_callback_exception_identity_and_state_are_preserved(self):
+        context = self._make_context()
+        self.addCleanup(context.close)
+        private_key, kid, created_at, _ = self._callback_session_material()
+
+        class CallbackFailure(RuntimeError):
+            pass
+
+        failure = CallbackFailure("remote authorization denied")
+
+        def callback(*_):
+            raise failure
+
+        with self._make_callback_session(
+            context, callback, private_key, kid, created_at,
+        ) as session:
+            with self.assertRaises(CallbackFailure) as raised:
+                session.sign_init_segment(self.init_segment)
+            self.assertIs(raised.exception, failure)
+            self.assertIsNone(session.active_manifest_id)
+            self.assertEqual(session.next_sequence_number, 1)
+
+    def test_callback_recovery_does_not_sign_and_resumes(self):
+        context = self._make_context()
+        self.addCleanup(context.close)
+        private_key, kid, created_at, sign = self._callback_session_material()
+
+        def callback(_, __, sig_structure):
+            return sign(sig_structure)
+
+        with self._make_callback_session(
+            context, callback, private_key, kid, created_at,
+        ) as first:
+            signed_init = first.sign_init_segment(self.init_segment)
+            signed_media = first.sign_media_segment(self.media_segment)
+
+        recovered_calls = []
+
+        def recovered_callback(purpose, sequence_number, sig_structure):
+            recovered_calls.append((purpose, sequence_number))
+            return sign(sig_structure)
+
+        with self._make_callback_session(
+            context, recovered_callback, private_key, kid, created_at,
+        ) as recovered:
+            recovered.restore(signed_init, signed_media)
+            self.assertEqual(recovered_calls, [])
+            self.assertEqual(recovered.next_sequence_number, 2)
+            recovered.sign_media_segment(
+                self._next_media_sequence(self.media_segment, 2))
+            self.assertEqual(recovered_calls, [("vsi", 2)])
+            self.assertEqual(recovered.next_sequence_number, 3)
+
+    def test_callback_init_only_and_failed_recovery_preserve_state(self):
+        context = self._make_context()
+        self.addCleanup(context.close)
+        private_key, kid, created_at, sign = self._callback_session_material()
+
+        def callback(_, __, sig_structure):
+            return sign(sig_structure)
+
+        with self._make_callback_session(
+            context, callback, private_key, kid, created_at,
+        ) as first:
+            signed_init = first.sign_init_segment(self.init_segment)
+            signed_media = first.sign_media_segment(self.media_segment)
+
+        recovered_calls = []
+
+        def recovered_callback(purpose, sequence_number, sig_structure):
+            recovered_calls.append((purpose, sequence_number))
+            return sign(sig_structure)
+
+        with self._make_callback_session(
+            context, recovered_callback, private_key, kid, created_at,
+        ) as init_only:
+            init_only.recover(signed_init)
+            self.assertEqual(recovered_calls, [])
+            self.assertEqual(init_only.next_sequence_number, 1)
+            self.assertIsNotNone(init_only.active_manifest_id)
+
+        tampered = signed_media[:-1] + bytes((signed_media[-1] ^ 1,))
+        with self._make_callback_session(
+            context, recovered_callback, private_key, kid, created_at,
+        ) as failed:
+            with self.assertRaises(Error):
+                failed.recover(signed_init, tampered)
+            self.assertEqual(recovered_calls, [])
+            self.assertEqual(failed.next_sequence_number, 1)
+            self.assertIsNone(failed.active_manifest_id)
+
+    def test_recovery_capability_is_checked_independently(self):
+        context = self._make_context()
+        self.addCleanup(context.close)
+        session = self._make_session(context)
+        self.addCleanup(session.close)
+        available = c2pa_module._LIVE_VIDEO_VSI_RECOVERY_AVAILABLE
+        c2pa_module._LIVE_VIDEO_VSI_RECOVERY_AVAILABLE = False
+        try:
+            with self.assertRaises(Error.NotSupported):
+                session.recover(b"signed-init")
+        finally:
+            c2pa_module._LIVE_VIDEO_VSI_RECOVERY_AVAILABLE = available
+
+    def test_callback_validates_inputs_and_signature_size(self):
+        context = self._make_context()
+        self.addCleanup(context.close)
+        private_key, kid, created_at, sign = self._callback_session_material()
+        cose_key = self._es256_cose_key(private_key, kid)
+        defaults = dict(
+            manifest_json=self.live_manifest,
+            context=context,
+            callback=lambda _, __, tbs: sign(tbs),
+            algorithm=SigningAlg.ES256,
+            public_cose_key=cose_key,
+            kid=kid,
+            min_sequence_number=1,
+            created_at=created_at,
+            validity_period_secs=3600,
+        )
+
+        with self.assertRaises(TypeError):
+            LiveVideoVsiSession.from_callback(**(defaults | {"callback": 1}))
+        with self.assertRaises(ValueError):
+            LiveVideoVsiSession.from_callback(
+                **(defaults | {"algorithm": SigningAlg.ES384}))
+        with self.assertRaises(ValueError):
+            LiveVideoVsiSession.from_callback(
+                **(defaults | {"public_cose_key": b""}))
+
+        with LiveVideoVsiSession.from_callback(
+            **(defaults | {"callback": lambda *_: b"short"})
+        ) as session:
+            with self.assertRaises(ValueError):
+                session.sign_init_segment(self.init_segment)
 
     def test_media_before_init_does_not_advance_or_free_output(self):
         context = self._make_context()
