@@ -42,6 +42,8 @@ from c2pa import (
     LiveVideoVsiSession,
     has_dynamic_assertions,
     has_live_video_vsi,
+    has_live_video_vsi_callbacks,
+    has_live_video_vsi_recovery,
 )
 from c2pa.c2pa import Stream, LifecycleState, ManagedResource, load_settings, create_signer, create_signer_from_info, ed25519_sign, format_embeddable, _get_mime_type_from_path, _encode_format, _format_ffi_arg
 import c2pa.c2pa as c2pa_module
@@ -7039,17 +7041,36 @@ class TestLiveVideoVsiCapability(unittest.TestCase):
             c2pa_module._LIVE_VIDEO_VSI_AVAILABLE = available
 
     def test_callback_and_recovery_capabilities_are_independent(self):
+        base_available = c2pa_module._LIVE_VIDEO_VSI_AVAILABLE
         callback_available = c2pa_module._LIVE_VIDEO_VSI_CALLBACK_AVAILABLE
         recovery_available = c2pa_module._LIVE_VIDEO_VSI_RECOVERY_AVAILABLE
-        c2pa_module._LIVE_VIDEO_VSI_CALLBACK_AVAILABLE = False
-        c2pa_module._LIVE_VIDEO_VSI_RECOVERY_AVAILABLE = False
         try:
+            c2pa_module._LIVE_VIDEO_VSI_AVAILABLE = True
+            c2pa_module._LIVE_VIDEO_VSI_CALLBACK_AVAILABLE = False
+            c2pa_module._LIVE_VIDEO_VSI_RECOVERY_AVAILABLE = True
+            self.assertFalse(has_live_video_vsi_callbacks())
+            self.assertTrue(has_live_video_vsi_recovery())
+
+            c2pa_module._LIVE_VIDEO_VSI_CALLBACK_AVAILABLE = True
+            c2pa_module._LIVE_VIDEO_VSI_RECOVERY_AVAILABLE = False
+            self.assertTrue(has_live_video_vsi_callbacks())
+            self.assertFalse(has_live_video_vsi_recovery())
+
+            c2pa_module._LIVE_VIDEO_VSI_AVAILABLE = False
+            c2pa_module._LIVE_VIDEO_VSI_CALLBACK_AVAILABLE = True
+            c2pa_module._LIVE_VIDEO_VSI_RECOVERY_AVAILABLE = True
+            self.assertFalse(has_live_video_vsi_callbacks())
+            self.assertFalse(has_live_video_vsi_recovery())
+
+            c2pa_module._LIVE_VIDEO_VSI_AVAILABLE = True
+            c2pa_module._LIVE_VIDEO_VSI_CALLBACK_AVAILABLE = False
             with self.assertRaises(Error.NotSupported):
                 LiveVideoVsiSession.from_callback(
                     {}, None, lambda *_: b"", SigningAlg.ES256,
                     b"key", b"kid", 1, "2026-01-01T00:00:00Z", 60,
                 )
         finally:
+            c2pa_module._LIVE_VIDEO_VSI_AVAILABLE = base_available
             c2pa_module._LIVE_VIDEO_VSI_CALLBACK_AVAILABLE = callback_available
             c2pa_module._LIVE_VIDEO_VSI_RECOVERY_AVAILABLE = recovery_available
 

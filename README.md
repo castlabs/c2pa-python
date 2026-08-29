@@ -110,7 +110,15 @@ To build a single-architecture library instead, set `C2PA_LIBS_PLATFORM` to a sp
 
 ## Live-video VSI signing
 
-`has_live_video_vsi()` reports whether the loaded native library contains the experimental API. When available, `LiveVideoVsiSession` signs initialization and media segment bytes using either a 32-byte local Ed25519 session-key seed or a purpose-aware Ed25519/ES256 callback suitable for non-exportable keys. Signed init and last-media artifacts can restore a callback-backed session without invoking the key. See [Using the Python library](docs/usage.md#live-video-vsi-signing).
+`has_live_video_vsi()` reports the base experimental API;
+`has_live_video_vsi_callbacks()` and `has_live_video_vsi_recovery()` report the
+base API together with the respective additive callback or artifact-recovery
+symbols. When available,
+`LiveVideoVsiSession` signs initialization and media segment bytes using either
+a 32-byte local Ed25519 session-key seed or a purpose-aware Ed25519/ES256
+callback suitable for non-exportable keys. Signed init and last-media artifacts
+can restore a callback-backed session without invoking the key. See
+[Using the Python library](docs/usage.md#live-video-vsi-signing).
 
 ## Dynamic assertions
 

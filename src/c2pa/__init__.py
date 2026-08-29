@@ -35,6 +35,8 @@ from .c2pa import (
     has_dynamic_assertions,
     has_fragmented_files,
     has_live_video_vsi,
+    has_live_video_vsi_callbacks,
+    has_live_video_vsi_recovery,
     sdk_version,
     load_settings
 )  # NOQA
@@ -58,6 +60,8 @@ __all__ = [
     'has_dynamic_assertions',
     'has_fragmented_files',
     'has_live_video_vsi',
+    'has_live_video_vsi_callbacks',
+    'has_live_video_vsi_recovery',
     'sdk_version',
     'load_settings'
 ]

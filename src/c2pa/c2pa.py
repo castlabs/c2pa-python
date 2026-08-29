@@ -2000,6 +2000,16 @@ def has_live_video_vsi() -> bool:
     return _LIVE_VIDEO_VSI_AVAILABLE
 
 
+def has_live_video_vsi_callbacks() -> bool:
+    """Return whether native VSI callback session signing is available."""
+    return _LIVE_VIDEO_VSI_AVAILABLE and _LIVE_VIDEO_VSI_CALLBACK_AVAILABLE
+
+
+def has_live_video_vsi_recovery() -> bool:
+    """Return whether native VSI artifact recovery is available."""
+    return _LIVE_VIDEO_VSI_AVAILABLE and _LIVE_VIDEO_VSI_RECOVERY_AVAILABLE
+
+
 def has_dynamic_assertions() -> bool:
     """Return whether the loaded native library supports dynamic assertions."""
     return _DYNAMIC_ASSERTIONS_AVAILABLE
@@ -2149,10 +2159,7 @@ class LiveVideoVsiSession(ManagedResource):
         producing output or advancing state. Calls on one session must remain
         externally serialized.
         """
-        if not (
-            _LIVE_VIDEO_VSI_AVAILABLE
-            and _LIVE_VIDEO_VSI_CALLBACK_AVAILABLE
-        ):
+        if not has_live_video_vsi_callbacks():
             raise C2paError.NotSupported(
                 "Live-video VSI callback signing is unavailable in the loaded "
                 "native library; use a c2pa-c-ffi build with callback VSI support"
@@ -2422,7 +2429,7 @@ class LiveVideoVsiSession(ManagedResource):
         session signing callback.
         """
         self._ensure_valid_state()
-        if not _LIVE_VIDEO_VSI_RECOVERY_AVAILABLE:
+        if not has_live_video_vsi_recovery():
             raise C2paError.NotSupported(
                 "Live-video VSI recovery is unavailable in the loaded native library"
             )
@@ -5214,8 +5221,12 @@ __all__ = [
     'Reader',
     'Builder',
     'Signer',
+    'LiveVideoVsiSession',
     'has_dynamic_assertions',
     'has_fragmented_files',
+    'has_live_video_vsi',
+    'has_live_video_vsi_callbacks',
+    'has_live_video_vsi_recovery',
     'load_settings',
     'format_embeddable',
     'version',

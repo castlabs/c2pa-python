@@ -211,7 +211,15 @@ an explicit purpose and sequence; it returns a 64-byte raw signature (ES256
 uses P1363 `r || s`, not DER):
 
 ```py
-from c2pa import C2paSigningAlg, LiveVideoVsiSession
+from c2pa import (
+    C2paSigningAlg,
+    LiveVideoVsiSession,
+    has_live_video_vsi_callbacks,
+    has_live_video_vsi_recovery,
+)
+
+if not has_live_video_vsi_callbacks():
+    raise RuntimeError("loaded native library has no VSI callback support")
 
 def sign_vsi(purpose, sequence_number, sig_structure):
     # purpose is "signer_binding" (sequence None) or "vsi" (uint32 sequence)
@@ -240,6 +248,8 @@ To resume after a process restart, construct the session with the same key
 metadata/handle and recover from published artifacts:
 
 ```py
+if not has_live_video_vsi_recovery():
+    raise RuntimeError("loaded native library has no VSI recovery support")
 session.recover(signed_init, last_committed_signed_media)
 # `restore` is an alias of `recover`.
 ```
