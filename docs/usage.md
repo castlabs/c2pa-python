@@ -179,6 +179,25 @@ Dynamic callbacks and their error state follow the signer into a `Context` when 
 
 The experimental `LiveVideoVsiSession` API signs C2PA 2.4 Verifiable Segment Info directly from initialization and media segment bytes. It requires a native library built with `unstable_live_video` and an active `Context` that consumed an explicit manifest `Signer`.
 
+The additive MFHD probe can inspect segment ordering without creating or
+owning a session:
+
+```py
+from c2pa import has_live_video_vsi_mfhd_probe, moof_sequence_number
+
+if not has_live_video_vsi_mfhd_probe():
+    raise RuntimeError("loaded native library has no MFHD probe")
+
+sequence_number = moof_sequence_number(media_bytes)
+```
+
+The probe accepts non-empty `bytes` and returns the unsigned 32-bit
+`moof/mfhd.sequence_number`; zero is valid. Malformed input, a missing `moof`,
+or an ambiguous multi-track layout raises the native typed `C2paError`. Its
+capability is independent of the base, callback, recovery, and explicit-time
+VSI APIs, so older native libraries keep all VSI features they already expose
+while this function raises `C2paError.NotSupported`.
+
 ```py
 from c2pa import (
     Context,

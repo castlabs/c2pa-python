@@ -37,7 +37,9 @@ from .c2pa import (
     has_live_video_vsi,
     has_live_video_vsi_callbacks,
     has_live_video_vsi_explicit_time,
+    has_live_video_vsi_mfhd_probe,
     has_live_video_vsi_recovery,
+    moof_sequence_number,
     sdk_version,
     load_settings
 )  # NOQA
@@ -63,7 +65,9 @@ __all__ = [
     'has_live_video_vsi',
     'has_live_video_vsi_callbacks',
     'has_live_video_vsi_explicit_time',
+    'has_live_video_vsi_mfhd_probe',
     'has_live_video_vsi_recovery',
+    'moof_sequence_number',
     'sdk_version',
     'load_settings'
 ]

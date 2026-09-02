@@ -44,7 +44,9 @@ from c2pa import (
     has_live_video_vsi,
     has_live_video_vsi_callbacks,
     has_live_video_vsi_explicit_time,
+    has_live_video_vsi_mfhd_probe,
     has_live_video_vsi_recovery,
+    moof_sequence_number,
 )
 from c2pa.c2pa import Stream, LifecycleState, ManagedResource, load_settings, create_signer, create_signer_from_info, ed25519_sign, format_embeddable, _get_mime_type_from_path, _encode_format, _format_ffi_arg
 import c2pa.c2pa as c2pa_module
@@ -7128,6 +7130,175 @@ class TestLiveVideoVsiCapability(unittest.TestCase):
             c2pa_module._LIVE_VIDEO_VSI_AVAILABLE = base_available
             c2pa_module._LIVE_VIDEO_VSI_CALLBACK_AVAILABLE = callback_available
             c2pa_module._LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE = explicit_available
+
+
+class TestLiveVideoVsiMfhdProbe(unittest.TestCase):
+
+    @staticmethod
+    def _box(box_type, payload=b""):
+        return (8 + len(payload)).to_bytes(4, "big") + box_type + payload
+
+    @classmethod
+    def _media_segment(cls, sequence_number):
+        mfhd = cls._box(
+            b"mfhd", b"\0\0\0\0" + sequence_number.to_bytes(4, "big")
+        )
+        return cls._box(b"moof", mfhd + cls._box(b"traf"))
+
+    def test_capability_is_independent_of_other_vsi_capabilities(self):
+        self.assertNotIn(
+            "c2pa_live_video_moof_sequence_number",
+            c2pa_module._LIVE_VIDEO_VSI_FUNCTIONS,
+        )
+        self.assertNotIn(
+            "c2pa_live_video_moof_sequence_number",
+            c2pa_module._LIVE_VIDEO_VSI_CALLBACK_FUNCTIONS,
+        )
+        self.assertNotIn(
+            "c2pa_live_video_moof_sequence_number",
+            c2pa_module._LIVE_VIDEO_VSI_RECOVERY_FUNCTIONS,
+        )
+        self.assertNotIn(
+            "c2pa_live_video_moof_sequence_number",
+            c2pa_module._LIVE_VIDEO_VSI_EXPLICIT_TIME_FUNCTIONS,
+        )
+
+        base_available = c2pa_module._LIVE_VIDEO_VSI_AVAILABLE
+        probe_available = c2pa_module._LIVE_VIDEO_VSI_MFHD_PROBE_AVAILABLE
+        try:
+            c2pa_module._LIVE_VIDEO_VSI_AVAILABLE = False
+            c2pa_module._LIVE_VIDEO_VSI_MFHD_PROBE_AVAILABLE = True
+            self.assertFalse(has_live_video_vsi())
+            self.assertTrue(has_live_video_vsi_mfhd_probe())
+        finally:
+            c2pa_module._LIVE_VIDEO_VSI_AVAILABLE = base_available
+            c2pa_module._LIVE_VIDEO_VSI_MFHD_PROBE_AVAILABLE = probe_available
+
+    def test_old_native_rejects_probe_without_disabling_other_vsi_apis(self):
+        base_available = c2pa_module._LIVE_VIDEO_VSI_AVAILABLE
+        callback_available = c2pa_module._LIVE_VIDEO_VSI_CALLBACK_AVAILABLE
+        recovery_available = c2pa_module._LIVE_VIDEO_VSI_RECOVERY_AVAILABLE
+        explicit_available = c2pa_module._LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE
+        probe_available = c2pa_module._LIVE_VIDEO_VSI_MFHD_PROBE_AVAILABLE
+        try:
+            c2pa_module._LIVE_VIDEO_VSI_AVAILABLE = True
+            c2pa_module._LIVE_VIDEO_VSI_CALLBACK_AVAILABLE = True
+            c2pa_module._LIVE_VIDEO_VSI_RECOVERY_AVAILABLE = True
+            c2pa_module._LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE = True
+            c2pa_module._LIVE_VIDEO_VSI_MFHD_PROBE_AVAILABLE = False
+            self.assertTrue(has_live_video_vsi())
+            self.assertTrue(has_live_video_vsi_callbacks())
+            self.assertTrue(has_live_video_vsi_recovery())
+            self.assertTrue(has_live_video_vsi_explicit_time())
+            self.assertFalse(has_live_video_vsi_mfhd_probe())
+            with self.assertRaises(Error.NotSupported):
+                moof_sequence_number(self._media_segment(1))
+        finally:
+            c2pa_module._LIVE_VIDEO_VSI_AVAILABLE = base_available
+            c2pa_module._LIVE_VIDEO_VSI_CALLBACK_AVAILABLE = callback_available
+            c2pa_module._LIVE_VIDEO_VSI_RECOVERY_AVAILABLE = recovery_available
+            c2pa_module._LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE = explicit_available
+            c2pa_module._LIVE_VIDEO_VSI_MFHD_PROBE_AVAILABLE = probe_available
+
+    def test_input_validation_occurs_before_native_call(self):
+        if not has_live_video_vsi_mfhd_probe():
+            self.skipTest("native library does not provide the mfhd probe")
+        native_call = c2pa_module._lib.c2pa_live_video_moof_sequence_number
+        calls = []
+
+        def unexpected_call(*args):
+            calls.append(args)
+            return 0
+
+        c2pa_module._lib.c2pa_live_video_moof_sequence_number = unexpected_call
+        try:
+            for value in (None, bytearray(b"x"), memoryview(b"x"), "x"):
+                with self.subTest(value=type(value).__name__):
+                    with self.assertRaises(TypeError):
+                        moof_sequence_number(value)
+            with self.assertRaises(ValueError):
+                moof_sequence_number(b"")
+            self.assertEqual(calls, [])
+        finally:
+            c2pa_module._lib.c2pa_live_video_moof_sequence_number = native_call
+
+    def test_native_output_and_status_are_honored(self):
+        if not has_live_video_vsi_mfhd_probe():
+            self.skipTest("native library does not provide the mfhd probe")
+        native_call = c2pa_module._lib.c2pa_live_video_moof_sequence_number
+        read_error = c2pa_module._read_native_error
+
+        def succeed(_media, size, output):
+            self.assertGreater(size, 0)
+            output._obj.value = 0
+            return 0
+
+        try:
+            c2pa_module._lib.c2pa_live_video_moof_sequence_number = succeed
+            self.assertEqual(moof_sequence_number(b"synthetic"), 0)
+
+            c2pa_module._lib.c2pa_live_video_moof_sequence_number = (
+                lambda *_: -1
+            )
+            c2pa_module._read_native_error = lambda: "Other: probe failed"
+            with self.assertRaises(Error.Other):
+                moof_sequence_number(b"synthetic")
+        finally:
+            c2pa_module._lib.c2pa_live_video_moof_sequence_number = native_call
+            c2pa_module._read_native_error = read_error
+
+    @unittest.skipUnless(
+        has_live_video_vsi_mfhd_probe(),
+        "native library does not provide the mfhd probe",
+    )
+    def test_real_and_synthetic_media_segments(self):
+        with open(os.path.join(FIXTURES_DIR, "dash1.m4s"), "rb") as file:
+            fixture_sequence = moof_sequence_number(file.read())
+        self.assertGreater(fixture_sequence, 0)
+        self.assertEqual(moof_sequence_number(self._media_segment(37)), 37)
+        self.assertEqual(moof_sequence_number(self._media_segment(0)), 0)
+
+    @unittest.skipUnless(
+        has_live_video_vsi_mfhd_probe(),
+        "native library does not provide the mfhd probe",
+    )
+    def test_malformed_and_ambiguous_segments_raise_native_error(self):
+        valid = self._media_segment(1)
+        mfhd = self._box(b"mfhd", b"\0\0\0\0\0\0\0\1")
+        multi_track = self._box(
+            b"moof", mfhd + self._box(b"traf") + self._box(b"traf")
+        )
+        for media in (
+            b"not bmff", self._box(b"mdat"), valid + valid, multi_track
+        ):
+            with self.subTest(media=media[:16]):
+                with self.assertRaises(Error.Other) as error:
+                    moof_sequence_number(media)
+                self.assertIn("exactly one moof/traf", str(error.exception))
+
+    def test_package_exports(self):
+        import c2pa
+
+        self.assertIs(c2pa.has_live_video_vsi_mfhd_probe,
+                      has_live_video_vsi_mfhd_probe)
+        self.assertIs(c2pa.moof_sequence_number, moof_sequence_number)
+        self.assertIn("has_live_video_vsi_mfhd_probe", c2pa.__all__)
+        self.assertIn("moof_sequence_number", c2pa.__all__)
+        self.assertIn("has_live_video_vsi_mfhd_probe", c2pa_module.__all__)
+        self.assertIn("moof_sequence_number", c2pa_module.__all__)
+
+    @unittest.skipUnless(
+        has_live_video_vsi_mfhd_probe(),
+        "native library does not provide the mfhd probe",
+    )
+    def test_ctypes_prototype_matches_native_contract(self):
+        function = c2pa_module._lib.c2pa_live_video_moof_sequence_number
+        self.assertEqual(function.argtypes, [
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_uint32),
+        ])
+        self.assertIs(function.restype, ctypes.c_int)
 
 
 @unittest.skipUnless(

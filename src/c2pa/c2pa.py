@@ -121,6 +121,9 @@ _LIVE_VIDEO_VSI_RECOVERY_FUNCTIONS = (
 _LIVE_VIDEO_VSI_EXPLICIT_TIME_FUNCTIONS = (
     'c2pa_live_video_vsi_signer_sign_media_segment_at',
 )
+_LIVE_VIDEO_VSI_MFHD_PROBE_FUNCTIONS = (
+    'c2pa_live_video_moof_sequence_number',
+)
 
 # Castlabs dynamic-assertion extension. Keep this optional so the package can
 # still be imported with standard upstream native libraries.
@@ -215,6 +218,9 @@ _LIVE_VIDEO_VSI_RECOVERY_AVAILABLE = all(
 )
 _LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE = all(
     hasattr(_lib, name) for name in _LIVE_VIDEO_VSI_EXPLICIT_TIME_FUNCTIONS
+)
+_LIVE_VIDEO_VSI_MFHD_PROBE_AVAILABLE = all(
+    hasattr(_lib, name) for name in _LIVE_VIDEO_VSI_MFHD_PROBE_FUNCTIONS
 )
 _DYNAMIC_ASSERTIONS_AVAILABLE = all(
     hasattr(_lib, name) for name in _DYNAMIC_ASSERTION_FUNCTIONS
@@ -1256,6 +1262,14 @@ if _LIVE_VIDEO_VSI_RECOVERY_AVAILABLE:
          ctypes.c_char_p],
         ctypes.c_int
     )
+if _LIVE_VIDEO_VSI_MFHD_PROBE_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_live_video_moof_sequence_number,
+        [ctypes.POINTER(ctypes.c_uint8),
+         ctypes.c_size_t,
+         ctypes.POINTER(ctypes.c_uint32)],
+        ctypes.c_int
+    )
 
 
 class C2paError(Exception):
@@ -2029,6 +2043,41 @@ def has_live_video_vsi_recovery() -> bool:
 def has_live_video_vsi_explicit_time() -> bool:
     """Return whether native VSI signing accepts an explicit clock."""
     return _LIVE_VIDEO_VSI_AVAILABLE and _LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE
+
+
+def has_live_video_vsi_mfhd_probe() -> bool:
+    """Return whether the native BMFF ``moof/mfhd`` probe is available."""
+    return _LIVE_VIDEO_VSI_MFHD_PROBE_AVAILABLE
+
+
+def moof_sequence_number(media_segment: bytes) -> int:
+    """Read the unsigned ``moof/mfhd.sequence_number`` from a media segment.
+
+    The segment must contain exactly one ``moof`` with one ``traf`` and a valid
+    ``mfhd``. This stateless probe does not create or mutate a VSI session.
+    """
+    if not has_live_video_vsi_mfhd_probe():
+        raise C2paError.NotSupported(
+            "Live-video VSI mfhd probing is unavailable in the loaded native "
+            "library"
+        )
+    if not isinstance(media_segment, bytes):
+        raise TypeError("media_segment must be bytes")
+    if not media_segment:
+        raise ValueError("media_segment must not be empty")
+
+    media_array = (ctypes.c_uint8 * len(media_segment)).from_buffer_copy(
+        media_segment
+    )
+    sequence_number = ctypes.c_uint32()
+    _check_ffi_operation_result(
+        _lib.c2pa_live_video_moof_sequence_number(
+            media_array, len(media_segment), ctypes.byref(sequence_number)
+        ),
+        "Failed to read moof/mfhd sequence number: {}",
+        check=lambda result: result != 0,
+    )
+    return sequence_number.value
 
 
 def has_dynamic_assertions() -> bool:
@@ -5328,7 +5377,9 @@ __all__ = [
     'has_live_video_vsi',
     'has_live_video_vsi_callbacks',
     'has_live_video_vsi_explicit_time',
+    'has_live_video_vsi_mfhd_probe',
     'has_live_video_vsi_recovery',
+    'moof_sequence_number',
     'load_settings',
     'format_embeddable',
     'version',
