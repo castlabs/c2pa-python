@@ -43,6 +43,7 @@ from c2pa import (
     has_dynamic_assertions,
     has_live_video_vsi,
     has_live_video_vsi_callbacks,
+    has_live_video_vsi_explicit_time,
     has_live_video_vsi_recovery,
 )
 from c2pa.c2pa import Stream, LifecycleState, ManagedResource, load_settings, create_signer, create_signer_from_info, ed25519_sign, format_embeddable, _get_mime_type_from_path, _encode_format, _format_ffi_arg
@@ -7074,6 +7075,60 @@ class TestLiveVideoVsiCapability(unittest.TestCase):
             c2pa_module._LIVE_VIDEO_VSI_CALLBACK_AVAILABLE = callback_available
             c2pa_module._LIVE_VIDEO_VSI_RECOVERY_AVAILABLE = recovery_available
 
+    def test_explicit_time_capability_is_independent_of_base_symbols(self):
+        self.assertNotIn(
+            "c2pa_live_video_vsi_signer_sign_media_segment_at",
+            c2pa_module._LIVE_VIDEO_VSI_FUNCTIONS,
+        )
+        base_available = c2pa_module._LIVE_VIDEO_VSI_AVAILABLE
+        explicit_time_available = (
+            c2pa_module._LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE
+        )
+        try:
+            c2pa_module._LIVE_VIDEO_VSI_AVAILABLE = True
+            c2pa_module._LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE = False
+            self.assertTrue(has_live_video_vsi())
+            self.assertFalse(has_live_video_vsi_explicit_time())
+
+            c2pa_module._LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE = True
+            self.assertTrue(has_live_video_vsi())
+            self.assertTrue(has_live_video_vsi_explicit_time())
+
+            c2pa_module._LIVE_VIDEO_VSI_AVAILABLE = False
+            self.assertFalse(has_live_video_vsi())
+            self.assertFalse(has_live_video_vsi_explicit_time())
+        finally:
+            c2pa_module._LIVE_VIDEO_VSI_AVAILABLE = base_available
+            c2pa_module._LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE = (
+                explicit_time_available
+            )
+
+    def test_old_native_rejects_clock_before_constructor_side_effects(self):
+        base_available = c2pa_module._LIVE_VIDEO_VSI_AVAILABLE
+        callback_available = c2pa_module._LIVE_VIDEO_VSI_CALLBACK_AVAILABLE
+        explicit_available = c2pa_module._LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE
+        try:
+            c2pa_module._LIVE_VIDEO_VSI_AVAILABLE = True
+            c2pa_module._LIVE_VIDEO_VSI_CALLBACK_AVAILABLE = True
+            c2pa_module._LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE = False
+            with self.assertRaises(Error.NotSupported) as local_error:
+                LiveVideoVsiSession(
+                    {}, None, b"s" * 32, b"kid", 1, 60, clock=lambda: 0,
+                )
+            self.assertIn("Explicit-time", str(local_error.exception))
+
+            with self.assertRaises(Error.NotSupported) as callback_error:
+                LiveVideoVsiSession.from_callback(
+                    {}, None, lambda *_: b"", SigningAlg.ES256,
+                    b"key", b"kid", 1, "2026-01-01T00:00:00Z", 60,
+                    clock=lambda: 0,
+                )
+            self.assertIn("Explicit-time", str(callback_error.exception))
+        finally:
+            c2pa_module._LIVE_VIDEO_VSI_AVAILABLE = base_available
+            c2pa_module._LIVE_VIDEO_VSI_CALLBACK_AVAILABLE = callback_available
+            c2pa_module._LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE = explicit_available
+
 
 @unittest.skipUnless(
     has_live_video_vsi(),
@@ -7159,7 +7214,7 @@ class TestLiveVideoVsiSession(TestContextAPIs):
         finally:
             settings.close()
 
-    def _make_session(self, context):
+    def _make_session(self, context, *, clock=None):
         return LiveVideoVsiSession(
             self.live_manifest,
             context,
@@ -7167,6 +7222,7 @@ class TestLiveVideoVsiSession(TestContextAPIs):
             b"python-vsi-session-key",
             1,
             3600,
+            clock=clock,
         )
 
     @staticmethod
@@ -7211,7 +7267,7 @@ class TestLiveVideoVsiSession(TestContextAPIs):
         return private_key, kid, created_at, sign
 
     def _make_callback_session(self, context, callback, private_key, kid,
-                               created_at):
+                               created_at, *, clock=None):
         return LiveVideoVsiSession.from_callback(
             self.live_manifest,
             context,
@@ -7222,6 +7278,7 @@ class TestLiveVideoVsiSession(TestContextAPIs):
             1,
             created_at,
             3600,
+            clock=clock,
         )
 
     def test_create_context_manager_and_close(self):
@@ -7276,6 +7333,163 @@ class TestLiveVideoVsiSession(TestContextAPIs):
             )
             self.assertTrue(all(tbs for _, _, tbs in observations))
             self.assertEqual(session.next_sequence_number, 2)
+
+    @unittest.skipUnless(
+        has_live_video_vsi_explicit_time(),
+        "native library does not provide explicit-time VSI signing",
+    )
+    def test_local_clock_is_called_once_for_media_signing(self):
+        context = self._make_context()
+        self.addCleanup(context.close)
+        calls = []
+
+        def clock():
+            calls.append(None)
+            return int(datetime.now(timezone.utc).timestamp())
+
+        with self._make_session(context, clock=clock) as session:
+            session.sign_init_segment(self.init_segment)
+            session.sign_media_segment(self.media_segment)
+            self.assertEqual(calls, [None])
+            self.assertEqual(session.next_sequence_number, 2)
+
+    @unittest.skipUnless(
+        has_live_video_vsi_explicit_time(),
+        "native library does not provide explicit-time VSI signing",
+    )
+    def test_callback_clock_sets_protected_iat_and_is_called_once(self):
+        context = self._make_context()
+        self.addCleanup(context.close)
+        private_key, kid, _, sign = self._callback_session_material()
+        signing_time = 1_577_836_830
+        clock_calls = []
+        observations = []
+
+        def clock():
+            clock_calls.append(None)
+            return signing_time
+
+        def callback(purpose, sequence_number, sig_structure):
+            observations.append((purpose, sequence_number, sig_structure))
+            return sign(sig_structure)
+
+        with self._make_callback_session(
+            context,
+            callback,
+            private_key,
+            kid,
+            "2020-01-01T00:00:00Z",
+            clock=clock,
+        ) as session:
+            session.sign_init_segment(self.init_segment)
+            session.sign_media_segment(self.media_segment)
+
+        self.assertEqual(clock_calls, [None])
+        self.assertEqual(len(observations), 2)
+        purpose, sequence, vsi_tbs = observations[1]
+        self.assertEqual((purpose, sequence), ("vsi", 1))
+        self.assertEqual(vsi_tbs[:12], b"\x84\x6aSignature1")
+        protected_header = vsi_tbs[12]
+        self.assertEqual(protected_header >> 5, 2)
+        additional = protected_header & 0x1f
+        if additional < 24:
+            protected_length, protected_start = additional, 13
+        elif additional == 24:
+            protected_length, protected_start = vsi_tbs[13], 14
+        else:
+            self.fail("unexpected protected-header length encoding")
+        encoded_iat = b"\x63iat\x1a" + signing_time.to_bytes(4, "big")
+        self.assertIn(
+            encoded_iat,
+            vsi_tbs[protected_start:protected_start + protected_length],
+        )
+
+    @unittest.skipUnless(
+        has_live_video_vsi_explicit_time(),
+        "native library does not provide explicit-time VSI signing",
+    )
+    def test_invalid_clock_results_and_exception_preserve_state(self):
+        context = self._make_context()
+        self.addCleanup(context.close)
+
+        for value, error_type in (
+            (True, TypeError),
+            (1.0, TypeError),
+            (-(2**63) - 1, ValueError),
+            (2**63, ValueError),
+        ):
+            with self.subTest(value=value):
+                with self._make_session(
+                    context, clock=lambda value=value: value,
+                ) as session:
+                    session.sign_init_segment(self.init_segment)
+                    with self.assertRaises(error_type):
+                        session.sign_media_segment(self.media_segment)
+                    self.assertEqual(session.next_sequence_number, 1)
+
+        failure = RuntimeError("clock unavailable")
+
+        def failing_clock():
+            raise failure
+
+        with self._make_session(context, clock=failing_clock) as session:
+            session.sign_init_segment(self.init_segment)
+            with self.assertRaises(RuntimeError) as raised:
+                session.sign_media_segment(self.media_segment)
+            self.assertIs(raised.exception, failure)
+            self.assertEqual(session.next_sequence_number, 1)
+
+        private_key, kid, created_at, sign = self._callback_session_material()
+        callback_calls = []
+
+        def callback(_, __, sig_structure):
+            callback_calls.append(None)
+            return sign(sig_structure)
+
+        with self._make_callback_session(
+            context,
+            callback,
+            private_key,
+            kid,
+            created_at,
+            clock=failing_clock,
+        ) as session:
+            session.sign_init_segment(self.init_segment)
+            callback_calls.clear()
+            with self.assertRaises(RuntimeError) as raised:
+                session.sign_media_segment(self.media_segment)
+            self.assertIs(raised.exception, failure)
+            self.assertEqual(callback_calls, [])
+            self.assertEqual(session.next_sequence_number, 1)
+
+    @unittest.skipUnless(
+        has_live_video_vsi_explicit_time(),
+        "native library does not provide explicit-time VSI signing",
+    )
+    def test_callback_clock_is_pinned_until_session_close(self):
+        import weakref
+
+        context = self._make_context()
+        self.addCleanup(context.close)
+        private_key, kid, created_at, sign = self._callback_session_material()
+
+        def callback(_, __, sig_structure):
+            return sign(sig_structure)
+
+        def clock():
+            return int(datetime.now(timezone.utc).timestamp())
+
+        clock_ref = weakref.ref(clock)
+        session = self._make_callback_session(
+            context, callback, private_key, kid, created_at, clock=clock,
+        )
+        self.addCleanup(session.close)
+        del clock
+        gc.collect()
+        self.assertIsNotNone(clock_ref())
+        session.close()
+        gc.collect()
+        self.assertIsNone(clock_ref())
 
     def test_callback_exception_identity_and_state_are_preserved(self):
         context = self._make_context()
@@ -7461,6 +7675,8 @@ class TestLiveVideoVsiSession(TestContextAPIs):
         assert_invalid(TypeError, validity_period_secs=1.0)
         assert_invalid(ValueError, validity_period_secs=0)
         assert_invalid(ValueError, validity_period_secs=2**64)
+        if has_live_video_vsi_explicit_time():
+            assert_invalid(TypeError, clock=1)
 
     def test_constructor_validates_manifest_and_context(self):
         context = self._make_context()

@@ -111,9 +111,10 @@ To build a single-architecture library instead, set `C2PA_LIBS_PLATFORM` to a sp
 ## Live-video VSI signing
 
 `has_live_video_vsi()` reports the base experimental API;
-`has_live_video_vsi_callbacks()` and `has_live_video_vsi_recovery()` report the
-base API together with the respective additive callback or artifact-recovery
-symbols. When available,
+`has_live_video_vsi_callbacks()`, `has_live_video_vsi_recovery()`, and
+`has_live_video_vsi_explicit_time()` report the base API together with the
+respective additive callback, artifact-recovery, or explicit-time symbol. When
+available,
 `LiveVideoVsiSession` signs initialization and media segment bytes using either
 a 32-byte local Ed25519 session-key seed or a purpose-aware Ed25519/ES256
 callback suitable for non-exportable keys. Signed init and last-media artifacts

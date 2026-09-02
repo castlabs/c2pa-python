@@ -71,7 +71,8 @@ classDiagram
     }
 
     class LiveVideoVsiSession {
-        +from_callback(manifest, context, callback, algorithm, key, kid, ...) LiveVideoVsiSession$
+        +LiveVideoVsiSession(manifest, context, seed, kid, ..., clock=None)
+        +from_callback(manifest, context, callback, algorithm, key, kid, ..., clock=None) LiveVideoVsiSession$
         +sign_init_segment(bytes, format) bytes
         +sign_media_segment(bytes) bytes
         +recover(signed_init, previous_media, format)
@@ -131,10 +132,15 @@ classDiagram
         ...
     }
 
+    class Callable {
+        <<Python callable>>
+    }
+
     ContextProvider <|-- Context : extends
     Settings --> Context : optional input
     Signer --> Context : optional, consumed
     Context --> LiveVideoVsiSession : borrowed with signer
+    LiveVideoVsiSession --> Callable : pins optional clock
     C2paSignerInfo --> Signer : creates via from_info
     C2paSigningAlg --> C2paSignerInfo : alg field
     C2paSigningAlg --> Signer : from_callback alg

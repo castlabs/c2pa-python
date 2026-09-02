@@ -36,6 +36,7 @@ from .c2pa import (
     has_fragmented_files,
     has_live_video_vsi,
     has_live_video_vsi_callbacks,
+    has_live_video_vsi_explicit_time,
     has_live_video_vsi_recovery,
     sdk_version,
     load_settings
@@ -61,6 +62,7 @@ __all__ = [
     'has_fragmented_files',
     'has_live_video_vsi',
     'has_live_video_vsi_callbacks',
+    'has_live_video_vsi_explicit_time',
     'has_live_video_vsi_recovery',
     'sdk_version',
     'load_settings'

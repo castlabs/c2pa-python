@@ -118,6 +118,9 @@ _LIVE_VIDEO_VSI_CALLBACK_FUNCTIONS = (
 _LIVE_VIDEO_VSI_RECOVERY_FUNCTIONS = (
     'c2pa_live_video_vsi_signer_recover',
 )
+_LIVE_VIDEO_VSI_EXPLICIT_TIME_FUNCTIONS = (
+    'c2pa_live_video_vsi_signer_sign_media_segment_at',
+)
 
 # Castlabs dynamic-assertion extension. Keep this optional so the package can
 # still be imported with standard upstream native libraries.
@@ -209,6 +212,9 @@ _LIVE_VIDEO_VSI_CALLBACK_AVAILABLE = all(
 )
 _LIVE_VIDEO_VSI_RECOVERY_AVAILABLE = all(
     hasattr(_lib, name) for name in _LIVE_VIDEO_VSI_RECOVERY_FUNCTIONS
+)
+_LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE = all(
+    hasattr(_lib, name) for name in _LIVE_VIDEO_VSI_EXPLICIT_TIME_FUNCTIONS
 )
 _DYNAMIC_ASSERTIONS_AVAILABLE = all(
     hasattr(_lib, name) for name in _DYNAMIC_ASSERTION_FUNCTIONS
@@ -1200,6 +1206,16 @@ if _LIVE_VIDEO_VSI_AVAILABLE:
          ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
         ctypes.c_int64
     )
+    if _LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE:
+        _setup_function(
+            _lib.c2pa_live_video_vsi_signer_sign_media_segment_at,
+            [ctypes.POINTER(C2paLiveVideoVsiSigner),
+             ctypes.POINTER(ctypes.c_ubyte),
+             ctypes.c_size_t,
+             ctypes.c_int64,
+             ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
+            ctypes.c_int64
+        )
     _setup_function(
         _lib.c2pa_live_video_vsi_signer_next_sequence_number,
         [ctypes.POINTER(C2paLiveVideoVsiSigner),
@@ -2010,6 +2026,11 @@ def has_live_video_vsi_recovery() -> bool:
     return _LIVE_VIDEO_VSI_AVAILABLE and _LIVE_VIDEO_VSI_RECOVERY_AVAILABLE
 
 
+def has_live_video_vsi_explicit_time() -> bool:
+    """Return whether native VSI signing accepts an explicit clock."""
+    return _LIVE_VIDEO_VSI_AVAILABLE and _LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE
+
+
 def has_dynamic_assertions() -> bool:
     """Return whether the loaded native library supports dynamic assertions."""
     return _DYNAMIC_ASSERTIONS_AVAILABLE
@@ -2044,6 +2065,8 @@ class LiveVideoVsiSession(ManagedResource):
         kid: bytes,
         min_sequence_number: int,
         validity_period_secs: int,
+        *,
+        clock: Optional[Callable[[], int]] = None,
     ):
         """Create a live-video VSI signing session.
 
@@ -2056,6 +2079,8 @@ class LiveVideoVsiSession(ManagedResource):
                 ``2**32 - 1``).
             validity_period_secs: Session-key validity in seconds (1 through
                 ``2**64 - 1``).
+            clock: Optional callable returning the media signing time as signed
+                64-bit Unix seconds.
 
         The caller retains ownership of ``context``. The session keeps the
         Context and any Python signer callback alive but never closes them.
@@ -2068,6 +2093,7 @@ class LiveVideoVsiSession(ManagedResource):
                 "Live-video VSI is unavailable in the loaded native library; "
                 "build c2pa-c-ffi with the unstable_live_video feature"
             )
+        self._validate_clock_support(clock)
         if not isinstance(manifest_json, (str, dict)):
             raise TypeError("manifest_json must be a str or dict")
         manifest_bytes = _to_utf8_bytes(manifest_json, "live-video manifest JSON")
@@ -2120,6 +2146,7 @@ class LiveVideoVsiSession(ManagedResource):
         self._context = context
         self._signer_callback_cb = context._signer_callback_cb
         self._dynamic_assertion_cbs = list(context._dynamic_assertion_cbs)
+        self._clock = clock
         self._create_and_activate(
             lambda: _lib.c2pa_live_video_vsi_signer_create_ed25519(
                 context.execution_context,
@@ -2146,6 +2173,8 @@ class LiveVideoVsiSession(ManagedResource):
         min_sequence_number: int,
         created_at: str,
         validity_period_secs: int,
+        *,
+        clock: Optional[Callable[[], int]] = None,
     ) -> 'LiveVideoVsiSession':
         """Create a VSI session backed by a synchronous signing callback.
 
@@ -2157,13 +2186,15 @@ class LiveVideoVsiSession(ManagedResource):
         The callback receives the exact final COSE Sig_structure. Native code
         verifies every returned signature against ``public_cose_key`` before
         producing output or advancing state. Calls on one session must remain
-        externally serialized.
+        externally serialized. An optional ``clock`` supplies signed 64-bit
+        Unix seconds for each media signing call.
         """
         if not has_live_video_vsi_callbacks():
             raise C2paError.NotSupported(
                 "Live-video VSI callback signing is unavailable in the loaded "
                 "native library; use a c2pa-c-ffi build with callback VSI support"
             )
+        cls._validate_clock_support(clock)
         if not isinstance(manifest_json, (str, dict)):
             raise TypeError("manifest_json must be a str or dict")
         manifest_bytes = _to_utf8_bytes(
@@ -2297,6 +2328,7 @@ class LiveVideoVsiSession(ManagedResource):
         instance._dynamic_assertion_cbs = list(
             context._dynamic_assertion_cbs)
         instance._vsi_callback = (callback_cb, error_state, callback)
+        instance._clock = clock
         instance._create_and_activate(
             lambda: _lib.c2pa_live_video_vsi_signer_create_callback(
                 context.execution_context,
@@ -2322,13 +2354,25 @@ class LiveVideoVsiSession(ManagedResource):
         self._signer_callback_cb = None
         self._dynamic_assertion_cbs = []
         self._vsi_callback = None
+        self._clock = None
 
     def _release(self):
         """Drop borrowed Python references without closing the Context."""
         self._signer_callback_cb = None
         self._dynamic_assertion_cbs.clear()
         self._vsi_callback = None
+        self._clock = None
         self._context = None
+
+    @staticmethod
+    def _validate_clock_support(clock: Optional[Callable[[], int]]) -> None:
+        if clock is not None and not callable(clock):
+            raise TypeError("clock must be callable or None")
+        if clock is not None and not has_live_video_vsi_explicit_time():
+            raise C2paError.NotSupported(
+                "Explicit-time live-video VSI signing is unavailable in the "
+                "loaded native library"
+            )
 
     @staticmethod
     def _segment_array(segment: bytes, name: str):
@@ -2401,6 +2445,24 @@ class LiveVideoVsiSession(ManagedResource):
         """Sign one media segment and advance the sequence on success."""
         self._ensure_valid_state()
         media_array = self._segment_array(media_segment, "media_segment")
+        if self._clock is not None:
+            signing_time = self._clock()
+            if isinstance(signing_time, bool) or not isinstance(signing_time, int):
+                raise TypeError("clock must return an int")
+            if not -(2**63) <= signing_time <= 2**63 - 1:
+                raise ValueError("clock result must fit a signed 64-bit integer")
+            return self._copy_signed_output(
+                lambda output: (
+                    _lib.c2pa_live_video_vsi_signer_sign_media_segment_at(
+                        self._handle,
+                        media_array,
+                        len(media_segment),
+                        signing_time,
+                        output,
+                    )
+                ),
+                "Failed to sign live-video media segment",
+            )
         return self._copy_signed_output(
             lambda output: (
                 _lib.c2pa_live_video_vsi_signer_sign_media_segment(
@@ -5226,6 +5288,7 @@ __all__ = [
     'has_fragmented_files',
     'has_live_video_vsi',
     'has_live_video_vsi_callbacks',
+    'has_live_video_vsi_explicit_time',
     'has_live_video_vsi_recovery',
     'load_settings',
     'format_embeddable',

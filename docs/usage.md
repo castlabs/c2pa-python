@@ -180,12 +180,20 @@ Dynamic callbacks and their error state follow the signer into a `Context` when 
 The experimental `LiveVideoVsiSession` API signs C2PA 2.4 Verifiable Segment Info directly from initialization and media segment bytes. It requires a native library built with `unstable_live_video` and an active `Context` that consumed an explicit manifest `Signer`.
 
 ```py
-from c2pa import Context, LiveVideoVsiSession, has_live_video_vsi
+from c2pa import (
+    Context,
+    LiveVideoVsiSession,
+    has_live_video_vsi,
+    has_live_video_vsi_explicit_time,
+)
 
 if not has_live_video_vsi():
     raise RuntimeError("loaded native library has no live-video VSI support")
+if not has_live_video_vsi_explicit_time():
+    raise RuntimeError("loaded native library has no explicit-time VSI support")
 
 context = Context(signer=manifest_signer)
+clock = lambda: media_timestamp_unix_seconds
 try:
     with LiveVideoVsiSession(
         manifest_json,
@@ -194,6 +202,7 @@ try:
         kid=b"session-key-1",
         min_sequence_number=1,
         validity_period_secs=3600,
+        clock=clock,
     ) as session:
         signed_init = session.sign_init_segment(init_bytes)
         manifest_id = session.active_manifest_id
@@ -203,7 +212,15 @@ finally:
     context.close()
 ```
 
-The initialization bytes must be an unsigned initialization segment. The session retains the native context and any Python signer callback while active but does not close the caller-owned `Context`. Calls on the same session must be externally serialized.
+The initialization bytes must be an unsigned initialization segment. When a
+`clock` is supplied, first require `has_live_video_vsi_explicit_time()`. The
+clock is called exactly once for each valid media signing attempt and must
+return signed 64-bit Unix seconds. That value becomes the mandatory protected
+COSE `iat`, is included in the callback TBS, and drives key-validity checks;
+there is no fallback to wall-clock signing if explicit-time support is absent.
+The session retains the clock, native context, and any Python signer callback
+while active but does not close the caller-owned `Context`. Calls on the same
+session must be externally serialized.
 
 For a non-exportable Ed25519 or ES256 session key, use the callback
 constructor. The callback receives the exact final COSE Sig_structure plus
@@ -235,6 +252,7 @@ with LiveVideoVsiSession.from_callback(
     min_sequence_number=1,
     created_at="2026-08-29T12:00:00Z",
     validity_period_secs=3600,
+    clock=clock,
 ) as session:
     signed_init = session.sign_init_segment(init_bytes)
     signed_media = session.sign_media_segment(media_bytes)
@@ -259,6 +277,7 @@ last media segment's signature, BMFF hash, manifest ID, sequence, timing, and
 event ID. It never invokes the session-key callback. Omitting the last media
 artifact is safe only when no media from the session has ever been published;
 durable callers must refuse recovery when publication state is unknown.
+Recovery remains artifact-driven and does not invoke the configured clock.
 
 ## Fragmented BMFF file sets
 
