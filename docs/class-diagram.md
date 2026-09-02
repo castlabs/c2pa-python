@@ -75,6 +75,7 @@ classDiagram
         +from_callback(manifest, context, callback, algorithm, key, kid, ..., clock=None) LiveVideoVsiSession$
         +sign_init_segment(bytes, format) bytes
         +sign_media_segment(bytes) bytes
+        +sign_media_segment_at(bytes, unix_seconds) bytes
         +recover(signed_init, previous_media, format)
         +restore(signed_init, previous_media, format)
         +next_sequence_number int

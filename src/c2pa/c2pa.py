@@ -2447,10 +2447,7 @@ class LiveVideoVsiSession(ManagedResource):
         media_array = self._segment_array(media_segment, "media_segment")
         if self._clock is not None:
             signing_time = self._clock()
-            if isinstance(signing_time, bool) or not isinstance(signing_time, int):
-                raise TypeError("clock must return an int")
-            if not -(2**63) <= signing_time <= 2**63 - 1:
-                raise ValueError("clock result must fit a signed 64-bit integer")
+            self._validate_signing_time(signing_time, "clock result")
             return self._copy_signed_output(
                 lambda output: (
                     _lib.c2pa_live_video_vsi_signer_sign_media_segment_at(
@@ -2474,6 +2471,48 @@ class LiveVideoVsiSession(ManagedResource):
             ),
             "Failed to sign live-video media segment",
         )
+
+    def sign_media_segment_at(
+        self,
+        media_segment: bytes,
+        signing_time_unix_seconds: int,
+    ) -> bytes:
+        """Sign one media segment with an explicit protected ``iat`` value.
+
+        This per-call API is the durability seam: callers can persist the time
+        in a pre-sign intent and reuse it after a crash without invoking the
+        session's optional clock again.
+        """
+        self._ensure_valid_state()
+        if not has_live_video_vsi_explicit_time():
+            raise C2paError.NotSupported(
+                "Explicit-time live-video VSI signing is unavailable in the "
+                "loaded native library"
+            )
+        self._validate_signing_time(
+            signing_time_unix_seconds,
+            "signing_time_unix_seconds",
+        )
+        media_array = self._segment_array(media_segment, "media_segment")
+        return self._copy_signed_output(
+            lambda output: (
+                _lib.c2pa_live_video_vsi_signer_sign_media_segment_at(
+                    self._handle,
+                    media_array,
+                    len(media_segment),
+                    signing_time_unix_seconds,
+                    output,
+                )
+            ),
+            "Failed to sign live-video media segment",
+        )
+
+    @staticmethod
+    def _validate_signing_time(value: int, name: str) -> None:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an int")
+        if not -(2**63) <= value <= 2**63 - 1:
+            raise ValueError(f"{name} must fit a signed 64-bit integer")
 
     def recover(
         self,

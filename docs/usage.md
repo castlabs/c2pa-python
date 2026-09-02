@@ -262,6 +262,17 @@ Native code verifies every callback result against `public_cose_key` before
 returning output or advancing counters. Python callback exceptions are
 re-raised as the original exception object.
 
+For durable pre-sign intents, bypass the clock for one segment and supply the
+persisted value directly:
+
+```py
+signed_media = session.sign_media_segment_at(media_bytes, persisted_iat)
+```
+
+Crash retries must first recover the session to the same next sequence and then
+reuse the same input bytes and `persisted_iat` so the keystore receives an
+identical COSE Sig_structure.
+
 To resume after a process restart, construct the session with the same key
 metadata/handle and recover from published artifacts:
 

@@ -7408,6 +7408,56 @@ class TestLiveVideoVsiSession(TestContextAPIs):
         has_live_video_vsi_explicit_time(),
         "native library does not provide explicit-time VSI signing",
     )
+    def test_per_call_explicit_time_bypasses_session_clock(self):
+        context = self._make_context()
+        self.addCleanup(context.close)
+        clock_calls = []
+
+        def clock():
+            clock_calls.append(None)
+            raise AssertionError("session clock must not be called")
+
+        with self._make_session(context, clock=clock) as session:
+            session.sign_init_segment(self.init_segment)
+            signing_time = int(datetime.now(timezone.utc).timestamp())
+            signed = session.sign_media_segment_at(
+                self.media_segment,
+                signing_time,
+            )
+            self.assertGreater(len(signed), len(self.media_segment))
+            self.assertEqual(clock_calls, [])
+            self.assertEqual(session.next_sequence_number, 2)
+
+        with self._make_session(context) as session:
+            for value, error_type in (
+                (True, TypeError),
+                (1.0, TypeError),
+                (-(2**63) - 1, ValueError),
+                (2**63, ValueError),
+            ):
+                with self.subTest(value=value):
+                    with self.assertRaises(error_type):
+                        session.sign_media_segment_at(self.media_segment, value)
+                    self.assertEqual(session.next_sequence_number, 1)
+
+        session = self._make_session(context)
+        session.close()
+        with self.assertRaises(Error):
+            session.sign_media_segment_at(self.media_segment, 0)
+
+        available = c2pa_module._LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE
+        try:
+            c2pa_module._LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE = False
+            with self._make_session(context) as session:
+                with self.assertRaises(Error.NotSupported):
+                    session.sign_media_segment_at(self.media_segment, 0)
+        finally:
+            c2pa_module._LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE = available
+
+    @unittest.skipUnless(
+        has_live_video_vsi_explicit_time(),
+        "native library does not provide explicit-time VSI signing",
+    )
     def test_invalid_clock_results_and_exception_preserve_state(self):
         context = self._make_context()
         self.addCleanup(context.close)
