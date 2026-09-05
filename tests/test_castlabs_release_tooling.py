@@ -1,0 +1,840 @@
+from __future__ import annotations
+
+import copy
+import gzip
+import hashlib
+import importlib.util
+import json
+import os
+import re
+import tarfile
+import tempfile
+import time
+import zipfile
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_PATH = ROOT / "scripts" / "castlabs_release.py"
+SPEC = importlib.util.spec_from_file_location("castlabs_release", SCRIPT_PATH)
+release = importlib.util.module_from_spec(SPEC)
+assert SPEC.loader is not None
+SPEC.loader.exec_module(release)
+
+
+def test_prerelease_version_is_consistent():
+    assert release.project_version(ROOT) == "0.37.8.dev1"
+    first_line = (
+        (ROOT / "src" / "c2pa" / "c2pa.py").read_text(encoding="utf-8").splitlines()[13]
+    )
+    assert first_line == "# Version: 0.37.8.dev1"
+
+
+def test_release_lock_and_schemas_are_valid_json():
+    lock = release.load_lock()
+    release.validate_lock(lock)
+    assert lock["rustSource"]["commit"] == release.RUST_COMMIT
+    assert lock["rustSource"]["cargoLockSha256"] == release.CARGO_LOCK_SHA256
+    assert lock["rustToolchain"]["channel"] == "1.88.0"
+    for name in (
+        "castlabs-vsi-inputs.schema.json",
+        "castlabs-release-evidence.schema.json",
+    ):
+        schema = json.loads((ROOT / "release" / name).read_text(encoding="utf-8"))
+        assert schema["$schema"].endswith("2020-12/schema")
+    if importlib.util.find_spec("jsonschema") is not None:
+        import jsonschema
+
+        schema = json.loads(
+            (ROOT / "release" / "castlabs-vsi-inputs.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        jsonschema.Draft202012Validator.check_schema(schema)
+        jsonschema.validate(lock, schema)
+
+
+def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper():
+    release_workflow = (
+        ROOT / ".github" / "workflows" / "castlabs-vsi-release.yml"
+    ).read_text(encoding="utf-8")
+    pypi_workflow = (
+        ROOT / ".github" / "workflows" / "castlabs-vsi-pypi.yml"
+    ).read_text(encoding="utf-8")
+    legacy_workflow = (ROOT / ".github" / "workflows" / "build.yml").read_text(
+        encoding="utf-8"
+    )
+    for workflow in (release_workflow, pypi_workflow):
+        action_shas = re.findall(
+            r"^\s*(?:-\s+)?uses:\s+[^@\s]+@([0-9a-f]{40})(?:\s+#.*)?$",
+            workflow,
+            re.MULTILINE,
+        )
+        assert len(action_shas) == workflow.count("uses:")
+        assert "mstattma/" not in workflow
+    assert release_workflow.count("timeout-minutes:") == 6
+    assert pypi_workflow.count("timeout-minutes:") == 1
+    assert "permissions:\n  contents: read" in release_workflow
+    assert "attestations: write" in release_workflow
+    assert "id-token: write" in release_workflow
+    assert "attestations: read" in pypi_workflow
+    assert 'CARGO_BUILD_JOBS: "1"' in release_workflow
+    assert 'CARGO_INCREMENTAL: "0"' in release_workflow
+    assert 'PYTHONHASHSEED: "0"' in release_workflow
+    assert "-e CARGO_INCREMENTAL=0 -e PYTHONHASHSEED=0" in release_workflow
+    assert release_workflow.count("castlabs_release.py cargo-build") == 2
+    assert "cargo build " not in release_workflow
+    assert "cargo tree " not in release_workflow
+    assert 'python: ["3.10", "3.11", "3.12", "3.13"]' in release_workflow
+    assert "continue-on-error" not in release_workflow
+    assert '"${IMAGE}@${DIGEST}"' in release_workflow
+    rust_inputs = {
+        "RUSTUP_URL": "rustToolchain.installers.x86_64-unknown-linux-gnu.url",
+        "RUSTUP_SHA": "rustToolchain.installers.x86_64-unknown-linux-gnu.sha256",
+        "RUST_TOOLCHAIN": "rustToolchain.channel",
+    }
+    for variable, lock_path in rust_inputs.items():
+        assert (
+            f"{variable}=$(python3 c2pa-python/scripts/castlabs_release.py lock-value {lock_path})"
+            in release_workflow
+        )
+        assert f'-e "{variable}=${{{variable}}}"' in release_workflow
+    assert "command -v patchelf" in release_workflow
+    assert (
+        "-m auditwheel repair \\\n                --only-plat --plat manylinux_2_28_x86_64"
+        in release_workflow
+    )
+    assert (
+        "c2pa_python-0.37.8.dev1-py3-none-manylinux_2_28_x86_64.whl" in release_workflow
+    )
+    assert release_workflow.count("verify-wheel-native") == 2
+    assert release_workflow.index("--only-plat --plat manylinux_2_28_x86_64") < (
+        release_workflow.index("verify-wheel-native")
+    )
+    assert "cp artifacts/x86_64-unknown-linux-gnu/libc2pa_c.so" not in (
+        release_workflow
+    )
+    assert "Copy-Item artifacts/x86_64-pc-windows-msvc/c2pa_c.dll" not in (
+        release_workflow
+    )
+    assert 'test "$CARGO_INCREMENTAL" = 0' in release_workflow
+    assert 'test "$PYTHONHASHSEED" = 0' in release_workflow
+    linux_container = release_workflow.index("docker run --rm")
+    linux_cargo = release_workflow.index(
+        "scripts/castlabs_release.py cargo-build", linux_container
+    )
+    assert (
+        release_workflow.index('test "$CARGO_INCREMENTAL" = 0', linux_container)
+        < linux_cargo
+    )
+    assert (
+        release_workflow.index('test "$PYTHONHASHSEED" = 0', linux_container)
+        < linux_cargo
+    )
+    assert "Install pinned wheel-build Python" in release_workflow
+    windows_job = release_workflow.index("  windows:\n")
+    windows_checkout = release_workflow.index(
+        "Checkout Castlabs Python source at full SHA", windows_job
+    )
+    windows_git_policy = release_workflow.index(
+        "Validate byte-preserving Git checkout policy", windows_job
+    )
+    assert windows_git_policy < windows_checkout
+    for setting in (
+        'GIT_CONFIG_COUNT: "2"',
+        "GIT_CONFIG_KEY_0: core.autocrlf",
+        'GIT_CONFIG_VALUE_0: "false"',
+        "GIT_CONFIG_KEY_1: core.eol",
+        "GIT_CONFIG_VALUE_1: lf",
+        'git config --get core.autocrlf) -ne "false"',
+        'git config --get core.eol) -ne "lf"',
+        "Get-FileHash c2pa-rs/Cargo.lock -Algorithm SHA256",
+        "lock-value rustSource.cargoLockSha256",
+    ):
+        assert setting in release_workflow
+    assert (
+        "python3 -m pytest -q c2pa-python/tests/test_castlabs_release_tooling.py"
+        in (release_workflow)
+    )
+    assert "if: github.ref == 'refs/tags/castlabs-v0.37.8.dev1'" in release_workflow
+    assert "-F draft=true -F prerelease=true" in release_workflow
+    assert "--clobber" not in release_workflow
+    assert "repos/castlabs/c2pa-python/releases" in release_workflow
+    assert "inspect-draft-release" in release_workflow
+    assert release_workflow.count("inspect-draft-release") == 3
+    assert release_workflow.count("verify-draft-release") == 3
+    assert "gh release upload" in release_workflow
+    assert "CREATED_DRAFT_ID" in release_workflow
+    assert "releases/${CREATED_DRAFT_ID}" in release_workflow
+    assert "gh api --method DELETE" in release_workflow
+    assert "gh release delete" not in release_workflow
+    assert release_workflow.index("attest-build-provenance@") < (
+        release_workflow.index("inspect-draft-release")
+    )
+    assert "environment: pypipublish" in pypi_workflow
+    assert ".draft == false and .prerelease == true" in pypi_workflow
+    assert (
+        "python3 -m pytest -q c2pa-python/tests/test_castlabs_release_tooling.py"
+        in (pypi_workflow)
+    )
+    assert "for ARTIFACT in download/*" in pypi_workflow
+    assert (
+        "--signer-workflow castlabs/c2pa-python/.github/workflows/castlabs-vsi-release.yml"
+        in pypi_workflow
+    )
+    assert '--signer-digest "$SOURCE_SHA"' in pypi_workflow
+    assert "--source-ref refs/tags/castlabs-v0.37.8.dev1" in pypi_workflow
+    assert '--source-digest "$SOURCE_SHA"' in pypi_workflow
+    assert "pypi.org/pypi/c2pa-python/0.37.8.dev1/json" in pypi_workflow
+    assert "pypi-plan" in pypi_workflow
+    assert "packages-dir: publish-dist/" in pypi_workflow
+    assert "if: steps.pypi.outputs.upload == 'true'" in pypi_workflow
+    assert "skip-existing" not in pypi_workflow
+    assert '"!castlabs-v*"' in legacy_workflow
+    assert (
+        legacy_workflow.count(
+            "if: ${{ !startsWith(github.ref, 'refs/tags/castlabs-v') }}"
+        )
+        >= 3
+    )
+    legacy_release = legacy_workflow[legacy_workflow.index("  release:\n") :]
+    early_guard_start = legacy_workflow.index("Reject unsafe legacy publication")
+    early_guard_end = legacy_workflow.index("Read version from file", early_guard_start)
+    early_guard = legacy_workflow[early_guard_start:early_guard_end]
+    assert early_guard_start < legacy_workflow.index("  tests-unix:\n")
+    assert (
+        "if: github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true'"
+        in early_guard
+    )
+    assert "startsWith(github.ref, 'refs/tags/')" not in early_guard
+    assert "!startsWith(github.ref, 'refs/tags/castlabs-v')" in legacy_release
+    assert "startsWith(github.ref, 'refs/tags/')" in legacy_release
+    assert "github.ref == 'refs/heads/main'" in legacy_release
+    assert 'test "$GITHUB_REF" = refs/heads/main' in legacy_release
+    assert "manual legacy publishing accepts final X.Y.Z versions only" in (
+        legacy_release
+    )
+    assert 'test "$VERSION" != 0.37.8.dev1' in legacy_release
+    assert legacy_workflow.count("final X.Y.Z versions only") == 2
+    assert "tests/test_castlabs_release_tooling.py" in legacy_workflow
+    smoke = (ROOT / "tests" / "test_castlabs_release_smoke.py").read_text(
+        encoding="utf-8"
+    )
+    smoke_gate = 'os.environ.get("CASTLABS_RELEASE_SMOKE_REQUIRED") != "1"'
+    assert smoke_gate in smoke
+    assert smoke.index(smoke_gate) < smoke.index("from c2pa import")
+    assert release_workflow.count('CASTLABS_RELEASE_SMOKE_REQUIRED: "1"') == 2
+    assert "pytest.skip(" in smoke
+    assert "unittest.skip" not in smoke
+
+
+def test_cargo_execution_and_evidence_share_the_locked_command(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        if "tree" in command:
+            return SimpleNamespace(stdout=b"feature-report\r\n")
+        return SimpleNamespace(stdout=b"")
+
+    monkeypatch.setattr(release.subprocess, "run", fake_run)
+    monkeypatch.setenv("CARGO_BUILD_JOBS", "1")
+    monkeypatch.setenv("CARGO_INCREMENTAL", "0")
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    report = tmp_path / "features-x86_64-unknown-linux-gnu.txt"
+    release.command_cargo_build(
+        SimpleNamespace(
+            rust_root=str(tmp_path),
+            target="x86_64-unknown-linux-gnu",
+            feature_report=str(report),
+        )
+    )
+    lock = release.load_lock()
+    assert calls[0][0] == release.cargo_tree_command(lock, "x86_64-unknown-linux-gnu")
+    assert calls[1][0] == release.cargo_command(lock, "x86_64-unknown-linux-gnu")
+    assert report.read_bytes() == b"feature-report\n"
+
+    facts_path = tmp_path / "facts.json"
+    release.command_build_facts(
+        SimpleNamespace(
+            target="x86_64-unknown-linux-gnu",
+            feature_report=str(report),
+            epoch="1700000000",
+            interpreter="Python 3.10.0",
+            container=f"{release.MANYLINUX_IMAGE}@{release.MANYLINUX_DIGEST}",
+            output=str(facts_path),
+        )
+    )
+    facts = json.loads(facts_path.read_text(encoding="utf-8"))
+    assert facts["cargoCommand"] == calls[1][0]
+    assert facts["cargoTreeCommand"] == calls[0][0]
+    assert facts["cargoBuildJobs"] == "1"
+    assert facts["cargoIncremental"] == "0"
+    assert facts["pythonHashSeed"] == "0"
+
+
+def test_build_facts_requires_actual_reproducibility_environment(monkeypatch, tmp_path):
+    report = tmp_path / "features.txt"
+    report.write_text("features\n", encoding="ascii")
+    monkeypatch.setenv("CARGO_BUILD_JOBS", "1")
+    monkeypatch.setenv("CARGO_INCREMENTAL", "1")
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    with pytest.raises(SystemExit, match="release evidence environment"):
+        release.command_build_facts(
+            SimpleNamespace(
+                target="x86_64-unknown-linux-gnu",
+                feature_report=str(report),
+                epoch="1700000000",
+                interpreter="Python 3.10.0",
+                container=f"{release.MANYLINUX_IMAGE}@{release.MANYLINUX_DIGEST}",
+                output=str(tmp_path / "facts.json"),
+            )
+        )
+
+
+def _write_inputs(root: Path, reverse: bool, mtime: int) -> list[tuple[Path, str]]:
+    inputs = root / "inputs"
+    inputs.mkdir(parents=True)
+    files = []
+    for name, payload in (("z.bin", b"z" * 19), ("a.bin", b"a" * 7)):
+        path = inputs / name
+        path.write_bytes(payload)
+        os.utime(path, (mtime, mtime))
+        files.append((path, f"payload/{name}"))
+    return list(reversed(files)) if reverse else files
+
+
+def test_deterministic_tar_gzip_ignores_paths_order_and_mtimes():
+    epoch = 1_700_000_000
+    with (
+        tempfile.TemporaryDirectory() as first,
+        tempfile.TemporaryDirectory() as second,
+    ):
+        first_root = Path(first)
+        second_root = Path(second)
+        first_archive = first_root / "bundle.tar.gz"
+        second_archive = second_root / "bundle.tar.gz"
+        release.deterministic_tar_gz(
+            first_archive, _write_inputs(first_root, False, int(time.time())), epoch
+        )
+        release.deterministic_tar_gz(
+            second_archive, _write_inputs(second_root, True, 946_684_800), epoch
+        )
+        assert first_archive.read_bytes() == second_archive.read_bytes()
+        assert first_archive.read_bytes()[3] & 0x08 == 0  # gzip FNAME is absent.
+        with gzip.open(first_archive, "rb") as payload:
+            with tarfile.open(fileobj=payload, mode="r:") as archive:
+                assert archive.getnames() == ["payload/a.bin", "payload/z.bin"]
+                for member in archive.getmembers():
+                    assert member.mtime == epoch
+                    assert member.uid == member.gid == 0
+                    assert member.uname == member.gname == ""
+                    assert member.mode == 0o644
+        with pytest.raises(SystemExit):
+            release.deterministic_tar_gz(
+                first_archive, _write_inputs(first_root / "again", False, 0), epoch
+            )
+
+
+def test_packer_rejects_traversal_duplicates_and_symlinks():
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        source = root / "source"
+        source.write_bytes(b"safe")
+        output = root / "bundle.tar.gz"
+        for name in ("../escape", "/absolute", "bad\\name"):
+            try:
+                release.deterministic_tar_gz(output, [(source, name)], 1_700_000_000)
+            except SystemExit:
+                pass
+            else:
+                raise AssertionError(f"accepted unsafe archive name {name!r}")
+        try:
+            release.deterministic_tar_gz(
+                output,
+                [(source, "same"), (source, "same")],
+                1_700_000_000,
+            )
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("accepted duplicate archive member")
+        symlink = root / "link"
+        try:
+            symlink.symlink_to(source)
+        except OSError:
+            return
+        try:
+            release.deterministic_tar_gz(output, [(symlink, "link")], 1_700_000_000)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("accepted symlink release member")
+
+
+def test_safe_extract_round_trip_and_rejects_links():
+    epoch = 1_700_000_000
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        source = root / "input.bin"
+        source.write_bytes(b"payload")
+        bundle = root / "bundle.tar.gz"
+        release.deterministic_tar_gz(bundle, [(source, "dir/input.bin")], epoch)
+        destination = root / "output"
+        args = type(
+            "Args", (), {"archive": str(bundle), "destination": str(destination)}
+        )
+        release.command_extract(args)
+        assert (destination / "dir" / "input.bin").read_bytes() == b"payload"
+
+        unsafe = root / "unsafe.tar.gz"
+        with tarfile.open(unsafe, "w:gz") as archive:
+            info = tarfile.TarInfo("link")
+            info.type = tarfile.SYMTYPE
+            info.linkname = "target"
+            archive.addfile(info)
+        args = type(
+            "Args",
+            (),
+            {"archive": str(unsafe), "destination": str(root / "unsafe-output")},
+        )
+        try:
+            release.command_extract(args)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("accepted archive symlink")
+
+        with pytest.raises(SystemExit):
+            release.command_extract(
+                type(
+                    "Args",
+                    (),
+                    {"archive": str(bundle), "destination": str(destination)},
+                )
+            )
+
+
+def test_wheel_inspection_rejects_unsafe_and_multiple_native_members():
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        wheel = root / "c2pa_python-0.37.8.dev1-py3-none-win_amd64.whl"
+        with zipfile.ZipFile(wheel, "w") as archive:
+            archive.writestr("c2pa/libs/first.dll", b"one")
+            archive.writestr("c2pa/libs/second.dll", b"two")
+        try:
+            release.wheel_details(wheel, "x86_64-pc-windows-msvc", "3.10")
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("accepted wheel with multiple native libraries")
+
+        unsafe = root / "c2pa_python-0.37.8.dev1-py3-none-manylinux_2_28_x86_64.whl"
+        with zipfile.ZipFile(unsafe, "w") as archive:
+            archive.writestr("../libc2pa_c.so", b"unsafe")
+        try:
+            release.wheel_details(unsafe, "x86_64-unknown-linux-gnu", "3.10")
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("accepted unsafe wheel member")
+
+        _write_wheel(
+            unsafe,
+            "x86_64-unknown-linux-gnu",
+            b"native",
+            extra_tag=True,
+        )
+        with pytest.raises(SystemExit, match="metadata tags must be exactly"):
+            release.wheel_details(unsafe, "x86_64-unknown-linux-gnu", "Python 3.10.0")
+
+        _write_wheel(
+            unsafe,
+            "x86_64-unknown-linux-gnu",
+            b"native",
+            graft=True,
+        )
+        with pytest.raises(SystemExit, match="unexpected auditwheel graft"):
+            release.wheel_details(unsafe, "x86_64-unknown-linux-gnu", "Python 3.10.0")
+
+
+def test_checksum_uses_artifact_basename():
+    with tempfile.TemporaryDirectory() as temp:
+        path = Path(temp) / "artifact.bin"
+        path.write_bytes(b"artifact")
+        expected = hashlib.sha256(b"artifact").hexdigest()
+        output = Path(temp) / "artifact.bin.sha256"
+        args = type("Args", (), {"artifact": str(path), "output": str(output)})
+        release.command_checksum(args)
+        assert output.read_text(encoding="ascii") == f"{expected}  artifact.bin\n"
+        with pytest.raises(SystemExit):
+            release.command_checksum(args)
+
+
+def _write_wheel(
+    path: Path,
+    target: str,
+    native: bytes,
+    *,
+    extra_tag: bool = False,
+    graft: bool = False,
+) -> None:
+    lock = release.load_lock()
+    platform_tag = lock["targets"][target]["wheelPlatformTag"]
+    native_name = lock["targets"][target]["library"]
+    dist_info = f"c2pa_python-{release.RELEASE_VERSION}.dist-info"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(f"c2pa/libs/{native_name}", native)
+        if graft:
+            archive.writestr("c2pa_python.libs/libcrypto.so", b"graft")
+        archive.writestr(
+            f"{dist_info}/METADATA",
+            "Metadata-Version: 2.1\n"
+            "Name: c2pa-python\n"
+            f"Version: {release.RELEASE_VERSION}\n",
+        )
+        archive.writestr(
+            f"{dist_info}/WHEEL",
+            "Wheel-Version: 1.0\n"
+            "Root-Is-Purelib: false\n"
+            f"Tag: py3-none-{platform_tag}\n"
+            + ("Tag: py3-none-any\n" if extra_tag else ""),
+        )
+
+
+def test_verified_wheel_native_is_exact_qualified_artifact(tmp_path):
+    native = b"qualified-native-bytes"
+    wheel = tmp_path / (
+        f"c2pa_python-{release.RELEASE_VERSION}-py3-none-" "manylinux_2_28_x86_64.whl"
+    )
+    _write_wheel(wheel, "x86_64-unknown-linux-gnu", native)
+    qualified = tmp_path / "libc2pa_c.so"
+    qualified.write_bytes(native)
+    output = tmp_path / "verified" / "libc2pa_c.so"
+    release.command_verify_wheel_native(
+        SimpleNamespace(
+            wheel=str(wheel),
+            target="x86_64-unknown-linux-gnu",
+            native=str(qualified),
+            output=str(output),
+        )
+    )
+    assert output.read_bytes() == native
+
+    qualified.write_bytes(b"different-qualified-native")
+    with pytest.raises(SystemExit, match="differs from the qualified native"):
+        release.command_verify_wheel_native(
+            SimpleNamespace(
+                wheel=str(wheel),
+                target="x86_64-unknown-linux-gnu",
+                native=str(qualified),
+                output=str(tmp_path / "mismatch" / "libc2pa_c.so"),
+            )
+        )
+
+
+def test_schema2_wheel_evidence_is_derived_from_final_bundle(monkeypatch, tmp_path):
+    monkeypatch.setenv("CARGO_BUILD_JOBS", "1")
+    monkeypatch.setenv("CARGO_INCREMENTAL", "0")
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "local")
+    lock = release.load_lock()
+    epoch = 1_700_000_000
+    source_sha = "a" * 40
+    wheels = {}
+    facts_paths = []
+    native_payloads = {
+        "x86_64-unknown-linux-gnu": b"linux-native-final",
+        "x86_64-pc-windows-msvc": b"windows-native-final",
+    }
+    for target, native in native_payloads.items():
+        wheel = tmp_path / (
+            f"c2pa_python-{release.RELEASE_VERSION}-py3-none-"
+            f"{lock['targets'][target]['wheelPlatformTag']}.whl"
+        )
+        _write_wheel(wheel, target, native)
+        wheels[target] = wheel
+        report = tmp_path / f"features-{target}.txt"
+        report.write_text(f"features for {target}\n", encoding="ascii")
+        facts = tmp_path / f"build-{target}.json"
+        container = (
+            f"{release.MANYLINUX_IMAGE}@{release.MANYLINUX_DIGEST}"
+            if target == "x86_64-unknown-linux-gnu"
+            else None
+        )
+        release.command_build_facts(
+            SimpleNamespace(
+                target=target,
+                feature_report=str(report),
+                epoch=str(epoch),
+                interpreter="Python 3.10.0",
+                container=container,
+                output=str(facts),
+            )
+        )
+        facts_paths.append(str(facts))
+
+    bundle = tmp_path / (
+        f"c2pa-python-{release.RELEASE_VERSION}-py3-none-wheels.tar.gz"
+    )
+    release.deterministic_tar_gz(
+        bundle,
+        [(wheel, wheel.name) for wheel in wheels.values()],
+        epoch,
+    )
+    evidence_path = Path(f"{bundle}.evidence.json")
+    release.command_evidence(
+        SimpleNamespace(
+            artifact=str(bundle),
+            type="wheel-bundle",
+            source_sha=source_sha,
+            member=[f"{target}={wheel}" for target, wheel in wheels.items()],
+            build_facts=facts_paths,
+            output=str(evidence_path),
+        )
+    )
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    release.validate_evidence(evidence, tmp_path, source_sha=source_sha)
+    if importlib.util.find_spec("jsonschema") is not None:
+        import jsonschema
+
+        schema = json.loads(
+            (ROOT / "release" / "castlabs-release-evidence.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        jsonschema.Draft202012Validator.check_schema(schema)
+        jsonschema.validate(evidence, schema)
+        invalid_wheel = copy.deepcopy(evidence)
+        invalid_wheel["artifact"]["members"][0].pop("pythonTag")
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(invalid_wheel, schema)
+        invalid_native_bundle = copy.deepcopy(evidence)
+        invalid_native_bundle["artifact"]["type"] = "native-bundle"
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(invalid_native_bundle, schema)
+        native_member = {
+            key: value
+            for key, value in evidence["artifact"]["members"][0].items()
+            if key not in {"pythonTag", "abiTag", "platformTag"}
+        }
+        member_schema = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$ref": "#/$defs/member",
+            "$defs": schema["$defs"],
+        }
+        jsonschema.validate(native_member, member_schema)
+        native_member["pythonTag"] = "py3"
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(native_member, member_schema)
+    by_target = {member["target"]: member for member in evidence["artifact"]["members"]}
+    for target, native in native_payloads.items():
+        assert by_target[target]["nativeSha256"] == hashlib.sha256(native).hexdigest()
+
+    native_evidences = [
+        {
+            "artifact": {
+                "type": "native-bundle",
+                "members": [
+                    {
+                        "target": target,
+                        "nativeSha256": by_target[target]["nativeSha256"],
+                    }
+                ],
+            }
+        }
+        for target in sorted(native_payloads)
+    ]
+    release.validate_release_evidence_consistency([evidence, *native_evidences])
+    tampered_evidence = copy.deepcopy(native_evidences)
+    tampered_evidence[0]["artifact"]["members"][0]["nativeSha256"] = "0" * 64
+    with pytest.raises(SystemExit, match="different native digests"):
+        release.validate_release_evidence_consistency([evidence, *tampered_evidence])
+
+    by_target["x86_64-unknown-linux-gnu"]["nativeSha256"] = "0" * 64
+    with pytest.raises(SystemExit):
+        release.validate_evidence(evidence, tmp_path, source_sha=source_sha)
+
+
+def _write_complete_release_assets(directory: Path) -> dict[str, Path]:
+    directory.mkdir()
+    result = {}
+    for name in release.expected_release_asset_names():
+        path = directory / name
+        path.write_bytes(f"release asset {name}\n".encode())
+        result[name] = path
+    return result
+
+
+def _release_json(paths: dict[str, Path], names: set[str], *, draft=True):
+    return {
+        "id": 77,
+        "tag_name": release.RELEASE_TAG,
+        "draft": draft,
+        "prerelease": True,
+        "assets": [
+            {
+                "id": index + 100,
+                "name": name,
+                "size": paths[name].stat().st_size,
+                "digest": f"sha256:{release.sha256_file(paths[name])}",
+                "state": "uploaded",
+            }
+            for index, name in enumerate(sorted(names))
+        ],
+    }
+
+
+def test_duplicate_release_records_fail_explicitly(tmp_path):
+    path = tmp_path / "releases.json"
+    release_record = {"id": 1, "tag_name": release.RELEASE_TAG}
+    path.write_text(
+        f"{json.dumps(release_record)}\n{json.dumps(release_record)}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit, match="multiple GitHub releases or drafts"):
+        release.load_optional_json(path)
+
+
+def test_draft_release_resume_requires_exact_existing_assets(tmp_path):
+    assets = tmp_path / "assets"
+    local = _write_complete_release_assets(assets)
+    expected = set(local)
+    assert len(expected) == 16
+    assert {name for name in expected if name.endswith(".evidence.json.sha256")} == {
+        f"c2pa-python-{release.RELEASE_VERSION}-py3-none-wheels.tar.gz.evidence.json.sha256",
+        f"c2pa-python-{release.RELEASE_VERSION}-native-linux-x86_64.tar.gz.evidence.json.sha256",
+        f"c2pa-python-{release.RELEASE_VERSION}-native-windows-x86_64.tar.gz.evidence.json.sha256",
+    }
+
+    new_plan = release.inspect_draft_release(assets, None)
+    assert new_plan["releaseExists"] is False
+    assert set(new_plan["missing"]) == expected
+
+    existing_names = set(sorted(expected)[:4])
+    prior_plan = release.inspect_draft_release(
+        assets, _release_json(local, existing_names)
+    )
+    downloaded = tmp_path / "downloaded"
+    downloaded.mkdir()
+    for name in existing_names:
+        (downloaded / name).write_bytes(local[name].read_bytes())
+    assert set(release.verify_draft_release(assets, downloaded, prior_plan)) == (
+        expected - existing_names
+    )
+    (downloaded / sorted(existing_names)[0]).write_bytes(b"mismatch")
+    with pytest.raises(SystemExit):
+        release.verify_draft_release(assets, downloaded, prior_plan)
+
+    complete_plan = release.inspect_draft_release(
+        assets, _release_json(local, expected)
+    )
+    complete_download = tmp_path / "complete-download"
+    complete_download.mkdir()
+    for name in expected:
+        (complete_download / name).write_bytes(local[name].read_bytes())
+    assert (
+        release.verify_draft_release(
+            assets, complete_download, complete_plan, require_complete=True
+        )
+        == []
+    )
+
+    published = _release_json(local, set(), draft=False)
+    with pytest.raises(SystemExit):
+        release.inspect_draft_release(assets, published)
+    remote_mismatch = _release_json(local, {sorted(expected)[0]})
+    remote_mismatch["assets"][0]["digest"] = f"sha256:{'0' * 64}"
+    with pytest.raises(SystemExit):
+        release.inspect_draft_release(assets, remote_mismatch)
+    unexpected = _release_json(local, set())
+    unexpected["assets"].append(
+        {"id": 999, "name": "unexpected.bin", "size": 1, "state": "uploaded"}
+    )
+    with pytest.raises(SystemExit):
+        release.inspect_draft_release(assets, unexpected)
+
+
+def _write_policy_wheels(directory: Path) -> dict[str, Path]:
+    directory.mkdir()
+    lock = release.load_lock()
+    wheels = {}
+    for target, target_data in lock["targets"].items():
+        wheel = directory / (
+            f"c2pa_python-{release.RELEASE_VERSION}-py3-none-"
+            f"{target_data['wheelPlatformTag']}.whl"
+        )
+        _write_wheel(wheel, target, f"native-{target}".encode())
+        wheels[wheel.name] = wheel
+    return wheels
+
+
+def _pypi_response(wheels: dict[str, Path], names: set[str]) -> dict:
+    return {
+        "info": {"name": "c2pa-python", "version": release.RELEASE_VERSION},
+        "urls": [
+            {
+                "filename": name,
+                "packagetype": "bdist_wheel",
+                "digests": {"sha256": release.sha256_file(wheels[name])},
+            }
+            for name in sorted(names)
+        ],
+    }
+
+
+def test_pypi_retry_plan_accepts_only_matching_existing_wheels(tmp_path):
+    wheels_dir = tmp_path / "wheels"
+    wheels = _write_policy_wheels(wheels_dir)
+    names = set(wheels)
+    _, missing = release.pypi_missing_wheels(wheels_dir, 404, None)
+    assert set(missing) == names
+
+    existing = {sorted(names)[0]}
+    response = _pypi_response(wheels, existing)
+    _, missing = release.pypi_missing_wheels(wheels_dir, 200, response)
+    assert set(missing) == names - existing
+    _, missing = release.pypi_missing_wheels(
+        wheels_dir, 200, _pypi_response(wheels, names)
+    )
+    assert missing == []
+
+    mismatch = copy.deepcopy(response)
+    mismatch["urls"][0]["digests"]["sha256"] = "0" * 64
+    with pytest.raises(SystemExit):
+        release.pypi_missing_wheels(wheels_dir, 200, mismatch)
+    unexpected = _pypi_response(wheels, existing)
+    unexpected["urls"].append(
+        {
+            "filename": f"c2pa_python-{release.RELEASE_VERSION}.tar.gz",
+            "packagetype": "sdist",
+            "digests": {"sha256": "0" * 64},
+        }
+    )
+    with pytest.raises(SystemExit):
+        release.pypi_missing_wheels(wheels_dir, 200, unexpected)
+
+
+def test_pypi_command_stages_all_missing_wheels_together(tmp_path):
+    wheels_dir = tmp_path / "wheels"
+    wheels = _write_policy_wheels(wheels_dir)
+    existing = {sorted(wheels)[0]}
+    response = tmp_path / "pypi.json"
+    response.write_text(json.dumps(_pypi_response(wheels, existing)), encoding="utf-8")
+    github_output = tmp_path / "github-output"
+    destination = tmp_path / "publish"
+    release.command_pypi_plan(
+        SimpleNamespace(
+            wheels_dir=str(wheels_dir),
+            response=str(response),
+            http_status="200",
+            destination=str(destination),
+            output=str(tmp_path / "plan.json"),
+            github_output=str(github_output),
+        )
+    )
+    assert {path.name for path in destination.iterdir()} == set(wheels) - existing
+    assert github_output.read_text(encoding="utf-8") == "upload=true\n"
