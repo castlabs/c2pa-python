@@ -44,7 +44,7 @@ jobs:
             echo "legacy publishing accepts final X.Y.Z versions only; got $VERSION" >&2
             exit 1
           fi
-          test "$VERSION" != 0.37.8.dev1
+          test "$VERSION" != 0.37.8.dev2
       - name: Read version from file
         id: read-version
         run: echo "version=$(cat c2pa-native-version.txt | tr -d '\r\n')" >> $GITHUB_OUTPUT
@@ -553,7 +553,7 @@ jobs:
               echo "manual legacy publishing accepts final X.Y.Z versions only; got $VERSION" >&2
               exit 1
             fi
-            test "$VERSION" != 0.37.8.dev1
+            test "$VERSION" != 0.37.8.dev2
           fi
       - name: Create dist directory
         run: mkdir -p dist

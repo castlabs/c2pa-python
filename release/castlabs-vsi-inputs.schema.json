@@ -30,7 +30,7 @@
     "package": {
       "type": "object", "additionalProperties": false,
       "required": ["name", "version"],
-      "properties": {"name": {"const": "c2pa-python"}, "version": {"const": "0.37.8.dev1"}}
+      "properties": {"name": {"const": "c2pa-python"}, "version": {"const": "0.37.8.dev2"}}
     },
     "pythonSource": {
       "type": "object", "additionalProperties": false,
@@ -39,7 +39,7 @@
         "repository": {"const": "castlabs/c2pa-python"},
         "url": {"const": "https://github.com/castlabs/c2pa-python.git"},
         "releaseBranch": {"const": "feat/live-video-vsi"},
-        "releaseTag": {"const": "castlabs-v0.37.8.dev1"}
+        "releaseTag": {"const": "castlabs-v0.37.8.dev2"}
       }
     },
     "rustSource": {

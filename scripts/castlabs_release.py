@@ -16,6 +16,8 @@ import subprocess
 import sys
 import tarfile
 import zipfile
+from email import policy
+from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -24,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / "release" / "castlabs-vsi-inputs.lock.json"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-RELEASE_VERSION = "0.37.8.dev1"
+RELEASE_VERSION = "0.37.8.dev2"
 RUST_COMMIT = "d511c7b96aba1f2be9f4eede4f76d70d2cd59bfa"
 CARGO_LOCK_SHA256 = "c4554b8fd3a1d3a1dc00482546750a40b06d0e5a86c9e66f4830c63fbd0df70f"
 RUST_TOOLCHAIN = "1.88.0"
@@ -32,7 +34,7 @@ MANYLINUX_IMAGE = "quay.io/pypa/manylinux_2_28_x86_64"
 MANYLINUX_DIGEST = (
     "sha256:0d9c2a66a745961947a8cecbe217ca0a7ee7a5849ba2517f20f9581d18444977"
 )
-RELEASE_TAG = "castlabs-v0.37.8.dev1"
+RELEASE_TAG = "castlabs-v0.37.8.dev2"
 
 
 def sha256_file(path: Path) -> str:
@@ -181,12 +183,12 @@ def validate_lock(lock: dict[str, Any]) -> None:
     if set(lock) != required or lock.get("schemaVersion") != 1:
         fail("release lock does not match schema version 1")
     if lock["package"] != {"name": "c2pa-python", "version": RELEASE_VERSION}:
-        fail("release lock package identity is not 0.37.8.dev1")
+        fail("release lock package identity is not 0.37.8.dev2")
     if lock["pythonSource"] != {
         "repository": "castlabs/c2pa-python",
         "url": "https://github.com/castlabs/c2pa-python.git",
         "releaseBranch": "feat/live-video-vsi",
-        "releaseTag": "castlabs-v0.37.8.dev1",
+        "releaseTag": "castlabs-v0.37.8.dev2",
     }:
         fail("unexpected c2pa-python release source policy")
     rust = lock["rustSource"]
@@ -534,18 +536,20 @@ def wheel_details_bytes(
         fail(f"unexpected native wheel member: {native_name}")
     if len(metadata_members) != 1 or len(wheel_members) != 1:
         fail(f"wheel must contain exactly one METADATA and WHEEL file: {name}")
-    metadata = metadata_members[0].decode("utf-8")
-    if "\nName: c2pa-python\n" not in f"\n{metadata}" or (
-        f"\nVersion: {RELEASE_VERSION}\n" not in f"\n{metadata}"
-    ):
+    metadata = BytesParser(policy=policy.compat32).parsebytes(
+        metadata_members[0].removeprefix(b"\xef\xbb\xbf")
+    )
+    names = metadata.get_all("Name", [])
+    versions = metadata.get_all("Version", [])
+    if names != ["c2pa-python"] or versions != [RELEASE_VERSION]:
         fail(f"wheel package metadata is incorrect: {name}")
-    wheel_metadata = wheel_members[0].decode("utf-8")
-    expected_tag = f"Tag: {python_tag}-{abi_tag}-{platform_tag}"
-    wheel_tags = [
-        line for line in wheel_metadata.splitlines() if line.startswith("Tag: ")
-    ]
+    wheel_metadata = BytesParser(policy=policy.compat32).parsebytes(
+        wheel_members[0].removeprefix(b"\xef\xbb\xbf")
+    )
+    expected_tag = f"{python_tag}-{abi_tag}-{platform_tag}"
+    wheel_tags = wheel_metadata.get_all("Tag", [])
     if wheel_tags != [expected_tag]:
-        fail(f"wheel metadata tags must be exactly [{expected_tag}]: {name}")
+        fail(f"wheel metadata tags must be exactly [Tag: {expected_tag}]: {name}")
     return {
         "file": name,
         "size": len(payload),
