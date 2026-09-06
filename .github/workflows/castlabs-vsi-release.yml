@@ -3,7 +3,7 @@ name: Castlabs VSI prerelease
 on:
   push:
     tags:
-      - castlabs-v0.37.8.dev2
+      - castlabs-v0.37.8.dev3
   workflow_dispatch:
     inputs:
       source_sha:
@@ -12,7 +12,7 @@ on:
         type: string
 
 concurrency:
-  group: castlabs-vsi-release-0.37.8.dev2
+  group: castlabs-vsi-release-0.37.8.dev3
   cancel-in-progress: false
 
 permissions:
@@ -183,7 +183,7 @@ jobs:
               test "$(find wheelhouse -maxdepth 1 -name "*.whl" | wc -l)" -eq 1
               WHEEL=$(find wheelhouse -maxdepth 1 -name "*.whl")
               case "$(basename "$WHEEL")" in
-                c2pa_python-0.37.8.dev2-py3-none-manylinux_2_28_x86_64.whl) ;;
+                c2pa_python-0.37.8.dev3-py3-none-manylinux_2_28_x86_64.whl) ;;
                 *) echo "unexpected Linux wheel: $WHEEL" >&2; exit 1 ;;
               esac
               /opt/python/cp310-cp310/bin/python -m auditwheel show "$WHEEL"
@@ -203,7 +203,7 @@ jobs:
           SOURCE_DATE_EPOCH: ${{ needs.prepare.outputs.source_epoch }}
         run: |
           cd c2pa-python
-          BUNDLE=release-out/c2pa-python-0.37.8.dev2-native-linux-x86_64.tar.gz
+          BUNDLE=release-out/c2pa-python-0.37.8.dev3-native-linux-x86_64.tar.gz
           python3 scripts/castlabs_release.py pack --output "$BUNDLE" \
             --epoch "$SOURCE_DATE_EPOCH" \
             --member x86_64-unknown-linux-gnu/libc2pa_c.so=release-out/libc2pa_c.so
@@ -339,7 +339,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $wheels = @(Get-ChildItem dist/*.whl)
           if ($wheels.Count -ne 1) { throw "expected exactly one Windows wheel" }
-          if ($wheels[0].Name -ne "c2pa_python-0.37.8.dev2-py3-none-win_amd64.whl") {
+          if ($wheels[0].Name -ne "c2pa_python-0.37.8.dev3-py3-none-win_amd64.whl") {
             throw "unexpected Windows wheel $($wheels[0].Name)"
           }
           python -m twine check $wheels[0].FullName
@@ -359,7 +359,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           Push-Location c2pa-python
-          $bundle = "release-out/c2pa-python-0.37.8.dev2-native-windows-x86_64.tar.gz"
+          $bundle = "release-out/c2pa-python-0.37.8.dev3-native-windows-x86_64.tar.gz"
           python scripts/castlabs_release.py pack --output $bundle `
             --epoch $env:SOURCE_DATE_EPOCH `
             --member x86_64-pc-windows-msvc/c2pa_c.dll=release-out/c2pa_c.dll
@@ -412,7 +412,7 @@ jobs:
       - name: Test installed wheel in a clean environment
         shell: bash
         env:
-          CASTLABS_RELEASE_EXPECTED_VERSION: 0.37.8.dev2
+          CASTLABS_RELEASE_EXPECTED_VERSION: 0.37.8.dev3
           CASTLABS_RELEASE_SMOKE_REQUIRED: "1"
           C2PA_SOURCE_BUILD_VERSION: 0.91.0-dev
         run: |
@@ -452,7 +452,7 @@ jobs:
       - name: Test installed wheel in a clean environment
         shell: pwsh
         env:
-          CASTLABS_RELEASE_EXPECTED_VERSION: 0.37.8.dev2
+          CASTLABS_RELEASE_EXPECTED_VERSION: 0.37.8.dev3
           CASTLABS_RELEASE_SMOKE_REQUIRED: "1"
           C2PA_SOURCE_BUILD_VERSION: 0.91.0-dev
         run: |
@@ -475,7 +475,7 @@ jobs:
 
   release:
     needs: [prepare, linux, windows, test-linux-wheel, test-windows-wheel]
-    if: github.ref == 'refs/tags/castlabs-v0.37.8.dev2'
+    if: github.ref == 'refs/tags/castlabs-v0.37.8.dev3'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: castlabs-vsi-release
@@ -510,7 +510,7 @@ jobs:
           LINUX_WHEEL=$(find collected/linux -maxdepth 1 -name "*.whl")
           WINDOWS_WHEEL=$(find collected/windows -maxdepth 1 -name "*.whl")
           test "$(find collected/linux collected/windows -name "*.whl" | wc -l)" -eq 2
-          BUNDLE=assets/c2pa-python-0.37.8.dev2-py3-none-wheels.tar.gz
+          BUNDLE=assets/c2pa-python-0.37.8.dev3-py3-none-wheels.tar.gz
           python3 c2pa-python/scripts/castlabs_release.py pack \
             --output "$BUNDLE" --epoch "$SOURCE_DATE_EPOCH" \
             --member "$(basename "$LINUX_WHEEL")=$LINUX_WHEEL" \
@@ -527,13 +527,13 @@ jobs:
           python3 c2pa-python/scripts/castlabs_release.py checksum \
             --artifact "$BUNDLE.evidence.json"
           cp "$LINUX_WHEEL" "$WINDOWS_WHEEL" assets/
-          cp collected/linux/c2pa-python-0.37.8.dev2-native-linux-x86_64.tar.gz* assets/
-          cp collected/windows/c2pa-python-0.37.8.dev2-native-windows-x86_64.tar.gz* assets/
+          cp collected/linux/c2pa-python-0.37.8.dev3-native-linux-x86_64.tar.gz* assets/
+          cp collected/windows/c2pa-python-0.37.8.dev3-native-windows-x86_64.tar.gz* assets/
           python3 c2pa-python/scripts/castlabs_release.py validate-evidence \
-            --evidence assets/c2pa-python-0.37.8.dev2-native-linux-x86_64.tar.gz.evidence.json \
+            --evidence assets/c2pa-python-0.37.8.dev3-native-linux-x86_64.tar.gz.evidence.json \
             --artifact-dir assets --source-sha "${{ needs.prepare.outputs.source_sha }}"
           python3 c2pa-python/scripts/castlabs_release.py validate-evidence \
-            --evidence assets/c2pa-python-0.37.8.dev2-native-windows-x86_64.tar.gz.evidence.json \
+            --evidence assets/c2pa-python-0.37.8.dev3-native-windows-x86_64.tar.gz.evidence.json \
             --artifact-dir assets --source-sha "${{ needs.prepare.outputs.source_sha }}"
           python3 c2pa-python/scripts/castlabs_release.py validate-evidence \
             --evidence "$BUNDLE.evidence.json" --artifact-dir assets \
@@ -547,7 +547,7 @@ jobs:
       - name: Require immutable release tag
         shell: bash
         run: |
-          TAG=castlabs-v0.37.8.dev2
+          TAG=castlabs-v0.37.8.dev3
           git -C c2pa-python fetch origin "refs/tags/${TAG}:refs/tags/${TAG}"
           test "$(git -C c2pa-python rev-list -n 1 "$TAG")" = \
             "${{ needs.prepare.outputs.source_sha }}"
@@ -563,16 +563,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG=castlabs-v0.37.8.dev2
+          TAG=castlabs-v0.37.8.dev3
+          SOURCE_SHA="${{ needs.prepare.outputs.source_sha }}"
+          RELEASE_NAME=$(python3 c2pa-python/scripts/castlabs_release.py release-value name)
+          RELEASE_BODY=$(python3 c2pa-python/scripts/castlabs_release.py release-value body)
+          RELEASE_ID=""
           CREATED_DRAFT_ID=""
+          CLEANUP_ARMED=0
 
           cleanup_current_draft() {
             status=$?
-            if [[ "$status" -ne 0 && -n "$CREATED_DRAFT_ID" ]]; then
-              IS_DRAFT=$(gh api \
+            if [[ "$status" -ne 0 && "$CLEANUP_ARMED" -eq 1 && -n "$CREATED_DRAFT_ID" ]]; then
+              if gh api \
                 "repos/castlabs/c2pa-python/releases/${CREATED_DRAFT_ID}" \
-                --jq .draft 2>/dev/null || true)
-              if [[ "$IS_DRAFT" == true ]]; then
+                > release-cleanup-candidate.json 2>/dev/null && \
+                python3 c2pa-python/scripts/castlabs_release.py validate-owned-empty-draft \
+                  --release-json release-cleanup-candidate.json \
+                  --expected-release-id "$CREATED_DRAFT_ID"; then
                 gh api --method DELETE \
                   "repos/castlabs/c2pa-python/releases/${CREATED_DRAFT_ID}" || \
                   echo "failed to remove draft created by this run" >&2
@@ -580,9 +587,19 @@ jobs:
             fi
             exit "$status"
           }
-          query_release() {
+          discover_release() {
             gh api --paginate repos/castlabs/c2pa-python/releases \
-              --jq '.[] | select(.tag_name == "castlabs-v0.37.8.dev2")' > "$1"
+              --jq '.[] | select(.tag_name == "castlabs-v0.37.8.dev3")' > "$1"
+            return 0
+          }
+          query_release_id() {
+            gh api "repos/castlabs/c2pa-python/releases/$1" > "$2"
+            return 0
+          }
+          verify_tag_source() {
+            git -C c2pa-python fetch origin "refs/tags/${TAG}:refs/tags/${TAG}"
+            test "$(git -C c2pa-python rev-list -n 1 "$TAG")" = "$SOURCE_SHA"
+            return 0
           }
           download_existing() {
             mkdir -p "$2"
@@ -592,59 +609,92 @@ jobs:
                 "repos/castlabs/c2pa-python/releases/assets/${asset_id}" \
                 > "$2/$asset_name"
             done < "$1"
+            return 0
+          }
+          upload_missing() {
+            local upload_index=0
+            while IFS= read -r asset_name; do
+              [[ -n "$asset_name" ]] || continue
+              if [[ "$CLEANUP_ARMED" -eq 1 ]]; then
+                CLEANUP_ARMED=0
+              fi
+              local response="release-upload-${upload_index}.json"
+              gh api --method POST \
+                -H "Content-Type: application/octet-stream" \
+                --input "assets/$asset_name" \
+                "https://uploads.github.com/repos/castlabs/c2pa-python/releases/${RELEASE_ID}/assets?name=${asset_name}" \
+                > "$response"
+              python3 c2pa-python/scripts/castlabs_release.py validate-upload-response \
+                --response "$response" --asset "assets/$asset_name"
+              upload_index=$((upload_index + 1))
+            done < "$1"
+            return 0
           }
           trap cleanup_current_draft EXIT
 
-          query_release release-initial.json
+          discover_release release-discovery.json
           python3 c2pa-python/scripts/castlabs_release.py inspect-draft-release \
-            --assets-dir assets --release-json release-initial.json \
-            --plan release-initial-plan.json \
-            --download-list release-initial-downloads.txt
-          download_existing release-initial-downloads.txt existing-initial
-          python3 c2pa-python/scripts/castlabs_release.py verify-draft-release \
-            --assets-dir assets --existing-dir existing-initial \
-            --plan release-initial-plan.json \
-            --missing-list release-missing.txt
+            --assets-dir assets --release-json release-discovery.json \
+            --source-sha "$SOURCE_SHA" \
+            --plan release-discovery-plan.json \
+            --download-list release-discovery-downloads.txt
 
           RELEASE_EXISTS=$(python3 -c \
-            'import json; print(str(json.load(open("release-initial-plan.json"))["releaseExists"]).lower())')
-          MISSING_LIST=release-missing.txt
-          if [[ "$RELEASE_EXISTS" == false ]]; then
-            CREATED_DRAFT_ID=$(gh api --method POST \
+            'import json; print(str(json.load(open("release-discovery-plan.json"))["releaseExists"]).lower())')
+          if [[ "$RELEASE_EXISTS" == true ]]; then
+            RELEASE_ID=$(python3 -c \
+              'import json; print(json.load(open("release-discovery-plan.json"))["releaseId"])')
+            [[ "$RELEASE_ID" =~ ^[0-9]+$ ]]
+            query_release_id "$RELEASE_ID" release-exact.json
+          else
+            verify_tag_source
+            gh api --method POST \
               repos/castlabs/c2pa-python/releases \
               -f "tag_name=$TAG" \
-              -f "name=Castlabs c2pa-python 0.37.8.dev2 (VSI)" \
-              -f "body=Corrected Castlabs VSI-capable c2pa-python dev2 prerelease after failed dev1 run 34030865864. See the attached schema-2 evidence and SHA-256 sidecars." \
-              -F draft=true -F prerelease=true --jq .id)
-            [[ "$CREATED_DRAFT_ID" =~ ^[0-9]+$ ]]
-            query_release release-created.json
-            python3 c2pa-python/scripts/castlabs_release.py inspect-draft-release \
-              --assets-dir assets --release-json release-created.json \
-              --plan release-created-plan.json \
-              --download-list release-created-downloads.txt
-            CREATED_PLAN_ID=$(python3 -c \
-              'import json; print(json.load(open("release-created-plan.json"))["releaseId"])')
-            test "$CREATED_PLAN_ID" = "$CREATED_DRAFT_ID"
-            download_existing release-created-downloads.txt existing-created
-            python3 c2pa-python/scripts/castlabs_release.py verify-draft-release \
-              --assets-dir assets --existing-dir existing-created \
-              --plan release-created-plan.json \
-              --missing-list release-created-missing.txt
-            MISSING_LIST=release-created-missing.txt
+              -f "target_commitish=$SOURCE_SHA" \
+              -f "name=$RELEASE_NAME" \
+              -f "body=$RELEASE_BODY" \
+              -F draft=true -F prerelease=true \
+              > release-created-response.json
+            python3 c2pa-python/scripts/castlabs_release.py extract-release-id \
+              --release-json release-created-response.json \
+              --id-output release-created-id.txt
+            RELEASE_ID=$(<release-created-id.txt)
+            CREATED_DRAFT_ID="$RELEASE_ID"
+            query_release_id "$RELEASE_ID" release-exact.json
+            python3 c2pa-python/scripts/castlabs_release.py validate-owned-empty-draft \
+              --release-json release-exact.json \
+              --expected-release-id "$RELEASE_ID"
+            CLEANUP_ARMED=1
+            python3 c2pa-python/scripts/castlabs_release.py validate-created-release \
+              --release-json release-created-response.json \
+              --source-sha "$SOURCE_SHA" \
+              --expected-release-id "$RELEASE_ID" \
+              --id-output release-create-validated-id.txt
+            python3 c2pa-python/scripts/castlabs_release.py validate-created-release \
+              --release-json release-exact.json \
+              --source-sha "$SOURCE_SHA" \
+              --expected-release-id "$RELEASE_ID" \
+              --id-output release-requery-id.txt
           fi
 
-          uploads=()
-          while IFS= read -r asset_name; do
-            [[ -n "$asset_name" ]] && uploads+=("assets/$asset_name")
-          done < "$MISSING_LIST"
-          if [[ "${#uploads[@]}" -gt 0 ]]; then
-            gh release upload "$TAG" "${uploads[@]}" \
-              --repo castlabs/c2pa-python
-          fi
+          python3 c2pa-python/scripts/castlabs_release.py inspect-draft-release \
+            --assets-dir assets --release-json release-exact.json \
+            --source-sha "$SOURCE_SHA" --expected-release-id "$RELEASE_ID" \
+            --plan release-exact-plan.json \
+            --download-list release-exact-downloads.txt
+          download_existing release-exact-downloads.txt existing-exact
+          python3 c2pa-python/scripts/castlabs_release.py verify-draft-release \
+            --assets-dir assets --existing-dir existing-exact \
+            --plan release-exact-plan.json \
+            --missing-list release-missing.txt
+          upload_missing release-missing.txt
 
-          query_release release-final.json
+          verify_tag_source
+          query_release_id "$RELEASE_ID" release-final.json
           python3 c2pa-python/scripts/castlabs_release.py inspect-draft-release \
             --assets-dir assets --release-json release-final.json \
+            --source-sha "$SOURCE_SHA" --expected-release-id "$RELEASE_ID" \
             --plan release-final-plan.json \
             --download-list release-final-downloads.txt
           download_existing release-final-downloads.txt existing-final
@@ -653,5 +703,5 @@ jobs:
             --plan release-final-plan.json \
             --missing-list release-final-missing.txt --require-complete
 
-          CREATED_DRAFT_ID=""
+          CLEANUP_ARMED=0
           trap - EXIT

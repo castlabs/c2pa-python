@@ -7,8 +7,10 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import tarfile
 import tempfile
+import textwrap
 import time
 import zipfile
 from pathlib import Path
@@ -18,6 +20,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+TEST_SOURCE_SHA = "a" * 40
 SCRIPT_PATH = ROOT / "scripts" / "castlabs_release.py"
 SPEC = importlib.util.spec_from_file_location("castlabs_release", SCRIPT_PATH)
 release = importlib.util.module_from_spec(SPEC)
@@ -26,11 +29,11 @@ SPEC.loader.exec_module(release)
 
 
 def test_prerelease_version_is_consistent():
-    assert release.project_version(ROOT) == "0.37.8.dev2"
+    assert release.project_version(ROOT) == "0.37.8.dev3"
     first_line = (
         (ROOT / "src" / "c2pa" / "c2pa.py").read_text(encoding="utf-8").splitlines()[13]
     )
-    assert first_line == "# Version: 0.37.8.dev2"
+    assert first_line == "# Version: 0.37.8.dev3"
 
 
 def test_release_lock_and_schemas_are_valid_json():
@@ -57,7 +60,9 @@ def test_release_lock_and_schemas_are_valid_json():
         jsonschema.validate(lock, schema)
 
 
-def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper():
+def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
+    tmp_path,
+):
     release_workflow = (
         ROOT / ".github" / "workflows" / "castlabs-vsi-release.yml"
     ).read_text(encoding="utf-8")
@@ -108,7 +113,7 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper():
         in release_workflow
     )
     assert (
-        "c2pa_python-0.37.8.dev2-py3-none-manylinux_2_28_x86_64.whl" in release_workflow
+        "c2pa_python-0.37.8.dev3-py3-none-manylinux_2_28_x86_64.whl" in release_workflow
     )
     assert release_workflow.count("verify-wheel-native") == 2
     assert release_workflow.index("--only-plat --plat manylinux_2_28_x86_64") < (
@@ -159,18 +164,65 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper():
         "python3 -m pytest -q c2pa-python/tests/test_castlabs_release_tooling.py"
         in (release_workflow)
     )
-    assert "if: github.ref == 'refs/tags/castlabs-v0.37.8.dev2'" in release_workflow
+    assert "if: github.ref == 'refs/tags/castlabs-v0.37.8.dev3'" in release_workflow
     assert "-F draft=true -F prerelease=true" in release_workflow
     assert "--clobber" not in release_workflow
     assert "repos/castlabs/c2pa-python/releases" in release_workflow
     assert "inspect-draft-release" in release_workflow
     assert release_workflow.count("inspect-draft-release") == 3
-    assert release_workflow.count("verify-draft-release") == 3
-    assert "gh release upload" in release_workflow
+    assert release_workflow.count("verify-draft-release") == 2
+    assert "gh release upload" not in release_workflow
+    assert release_workflow.count("--paginate") == 1
+    assert "query_release_id" in release_workflow
+    assert "release-created-response.json" in release_workflow
+    assert "extract-release-id" in release_workflow
+    assert "validate-owned-empty-draft" in release_workflow
+    assert "validate-created-release" in release_workflow
+    assert "--jq .id" not in release_workflow
+    assert "target_commitish=$SOURCE_SHA" in release_workflow
+    assert (
+        "https://uploads.github.com/repos/castlabs/c2pa-python/releases/"
+        "${RELEASE_ID}/assets?name=${asset_name}" in release_workflow
+    )
+    assert "validate-upload-response" in release_workflow
+    assert release_workflow.count("return 0") >= 5
     assert "CREATED_DRAFT_ID" in release_workflow
+    assert "CLEANUP_ARMED=1" in release_workflow
+    create_response = release_workflow.index("> release-created-response.json")
+    extract_id = release_workflow.index("extract-release-id", create_response)
+    exact_query = release_workflow.index("query_release_id", extract_id)
+    owned_empty = release_workflow.index("validate-owned-empty-draft", exact_query)
+    cleanup_armed = release_workflow.index("CLEANUP_ARMED=1", owned_empty)
+    strict_create = release_workflow.index("validate-created-release", cleanup_armed)
+    assert create_response < extract_id < exact_query < owned_empty < cleanup_armed
+    assert cleanup_armed < strict_create
+    creation_branch = release_workflow.index('if [[ "$RELEASE_EXISTS" == true ]]')
+    pre_create_tag_check = release_workflow.index("verify_tag_source", creation_branch)
+    create_post = release_workflow.index(
+        "repos/castlabs/c2pa-python/releases \\", pre_create_tag_check
+    )
+    assert pre_create_tag_check < create_post
+    assert release_workflow.index(
+        "CLEANUP_ARMED=0", release_workflow.index("upload_missing()")
+    ) < release_workflow.index(
+        "https://uploads.github.com", release_workflow.index("upload_missing()")
+    )
     assert "releases/${CREATED_DRAFT_ID}" in release_workflow
     assert "gh api --method DELETE" in release_workflow
     assert "gh release delete" not in release_workflow
+    cleanup_block = release_workflow[
+        release_workflow.index("cleanup_current_draft() {") : release_workflow.index(
+            "discover_release() {"
+        )
+    ]
+    assert "validate-owned-empty-draft" in cleanup_block
+    assert "validate-created-release" not in cleanup_block
+    assert release_workflow.count("verify_tag_source") == 3
+    final_tag_check = release_workflow.rindex("verify_tag_source")
+    final_query = release_workflow.index(
+        'query_release_id "$RELEASE_ID" release-final.json'
+    )
+    assert final_tag_check < final_query
     assert release_workflow.index("attest-build-provenance@") < (
         release_workflow.index("inspect-draft-release")
     )
@@ -186,9 +238,9 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper():
         in pypi_workflow
     )
     assert '--signer-digest "$SOURCE_SHA"' in pypi_workflow
-    assert "--source-ref refs/tags/castlabs-v0.37.8.dev2" in pypi_workflow
+    assert "--source-ref refs/tags/castlabs-v0.37.8.dev3" in pypi_workflow
     assert '--source-digest "$SOURCE_SHA"' in pypi_workflow
-    assert "pypi.org/pypi/c2pa-python/0.37.8.dev2/json" in pypi_workflow
+    assert "pypi.org/pypi/c2pa-python/0.37.8.dev3/json" in pypi_workflow
     assert "pypi-plan" in pypi_workflow
     assert "packages-dir: publish-dist/" in pypi_workflow
     assert "if: steps.pypi.outputs.upload == 'true'" in pypi_workflow
@@ -217,9 +269,29 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper():
     assert "manual legacy publishing accepts final X.Y.Z versions only" in (
         legacy_release
     )
-    assert 'test "$VERSION" != 0.37.8.dev2' in legacy_release
+    assert 'test "$VERSION" != 0.37.8.dev3' not in legacy_workflow
     assert legacy_workflow.count("final X.Y.Z versions only") == 2
     assert "tests/test_castlabs_release_tooling.py" in legacy_workflow
+    shell_helpers_start = release_workflow.index("          download_existing() {")
+    shell_helpers_end = release_workflow.index(
+        "          trap cleanup_current_draft EXIT", shell_helpers_start
+    )
+    shell_helpers = textwrap.dedent(
+        release_workflow[shell_helpers_start:shell_helpers_end]
+    )
+    subprocess.run(
+        ["bash"],
+        cwd=tmp_path,
+        input=(
+            "set -euo pipefail\n"
+            f"{shell_helpers}\n"
+            "touch empty-downloads empty-uploads\n"
+            "download_existing empty-downloads downloaded\n"
+            "upload_missing empty-uploads\n"
+        ),
+        text=True,
+        check=True,
+    )
     smoke = (ROOT / "tests" / "test_castlabs_release_smoke.py").read_text(
         encoding="utf-8"
     )
@@ -227,7 +299,7 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper():
     assert smoke_gate in smoke
     assert smoke.index(smoke_gate) < smoke.index("from c2pa import")
     assert release_workflow.count('CASTLABS_RELEASE_SMOKE_REQUIRED: "1"') == 2
-    assert release_workflow.count("CASTLABS_RELEASE_EXPECTED_VERSION: 0.37.8.dev2") == 2
+    assert release_workflow.count("CASTLABS_RELEASE_EXPECTED_VERSION: 0.37.8.dev3") == 2
     assert "pytest.skip(" in smoke
     assert "unittest.skip" not in smoke
     dynamic_start = smoke.index(
@@ -263,9 +335,16 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper():
     assert "strict=False" in smoke
     assert "castlabs-v0.37.8.dev1" not in release_workflow
     assert "castlabs-v0.37.8.dev1" not in pypi_workflow
+    assert "castlabs-v0.37.8.dev2" not in release_workflow
+    assert "castlabs-v0.37.8.dev2" not in pypi_workflow
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "failed prerelease workflow run `34030865864`" in readme
     assert "No dev1 draft or GitHub release was created" in readme
+    assert "failed prerelease workflow run `34057763620`" in readme
+    assert "every installed-wheel test passed on Python 3.10 through 3.13" in readme
+    assert "No dev2 draft or GitHub release survives" in readme
+    assert "workflow emitted no exact root cause" in readme
+    assert "not conclusively to the empty download-list loop" in readme
 
 
 def test_cargo_execution_and_evidence_share_the_locked_command(monkeypatch, tmp_path):
@@ -458,7 +537,7 @@ def test_safe_extract_round_trip_and_rejects_links():
 def test_wheel_inspection_rejects_unsafe_and_multiple_native_members():
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
-        wheel = root / "c2pa_python-0.37.8.dev2-py3-none-win_amd64.whl"
+        wheel = root / "c2pa_python-0.37.8.dev3-py3-none-win_amd64.whl"
         with zipfile.ZipFile(wheel, "w") as archive:
             archive.writestr("c2pa/libs/first.dll", b"one")
             archive.writestr("c2pa/libs/second.dll", b"two")
@@ -469,7 +548,7 @@ def test_wheel_inspection_rejects_unsafe_and_multiple_native_members():
         else:
             raise AssertionError("accepted wheel with multiple native libraries")
 
-        unsafe = root / "c2pa_python-0.37.8.dev2-py3-none-manylinux_2_28_x86_64.whl"
+        unsafe = root / "c2pa_python-0.37.8.dev3-py3-none-manylinux_2_28_x86_64.whl"
         with zipfile.ZipFile(unsafe, "w") as archive:
             archive.writestr("../libc2pa_c.so", b"unsafe")
         try:
@@ -781,6 +860,9 @@ def _release_json(paths: dict[str, Path], names: set[str], *, draft=True):
         "tag_name": release.RELEASE_TAG,
         "draft": draft,
         "prerelease": True,
+        "name": release.RELEASE_NAME,
+        "body": release.RELEASE_BODY,
+        "target_commitish": TEST_SOURCE_SHA,
         "assets": [
             {
                 "id": index + 100,
@@ -816,13 +898,13 @@ def test_draft_release_resume_requires_exact_existing_assets(tmp_path):
         f"c2pa-python-{release.RELEASE_VERSION}-native-windows-x86_64.tar.gz.evidence.json.sha256",
     }
 
-    new_plan = release.inspect_draft_release(assets, None)
+    new_plan = release.inspect_draft_release(assets, None, TEST_SOURCE_SHA)
     assert new_plan["releaseExists"] is False
     assert set(new_plan["missing"]) == expected
 
     existing_names = set(sorted(expected)[:4])
     prior_plan = release.inspect_draft_release(
-        assets, _release_json(local, existing_names)
+        assets, _release_json(local, existing_names), TEST_SOURCE_SHA
     )
     downloaded = tmp_path / "downloaded"
     downloaded.mkdir()
@@ -836,7 +918,7 @@ def test_draft_release_resume_requires_exact_existing_assets(tmp_path):
         release.verify_draft_release(assets, downloaded, prior_plan)
 
     complete_plan = release.inspect_draft_release(
-        assets, _release_json(local, expected)
+        assets, _release_json(local, expected), TEST_SOURCE_SHA
     )
     complete_download = tmp_path / "complete-download"
     complete_download.mkdir()
@@ -851,17 +933,187 @@ def test_draft_release_resume_requires_exact_existing_assets(tmp_path):
 
     published = _release_json(local, set(), draft=False)
     with pytest.raises(SystemExit):
-        release.inspect_draft_release(assets, published)
+        release.inspect_draft_release(assets, published, TEST_SOURCE_SHA)
     remote_mismatch = _release_json(local, {sorted(expected)[0]})
     remote_mismatch["assets"][0]["digest"] = f"sha256:{'0' * 64}"
     with pytest.raises(SystemExit):
-        release.inspect_draft_release(assets, remote_mismatch)
+        release.inspect_draft_release(assets, remote_mismatch, TEST_SOURCE_SHA)
     unexpected = _release_json(local, set())
     unexpected["assets"].append(
         {"id": 999, "name": "unexpected.bin", "size": 1, "state": "uploaded"}
     )
     with pytest.raises(SystemExit):
-        release.inspect_draft_release(assets, unexpected)
+        release.inspect_draft_release(assets, unexpected, TEST_SOURCE_SHA)
+
+
+def test_release_response_validators_cover_owned_empty_and_complete_states(tmp_path):
+    assets = tmp_path / "assets"
+    local = _write_complete_release_assets(assets)
+    expected = set(local)
+
+    discovery = release.inspect_draft_release(assets, None, TEST_SOURCE_SHA)
+    assert discovery["releaseExists"] is False
+
+    create_response = _release_json(local, set())
+    minimally_parseable = copy.deepcopy(create_response)
+    minimally_parseable["name"] = "strict validation will reject this name"
+    response_path = tmp_path / "create-response.json"
+    response_path.write_text(json.dumps(minimally_parseable), encoding="utf-8")
+    extracted_id = tmp_path / "extracted-id.txt"
+    release.command_extract_release_id(
+        SimpleNamespace(release_json=str(response_path), id_output=str(extracted_id))
+    )
+    assert extracted_id.read_text(encoding="ascii") == f"{create_response['id']}\n"
+    release_id = release.validate_release_identity(
+        create_response, TEST_SOURCE_SHA, require_empty=True
+    )
+    assert release_id == create_response["id"]
+    normalized_body = copy.deepcopy(create_response)
+    normalized_body["body"] = normalized_body["body"].replace("\n", "\r\n") + "  \r\n"
+    assert (
+        release.validate_release_identity(
+            normalized_body, TEST_SOURCE_SHA, require_empty=True
+        )
+        == release_id
+    )
+    for allowed_target in ("main", "feat/live-video-vsi", TEST_SOURCE_SHA):
+        target_response = copy.deepcopy(create_response)
+        target_response["target_commitish"] = allowed_target
+        assert (
+            release.validate_release_identity(
+                target_response, TEST_SOURCE_SHA, require_empty=True
+            )
+            == release_id
+        )
+    for field, bad_value in (
+        ("id", True),
+        ("tag_name", "wrong-tag"),
+        ("name", "wrong-name"),
+        ("body", "wrong-body"),
+        ("target_commitish", "b" * 40),
+        ("draft", False),
+        ("prerelease", False),
+    ):
+        invalid = copy.deepcopy(create_response)
+        invalid[field] = bad_value
+        with pytest.raises(SystemExit):
+            release.validate_release_identity(
+                invalid, TEST_SOURCE_SHA, require_empty=True
+            )
+
+    assert release.validate_owned_empty_draft(create_response, release_id) == release_id
+    for field, bad_value in (
+        ("name", "strict-name-mismatch"),
+        ("target_commitish", "b" * 40),
+    ):
+        strict_mismatch = copy.deepcopy(create_response)
+        strict_mismatch[field] = bad_value
+        with pytest.raises(SystemExit):
+            release.validate_release_identity(
+                strict_mismatch, TEST_SOURCE_SHA, require_empty=True
+            )
+        assert (
+            release.validate_owned_empty_draft(strict_mismatch, release_id)
+            == release_id
+        )
+    for field, bad_value in (
+        ("tag_name", "wrong-tag"),
+        ("body", "ownership marker missing"),
+        ("assets", [{"id": 9}]),
+        ("draft", False),
+    ):
+        not_owned_empty = copy.deepcopy(create_response)
+        not_owned_empty[field] = bad_value
+        with pytest.raises(SystemExit):
+            release.validate_owned_empty_draft(not_owned_empty, release_id)
+    for invalid_id in (True, False, 0, -1, "0", "not-an-id"):
+        with pytest.raises(SystemExit, match="positive integer"):
+            release.positive_int(invalid_id, "test ID")
+    with pytest.raises(SystemExit, match="expected GitHub release ID"):
+        release.validate_release_identity(
+            create_response,
+            TEST_SOURCE_SHA,
+            expected_release_id=True,
+            require_empty=True,
+        )
+
+    exact_empty = copy.deepcopy(create_response)
+    exact_plan = release.inspect_draft_release(
+        assets,
+        exact_empty,
+        TEST_SOURCE_SHA,
+        expected_release_id=release_id,
+    )
+    empty_download = tmp_path / "empty-download"
+    empty_download.mkdir()
+    assert (
+        set(release.verify_draft_release(assets, empty_download, exact_plan))
+        == expected
+    )
+
+    complete = copy.deepcopy(create_response)
+    complete["assets"] = []
+    for index, name in enumerate(sorted(expected), start=1000):
+        response = {
+            "id": index,
+            "name": name,
+            "size": local[name].stat().st_size,
+            "digest": f"sha256:{release.sha256_file(local[name])}",
+            "state": "uploaded",
+        }
+        assert release.validate_upload_response(response, local[name]) == index
+        complete["assets"].append(response)
+
+    digest_pending = copy.deepcopy(complete["assets"][0])
+    digest_pending.pop("digest")
+    assert (
+        release.validate_upload_response(digest_pending, local[digest_pending["name"]])
+        == digest_pending["id"]
+    )
+
+    sample_name = sorted(expected)[0]
+    sample_response = complete["assets"][0]
+    for field, bad_value in (
+        ("id", True),
+        ("id", 0),
+        ("name", "wrong-name"),
+        ("size", -1),
+        ("digest", f"sha256:{'0' * 64}"),
+        ("state", "new"),
+    ):
+        invalid = copy.deepcopy(sample_response)
+        invalid[field] = bad_value
+        with pytest.raises(SystemExit):
+            release.validate_upload_response(invalid, local[sample_name])
+
+    complete_plan = release.inspect_draft_release(
+        assets,
+        complete,
+        TEST_SOURCE_SHA,
+        expected_release_id=release_id,
+    )
+    complete_download = tmp_path / "complete-transition-download"
+    complete_download.mkdir()
+    for name, path in local.items():
+        (complete_download / name).write_bytes(path.read_bytes())
+    assert (
+        release.verify_draft_release(
+            assets,
+            complete_download,
+            complete_plan,
+            require_complete=True,
+        )
+        == []
+    )
+    final_digest_missing = copy.deepcopy(complete)
+    final_digest_missing["assets"][0]["digest"] = None
+    with pytest.raises(SystemExit, match="digest differs"):
+        release.inspect_draft_release(
+            assets,
+            final_digest_missing,
+            TEST_SOURCE_SHA,
+            expected_release_id=release_id,
+        )
 
 
 def _write_policy_wheels(directory: Path) -> dict[str, Path]:

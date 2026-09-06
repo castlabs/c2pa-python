@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / "release" / "castlabs-vsi-inputs.lock.json"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-RELEASE_VERSION = "0.37.8.dev2"
+RELEASE_VERSION = "0.37.8.dev3"
 RUST_COMMIT = "d511c7b96aba1f2be9f4eede4f76d70d2cd59bfa"
 CARGO_LOCK_SHA256 = "c4554b8fd3a1d3a1dc00482546750a40b06d0e5a86c9e66f4830c63fbd0df70f"
 RUST_TOOLCHAIN = "1.88.0"
@@ -34,7 +34,15 @@ MANYLINUX_IMAGE = "quay.io/pypa/manylinux_2_28_x86_64"
 MANYLINUX_DIGEST = (
     "sha256:0d9c2a66a745961947a8cecbe217ca0a7ee7a5849ba2517f20f9581d18444977"
 )
-RELEASE_TAG = "castlabs-v0.37.8.dev2"
+RELEASE_TAG = "castlabs-v0.37.8.dev3"
+RELEASE_NAME = f"Castlabs c2pa-python {RELEASE_VERSION} (VSI)"
+RELEASE_BODY_MARKER = f"castlabs-vsi-release:{RELEASE_VERSION}"
+RELEASE_IDENTITY_TEXT = f"Castlabs c2pa-python {RELEASE_VERSION} immutable prerelease"
+RELEASE_BODY = (
+    f"{RELEASE_BODY_MARKER}\n\n"
+    f"{RELEASE_IDENTITY_TEXT}. Corrected after failed dev1 run 34030865864 and "
+    "dev2 run 34057763620. See the attached schema-2 evidence and SHA-256 sidecars."
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -107,6 +115,32 @@ def load_lock() -> dict[str, Any]:
 
 def fail(message: str) -> None:
     raise SystemExit(f"error: {message}")
+
+
+def positive_int(value: Any, description: str) -> int:
+    if isinstance(value, bool):
+        fail(f"{description} must be a positive integer")
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value):
+        parsed = int(value)
+    else:
+        fail(f"{description} must be a positive integer")
+    if parsed <= 0:
+        fail(f"{description} must be a positive integer")
+    return parsed
+
+
+def normalize_release_body(value: Any) -> str:
+    if not isinstance(value, str):
+        fail("GitHub draft body must be text")
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(line.rstrip() for line in normalized.split("\n")).strip()
+
+
+def body_has_ownership_marker(value: Any) -> bool:
+    normalized = normalize_release_body(value)
+    return RELEASE_BODY_MARKER in normalized.split("\n")
 
 
 def run_git(root: Path, *args: str) -> str:
@@ -183,12 +217,12 @@ def validate_lock(lock: dict[str, Any]) -> None:
     if set(lock) != required or lock.get("schemaVersion") != 1:
         fail("release lock does not match schema version 1")
     if lock["package"] != {"name": "c2pa-python", "version": RELEASE_VERSION}:
-        fail("release lock package identity is not 0.37.8.dev2")
+        fail("release lock package identity is not 0.37.8.dev3")
     if lock["pythonSource"] != {
         "repository": "castlabs/c2pa-python",
         "url": "https://github.com/castlabs/c2pa-python.git",
         "releaseBranch": "feat/live-video-vsi",
-        "releaseTag": "castlabs-v0.37.8.dev2",
+        "releaseTag": "castlabs-v0.37.8.dev3",
     }:
         fail("unexpected c2pa-python release source policy")
     rust = lock["rustSource"]
@@ -270,6 +304,16 @@ def command_lock_value(args: argparse.Namespace) -> None:
         print(json.dumps(value, separators=(",", ":")))
     else:
         print(value)
+
+
+def command_release_value(args: argparse.Namespace) -> None:
+    values = {
+        "name": RELEASE_NAME,
+        "body": RELEASE_BODY,
+        "body-marker": RELEASE_BODY_MARKER,
+        "tag": RELEASE_TAG,
+    }
+    print(values[args.field])
 
 
 def command_validate_sources(args: argparse.Namespace) -> None:
@@ -1094,9 +1138,79 @@ def load_optional_json(path: Path) -> dict[str, Any] | None:
     return values[0]
 
 
+def validate_release_identity(
+    release_data: dict[str, Any],
+    source_sha: str,
+    *,
+    expected_release_id: int | None = None,
+    require_empty: bool = False,
+) -> int:
+    if not SHA_RE.fullmatch(source_sha):
+        fail("release source SHA must be 40 lowercase hexadecimal digits")
+    if release_data.get("tag_name") != RELEASE_TAG:
+        fail("GitHub release has the wrong tag")
+    release_id = positive_int(release_data.get("id"), "GitHub release ID")
+    if expected_release_id is not None:
+        expected_release_id = positive_int(
+            expected_release_id, "expected GitHub release ID"
+        )
+    if expected_release_id is not None and release_id != expected_release_id:
+        fail("GitHub release response has the wrong release ID")
+    if release_data.get("draft") is not True:
+        fail("GitHub release is published; refusing to modify it")
+    if release_data.get("prerelease") is not True:
+        fail("GitHub draft is not marked as a prerelease")
+    if release_data.get("name") != RELEASE_NAME:
+        fail("GitHub draft has the wrong release name")
+    normalized_body = normalize_release_body(release_data.get("body"))
+    if not body_has_ownership_marker(normalized_body) or (
+        RELEASE_IDENTITY_TEXT not in normalized_body
+    ):
+        fail("GitHub draft has the wrong release identity text or body marker")
+    lock = load_lock()
+    validate_lock(lock)
+    allowed_targets = {
+        source_sha,
+        "main",
+        lock["pythonSource"]["releaseBranch"],
+    }
+    if release_data.get("target_commitish") not in allowed_targets:
+        fail("GitHub draft target_commitish has an unexpected documented form")
+    assets = release_data.get("assets")
+    if not isinstance(assets, list):
+        fail("GitHub draft has an invalid asset list")
+    if require_empty and assets:
+        fail("newly created GitHub draft is not empty")
+    return release_id
+
+
+def validate_owned_empty_draft(
+    release_data: dict[str, Any], expected_release_id: Any
+) -> int:
+    release_id = positive_int(release_data.get("id"), "GitHub release ID")
+    expected_id = positive_int(expected_release_id, "expected GitHub release ID")
+    if release_id != expected_id:
+        fail("owned draft response has the wrong release ID")
+    if release_data.get("tag_name") != RELEASE_TAG:
+        fail("owned draft response has the wrong tag")
+    if release_data.get("draft") is not True:
+        fail("owned release is not a draft")
+    if release_data.get("assets") != []:
+        fail("owned draft is not empty")
+    if not body_has_ownership_marker(release_data.get("body")):
+        fail("owned draft body marker is missing")
+    return release_id
+
+
 def inspect_draft_release(
-    assets_dir: Path, release_data: dict[str, Any] | None
+    assets_dir: Path,
+    release_data: dict[str, Any] | None,
+    source_sha: str,
+    *,
+    expected_release_id: int | None = None,
 ) -> dict[str, Any]:
+    if not SHA_RE.fullmatch(source_sha):
+        fail("release source SHA must be 40 lowercase hexadecimal digits")
     local = exact_files(
         assets_dir, expected_release_asset_names(), "local release assets"
     )
@@ -1104,25 +1218,21 @@ def inspect_draft_release(
         return {
             "schemaVersion": 1,
             "tag": RELEASE_TAG,
+            "sourceSha": source_sha,
             "releaseExists": False,
             "releaseId": None,
             "existing": [],
             "missing": sorted(local),
         }
-    if release_data.get("tag_name") != RELEASE_TAG:
-        fail("existing GitHub release has the wrong tag")
-    if release_data.get("draft") is not True:
-        fail("existing GitHub release is published; refusing to modify it")
-    if release_data.get("prerelease") is not True:
-        fail("existing GitHub draft is not marked as a prerelease")
-    release_id = release_data.get("id")
-    if not isinstance(release_id, int) or release_id <= 0:
-        fail("existing GitHub draft has an invalid release ID")
+    release_id = validate_release_identity(
+        release_data,
+        source_sha,
+        expected_release_id=expected_release_id,
+    )
     remote_assets = release_data.get("assets")
-    if not isinstance(remote_assets, list):
-        fail("existing GitHub draft has an invalid asset list")
     existing = []
     names: set[str] = set()
+    asset_ids: set[int] = set()
     for remote in remote_assets:
         if not isinstance(remote, dict):
             fail("existing GitHub draft has an invalid asset")
@@ -1132,9 +1242,12 @@ def inspect_draft_release(
         if name in names:
             fail(f"existing GitHub draft has duplicate asset name: {name}")
         names.add(name)
-        asset_id = remote.get("id")
-        if not isinstance(asset_id, int) or asset_id <= 0:
-            fail(f"existing GitHub asset has an invalid ID: {name}")
+        asset_id = positive_int(
+            remote.get("id"), f"existing GitHub asset ID for {name}"
+        )
+        if asset_id in asset_ids:
+            fail(f"existing GitHub draft has duplicate asset ID: {asset_id}")
+        asset_ids.add(asset_id)
         if remote.get("state") not in (None, "uploaded"):
             fail(f"existing GitHub asset is not fully uploaded: {name}")
         size = remote.get("size")
@@ -1142,7 +1255,7 @@ def inspect_draft_release(
             fail(f"existing GitHub asset size differs from local output: {name}")
         local_digest = sha256_file(local[name])
         api_digest = remote.get("digest")
-        if api_digest not in (None, "", f"sha256:{local_digest}"):
+        if api_digest != f"sha256:{local_digest}":
             fail(f"existing GitHub asset digest differs from local output: {name}")
         existing.append(
             {
@@ -1155,6 +1268,7 @@ def inspect_draft_release(
     return {
         "schemaVersion": 1,
         "tag": RELEASE_TAG,
+        "sourceSha": source_sha,
         "releaseExists": True,
         "releaseId": release_id,
         "existing": sorted(existing, key=lambda item: item["name"]),
@@ -1173,7 +1287,18 @@ def write_json_new(path: Path, value: Any, description: str) -> None:
 def command_inspect_draft_release(args: argparse.Namespace) -> None:
     assets_dir = Path(args.assets_dir).resolve()
     release_data = load_optional_json(Path(args.release_json).resolve())
-    plan = inspect_draft_release(assets_dir, release_data)
+    source_sha = args.source_sha.lower()
+    expected_release_id = (
+        positive_int(args.expected_release_id, "expected GitHub release ID")
+        if args.expected_release_id is not None
+        else None
+    )
+    plan = inspect_draft_release(
+        assets_dir,
+        release_data,
+        source_sha,
+        expected_release_id=expected_release_id,
+    )
     plan_path = Path(args.plan).resolve()
     download_list = Path(args.download_list).resolve()
     write_json_new(plan_path, plan, "draft release plan")
@@ -1184,6 +1309,83 @@ def command_inspect_draft_release(args: argparse.Namespace) -> None:
         encoding="utf-8",
     )
     print(plan_path)
+
+
+def write_release_id(path: Path, release_id: int, description: str) -> None:
+    if path.exists() or path.is_symlink():
+        fail(f"refusing to replace {description}: {path}")
+    path.write_text(f"{release_id}\n", encoding="ascii")
+
+
+def command_extract_release_id(args: argparse.Namespace) -> None:
+    release_data = load_optional_json(Path(args.release_json).resolve())
+    if release_data is None:
+        fail("GitHub release response is empty; possible orphan requires inspection")
+    release_id = positive_int(release_data.get("id"), "GitHub release ID")
+    write_release_id(
+        Path(args.id_output).resolve(), release_id, "extracted release ID output"
+    )
+    print(f"extracted release ID {release_id}")
+
+
+def command_validate_owned_empty_draft(args: argparse.Namespace) -> None:
+    release_data = load_optional_json(Path(args.release_json).resolve())
+    if release_data is None:
+        fail("owned draft response is empty")
+    release_id = validate_owned_empty_draft(
+        release_data,
+        positive_int(args.expected_release_id, "expected GitHub release ID"),
+    )
+    print(f"validated owned empty draft {release_id}")
+
+
+def command_validate_created_release(args: argparse.Namespace) -> None:
+    release_data = load_optional_json(Path(args.release_json).resolve())
+    if release_data is None:
+        fail("created GitHub release response is empty")
+    expected_release_id = (
+        positive_int(args.expected_release_id, "expected GitHub release ID")
+        if args.expected_release_id is not None
+        else None
+    )
+    release_id = validate_release_identity(
+        release_data,
+        args.source_sha.lower(),
+        expected_release_id=expected_release_id,
+        require_empty=True,
+    )
+    output = Path(args.id_output).resolve()
+    write_release_id(output, release_id, "created release ID output")
+    print(f"validated empty draft release {release_id}")
+
+
+def validate_upload_response(response: dict[str, Any], asset: Path) -> int:
+    if (
+        asset.name not in expected_release_asset_names()
+        or not asset.is_file()
+        or asset.is_symlink()
+    ):
+        fail(f"uploaded release asset is missing or unexpected: {asset}")
+    asset_id = positive_int(response.get("id"), "GitHub uploaded asset ID")
+    if response.get("name") != asset.name:
+        fail("GitHub asset upload response has the wrong name")
+    if response.get("size") != asset.stat().st_size:
+        fail("GitHub asset upload response has the wrong size")
+    digest = response.get("digest")
+    if digest not in (None, "", f"sha256:{sha256_file(asset)}"):
+        fail("GitHub asset upload response has the wrong digest")
+    if response.get("state") != "uploaded":
+        fail("GitHub asset upload response is not fully uploaded")
+    return asset_id
+
+
+def command_validate_upload_response(args: argparse.Namespace) -> None:
+    response = load_optional_json(Path(args.response).resolve())
+    if response is None:
+        fail("GitHub asset upload response is empty")
+    asset = Path(args.asset).resolve()
+    asset_id = validate_upload_response(response, asset)
+    print(f"validated uploaded asset {asset_id}: {asset.name}")
 
 
 def verify_draft_release(
@@ -1198,6 +1400,7 @@ def verify_draft_release(
     expected_plan_fields = {
         "schemaVersion",
         "tag",
+        "sourceSha",
         "releaseExists",
         "releaseId",
         "existing",
@@ -1205,8 +1408,20 @@ def verify_draft_release(
     }
     if set(plan) != expected_plan_fields or plan.get("schemaVersion") != 1:
         fail("draft release plan has invalid fields")
-    if plan.get("tag") != RELEASE_TAG or not isinstance(plan.get("existing"), list):
+    if (
+        plan.get("tag") != RELEASE_TAG
+        or not SHA_RE.fullmatch(plan.get("sourceSha", ""))
+        or not isinstance(plan.get("existing"), list)
+    ):
         fail("draft release plan has invalid release identity")
+    release_exists = plan.get("releaseExists")
+    if release_exists is True:
+        positive_int(plan.get("releaseId"), "draft release plan ID")
+    elif release_exists is False:
+        if plan.get("releaseId") is not None or plan["existing"]:
+            fail("absent draft release plan has release state")
+    else:
+        fail("draft release plan releaseExists must be a boolean")
     existing_items = plan["existing"]
     existing_names = {item.get("name") for item in existing_items}
     if len(existing_names) != len(existing_items) or not existing_names <= set(local):
@@ -1215,6 +1430,7 @@ def verify_draft_release(
     for item in existing_items:
         if set(item) != {"id", "name", "size", "sha256"}:
             fail("draft release plan has invalid asset fields")
+        positive_int(item["id"], f"draft release plan asset ID for {item['name']}")
         path = downloaded[item["name"]]
         if path.stat().st_size != item["size"] or sha256_file(path) != item["sha256"]:
             fail(f"downloaded draft asset differs from local output: {item['name']}")
@@ -1322,6 +1538,10 @@ def parser() -> argparse.ArgumentParser:
     value_parser.add_argument("path")
     value_parser.set_defaults(func=command_lock_value)
 
+    release_value = commands.add_parser("release-value")
+    release_value.add_argument("field", choices=("name", "body", "body-marker", "tag"))
+    release_value.set_defaults(func=command_release_value)
+
     sources = commands.add_parser("validate-sources")
     sources.add_argument("--python-root", required=True)
     sources.add_argument("--rust-root", required=True)
@@ -1398,9 +1618,33 @@ def parser() -> argparse.ArgumentParser:
     inspect_draft = commands.add_parser("inspect-draft-release")
     inspect_draft.add_argument("--assets-dir", required=True)
     inspect_draft.add_argument("--release-json", required=True)
+    inspect_draft.add_argument("--source-sha", required=True)
+    inspect_draft.add_argument("--expected-release-id")
     inspect_draft.add_argument("--plan", required=True)
     inspect_draft.add_argument("--download-list", required=True)
     inspect_draft.set_defaults(func=command_inspect_draft_release)
+
+    extract_release_id = commands.add_parser("extract-release-id")
+    extract_release_id.add_argument("--release-json", required=True)
+    extract_release_id.add_argument("--id-output", required=True)
+    extract_release_id.set_defaults(func=command_extract_release_id)
+
+    owned_empty_draft = commands.add_parser("validate-owned-empty-draft")
+    owned_empty_draft.add_argument("--release-json", required=True)
+    owned_empty_draft.add_argument("--expected-release-id", required=True)
+    owned_empty_draft.set_defaults(func=command_validate_owned_empty_draft)
+
+    created_release = commands.add_parser("validate-created-release")
+    created_release.add_argument("--release-json", required=True)
+    created_release.add_argument("--source-sha", required=True)
+    created_release.add_argument("--expected-release-id")
+    created_release.add_argument("--id-output", required=True)
+    created_release.set_defaults(func=command_validate_created_release)
+
+    upload_response = commands.add_parser("validate-upload-response")
+    upload_response.add_argument("--response", required=True)
+    upload_response.add_argument("--asset", required=True)
+    upload_response.set_defaults(func=command_validate_upload_response)
 
     verify_draft = commands.add_parser("verify-draft-release")
     verify_draft.add_argument("--assets-dir", required=True)
