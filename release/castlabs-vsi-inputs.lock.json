@@ -2,13 +2,13 @@
   "schemaVersion": 1,
   "package": {
     "name": "c2pa-python",
-    "version": "0.37.8.dev3"
+    "version": "0.37.8.dev4"
   },
   "pythonSource": {
     "repository": "castlabs/c2pa-python",
     "url": "https://github.com/castlabs/c2pa-python.git",
     "releaseBranch": "feat/live-video-vsi",
-    "releaseTag": "castlabs-v0.37.8.dev3"
+    "releaseTag": "castlabs-v0.37.8.dev4"
   },
   "rustSource": {
     "repository": "castlabs/c2pa-rs",

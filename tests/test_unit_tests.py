@@ -9201,6 +9201,21 @@ class TestManagedResourceLifecycle(unittest.TestCase):
         res.close()
         self.assertEqual(self.freed, [0xAAA2])
 
+    def test_swap_handle_same_address_frees_replacement_once(self):
+        res = self._FakeHandleResource()
+        reused_address = 0xAAA3
+        res._activate(reused_address)
+
+        # Model a native swap that consumes the original allocation and then
+        # returns a replacement allocation at the same address.
+        res._swap_handle(reused_address)
+        self.assertEqual(self.freed, [])
+
+        res.close()
+        res.close()
+
+        self.assertEqual(self.freed, [reused_address])
+
     def test_swap_handle_requires_active_resource(self):
         uninitialized = self._FakeHandleResource()
         with self.assertRaises(Error) as ctx:
@@ -9762,9 +9777,11 @@ class TestManagedResourceObjects(TestContextAPIs):
         builder.close()
         builder.close()
 
-        # Only the replacement is must be freed here.
+        # Only the replacement must be freed here. Native code may consume the
+        # original allocation and reuse its address for the replacement, so an
+        # address-based count cannot distinguish those handles after the swap.
+        self.assertEqual(len(freed), 1)
         self.assertEqual(self._free_count(freed, swapped_handle), 1)
-        self.assertEqual(self._free_count(freed, original_handle), 0)
 
     def test_repeated_swaps_on_one_builder(self):
         # Each with_archive consumes the handle the previous one returned, so
