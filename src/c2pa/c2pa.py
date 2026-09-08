@@ -11,7 +11,7 @@
 # specific language governing permissions and limitations under
 # each license.
 
-# Version: 0.37.8.dev4
+# Version: 0.37.8.dev5
 
 import ctypes
 import enum
@@ -4202,12 +4202,16 @@ class Signer(ManagedResource):
         The callback runs during signing as ``callback(label, reserve_size,
         partial_claim)``. ``partial_claim`` is a list of dictionaries with
         ``url``, ``alg``, and base64-encoded ``hash`` entries. Registrations,
-        including repeated labels, run in registration order.
+        including repeated labels, run in registration order. For every
+        signing path, the callback must return valid CBOR whose serialized
+        length is exactly ``reserve_size``. If padding is needed, encode it in
+        semantic fields such as CAWG ``pad1`` or ``pad2``; do not append
+        trailing bytes.
 
         Args:
             callback: Callable returning CBOR-encoded bytes.
             label: Preferred assertion label.
-            reserve_size: Maximum callback result size in bytes.
+            reserve_size: Exact serialized CBOR assertion size in bytes.
 
         Raises:
             C2paError.NotSupported: If the native library lacks the Castlabs
@@ -4269,11 +4273,18 @@ class Signer(ManagedResource):
                         "Dynamic assertion callback must return bytes")
 
                 result_size = len(result)
-                if result_size > out_data_max_len:
+                expected_size = int(c_reserve_size)
+                output_capacity = int(out_data_max_len)
+                if result_size != expected_size:
                     raise C2paError.Assertion(
                         f"Dynamic assertion callback for '{callback_label}' "
-                        f"returned {result_size} bytes, exceeding reserved "
-                        f"size {out_data_max_len}")
+                        f"returned {result_size} bytes; expected exactly "
+                        f"{expected_size} bytes")
+                if result_size > output_capacity:
+                    raise C2paError.Assertion(
+                        f"Dynamic assertion callback for '{callback_label}' "
+                        f"requires {result_size} bytes but received output "
+                        f"capacity {output_capacity}")
                 if result_size and not out_data:
                     raise C2paError.Assertion(
                         "Dynamic assertion callback received a null output buffer")

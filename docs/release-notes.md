@@ -1,5 +1,19 @@
 # Release notes
 
+## Version 0.37.8.dev5
+
+### Breaking changes
+
+- DynamicAssertion callbacks now treat `reserve_size` as the exact serialized
+  CBOR assertion size for every signing path. Dev4 and earlier accepted
+  undersized callback outputs; dev5 intentionally rejects both undersized and
+  oversized results with `C2paError.Assertion`. This is a breaking strictness
+  change. Padding must be encoded in semantic assertion fields, such as CAWG
+  `pad1` or `pad2`, rather than appended as trailing bytes.
+- Exact-size DynamicAssertions work with live-video VSI initialization, media
+  signing, and recovery. The earlier `assertion.bmffHash.mismatch` smoke result
+  was caused by a 5-byte callback result violating its 64-byte reservation.
+
 ## Version 0.33.0
 
 ### Breaking changes

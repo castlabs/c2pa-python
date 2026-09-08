@@ -115,6 +115,33 @@ def _empty_created_action_assertion():
     }
 
 
+def _exact_size_dynamic_assertion(identifier, reserve_size):
+    """Canonical CBOR {"id": identifier, "pad": b"..."} of exact size."""
+    if not 0 <= identifier < 24:
+        raise ValueError("identifier must use canonical one-byte CBOR")
+    prefix = b"\xa2\x62id" + bytes((identifier,)) + b"\x63pad"
+    for header_size, minimum, maximum in (
+        (1, 0, 23),
+        (2, 24, 0xff),
+        (3, 0x100, 0xffff),
+        (5, 0x10000, 0xffffffff),
+    ):
+        pad_size = reserve_size - len(prefix) - header_size
+        if minimum <= pad_size <= maximum:
+            if header_size == 1:
+                header = bytes((0x40 + pad_size,))
+            elif header_size == 2:
+                header = b"\x58" + pad_size.to_bytes(1, "big")
+            elif header_size == 3:
+                header = b"\x59" + pad_size.to_bytes(2, "big")
+            else:
+                header = b"\x5a" + pad_size.to_bytes(4, "big")
+            content = prefix + header + bytes(pad_size)
+            if len(content) == reserve_size:
+                return content
+    raise ValueError("reserve_size cannot hold the test assertion")
+
+
 class TestC2paSdk(unittest.TestCase):
     def test_sdk_version(self):
         # This test verifies the native libraries used match the expected version.
@@ -6859,7 +6886,7 @@ class TestDynamicAssertions(TestContextAPIs):
         signer = self._make_signer()
         self.addCleanup(signer.close)
         received = []
-        cbor = b"\xa1\x62id\x01"
+        cbor = _exact_size_dynamic_assertion(1, 8192)
 
         def callback(label, reserve_size, partial_claim):
             received.append((label, reserve_size, partial_claim))
@@ -6901,7 +6928,7 @@ class TestDynamicAssertions(TestContextAPIs):
         def make_callback(identifier):
             def callback(label, reserve_size, partial_claim):
                 calls.append((identifier, label, reserve_size, partial_claim))
-                return bytes((0xa1, 0x62, ord('i'), ord('d'), identifier))
+                return _exact_size_dynamic_assertion(identifier, reserve_size)
             return callback
 
         first = make_callback(1)
@@ -6965,7 +6992,62 @@ class TestDynamicAssertions(TestContextAPIs):
         self.assertIsNone(first_ref())
         self.assertIsNone(second_ref())
 
-    def test_oversized_result_is_rejected(self):
+    def test_direct_callback_rejects_non_exact_results(self):
+        partial_claim_json = json.dumps([]).encode("utf-8")
+        for label, result in (
+            ("com.example.undersized-direct", b"x" * 63),
+            ("com.example.oversized-direct", b"x" * 65),
+        ):
+            with self.subTest(label=label):
+                signer = self._make_signer()
+                try:
+                    signer.add_dynamic_assertion(
+                        lambda *_args, result=result: result,
+                        label=label,
+                        reserve_size=64,
+                    )
+                    callback_cb, error_state, _ = signer._dynamic_assertion_cbs[0]
+                    output = (ctypes.c_ubyte * 64)()
+                    written = callback_cb(
+                        None,
+                        label.encode("utf-8"),
+                        64,
+                        partial_claim_json,
+                        output,
+                        len(output),
+                    )
+                    self.assertEqual(written, -1)
+                    self.assertIsInstance(error_state.exception, Error.Assertion)
+                    self.assertEqual(
+                        str(error_state.exception),
+                        f"Dynamic assertion callback for '{label}' returned "
+                        f"{len(result)} bytes; expected exactly 64 bytes",
+                    )
+                finally:
+                    signer.close()
+
+    def test_undersized_result_is_reraised_during_builder_signing(self):
+        signer = self._make_signer()
+        self.addCleanup(signer.close)
+        signer.add_dynamic_assertion(
+            lambda label, reserve_size, partial_claim: b"\xa1\x62id\x01",
+            label="com.example.undersized",
+            reserve_size=64,
+        )
+        builder = Builder(self.test_manifest)
+
+        with open(DEFAULT_TEST_FILE, "rb") as source:
+            with self.assertRaises(Error.Assertion) as raised:
+                builder.sign(signer, "image/jpeg", source, io.BytesIO())
+
+        self.assertEqual(
+            str(raised.exception),
+            "Dynamic assertion callback for 'com.example.undersized' returned "
+            "5 bytes; expected exactly 64 bytes",
+        )
+        self.assertNotIn("bmffHash.mismatch", str(raised.exception))
+
+    def test_oversized_result_is_reraised_during_builder_signing(self):
         signer = self._make_signer()
         self.addCleanup(signer.close)
         signer.add_dynamic_assertion(
@@ -6979,8 +7061,11 @@ class TestDynamicAssertions(TestContextAPIs):
             with self.assertRaises(Error.Assertion) as raised:
                 builder.sign(signer, "image/jpeg", source, io.BytesIO())
 
-        self.assertIn("returned 65 bytes", str(raised.exception))
-        self.assertIn("reserved size 64", str(raised.exception))
+        self.assertEqual(
+            str(raised.exception),
+            "Dynamic assertion callback for 'com.example.oversized' returned "
+            "65 bytes; expected exactly 64 bytes",
+        )
 
     def test_original_callback_exception_is_reraised(self):
         class CallbackFailure(RuntimeError):

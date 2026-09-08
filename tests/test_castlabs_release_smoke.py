@@ -45,7 +45,7 @@ from c2pa import (
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
-EXPECTED_VERSION = os.environ.get("CASTLABS_RELEASE_EXPECTED_VERSION", "0.37.8.dev4")
+EXPECTED_VERSION = os.environ.get("CASTLABS_RELEASE_EXPECTED_VERSION", "0.37.8.dev5")
 REQUIRED_CAPABILITIES = {
     "dynamic assertions": has_dynamic_assertions,
     "fragmented files": has_fragmented_files,
@@ -55,10 +55,6 @@ REQUIRED_CAPABILITIES = {
     "VSI explicit time": has_live_video_vsi_explicit_time,
     "VSI MFHD probe": has_live_video_vsi_mfhd_probe,
 }
-
-
-class _KnownDynamicAssertionVsiMismatch(Exception):
-    pass
 
 
 def _boxes(segment: bytes):
@@ -117,18 +113,51 @@ def _manifest_signer() -> Signer:
     )
 
 
-def _dynamic_claim_signer(dynamic_calls: list[tuple[str, int, list]]) -> Signer:
+def _exact_size_dynamic_assertion(reserve_size: int) -> bytes:
+    # Canonical CBOR: {"id": 1, "pad": h'00...'}.
+    assert 35 <= reserve_size <= 266
+    pad_size = reserve_size - 11
+    content = (
+        b"\xa2\x62id\x01\x63pad\x58"
+        + bytes((pad_size,))
+        + bytes(pad_size)
+    )
+    assert len(content) == reserve_size
+    return content
+
+
+def _dynamic_claim_signer(
+    dynamic_calls: list[tuple[str, int, list, bytes]],
+) -> Signer:
     signer = _manifest_signer()
 
     def assertion(label, reserve_size, partial_claim):
         assert partial_claim
-        dynamic_calls.append((label, reserve_size, partial_claim))
-        return b"\xa1\x62id\x01"
+        content = _exact_size_dynamic_assertion(reserve_size)
+        dynamic_calls.append((label, reserve_size, partial_claim, content))
+        return content
 
     signer.add_dynamic_assertion(
         assertion, label="com.castlabs.release-smoke", reserve_size=64
     )
     return signer
+
+
+def _read_clean_report(format: str, content: bytes) -> dict:
+    settings = Settings()
+    settings.set("verify.verify_trust", "false")
+    try:
+        context = Context(settings=settings)
+    finally:
+        settings.close()
+    try:
+        with Reader(format, io.BytesIO(content), context=context) as reader:
+            report = json.loads(reader.json())
+            assert report.get("validation_status", []) == []
+            assert reader.get_validation_state() == "Valid"
+            return report
+    finally:
+        context.close()
 
 
 def _manifest_definition(title: str, *, format: str) -> dict:
@@ -211,15 +240,16 @@ def test_dynamic_assertion_builder_image_signing_round_trip():
     assert signed.startswith(b"\xff\xd8")
     assert len(signed) > len(source)
     assert len(dynamic_calls) == 1
-    label, reserve_size, partial_claim = dynamic_calls[0]
+    label, reserve_size, partial_claim, content = dynamic_calls[0]
     assert label == "com.castlabs.release-smoke"
     assert reserve_size == 64
+    assert len(content) == reserve_size
+    assert content == _exact_size_dynamic_assertion(reserve_size)
     assert isinstance(partial_claim, list) and partial_claim
     assert any("/c2pa.actions" in entry["url"] for entry in partial_claim)
-    with Reader("image/jpeg", io.BytesIO(signed)) as reader:
-        report = json.loads(reader.json())
-        active = report["manifests"][report["active_manifest"]]
-        assert active["title"] == "Castlabs release DynamicAssertion smoke"
+    report = _read_clean_report("image/jpeg", signed)
+    active = report["manifests"][report["active_manifest"]]
+    assert active["title"] == "Castlabs release DynamicAssertion smoke"
 
 
 def test_vsi_callback_recovery_explicit_iat_and_mfhd_round_trip():
@@ -295,14 +325,6 @@ def test_vsi_callback_recovery_explicit_iat_and_mfhd_round_trip():
         context.close()
 
 
-@pytest.mark.xfail(
-    raises=_KnownDynamicAssertionVsiMismatch,
-    reason=(
-        "pinned c2pa-rs rejects DynamicAssertion plus VSI init signing with "
-        "assertion.bmffHash.mismatch"
-    ),
-    strict=False,
-)
 def test_dynamic_assertion_claim_signer_with_vsi_init_regression():
     dynamic_calls = []
     settings = Settings()
@@ -314,36 +336,62 @@ def test_dynamic_assertion_claim_signer_with_vsi_init_regression():
         settings.close()
     private_key = ec.generate_private_key(ec.SECP256R1())
     kid = b"castlabs-combined-vsi"
+    callbacks = []
 
-    def callback(_purpose, _sequence, payload):
+    def callback(purpose, sequence, payload):
+        callbacks.append((purpose, sequence, payload))
         der = private_key.sign(payload, ec.ECDSA(hashes.SHA256()))
         r, s = decode_dss_signature(der)
         return r.to_bytes(32, "big") + s.to_bytes(32, "big")
 
     media = _unsigned_media()
+    first_sequence = moof_sequence_number(media)
+    signing_time = 1_700_000_000
+
+    def make_session(session_callback):
+        return LiveVideoVsiSession.from_callback(
+            _manifest_definition(
+                "Castlabs DynamicAssertion plus VSI regression",
+                format="video/mp4",
+            ),
+            context,
+            session_callback,
+            C2paSigningAlg.ES256,
+            _cose_key(private_key, kid),
+            kid,
+            first_sequence,
+            "2023-11-14T22:12:20Z",
+            3600,
+        )
+
     try:
-        try:
-            with LiveVideoVsiSession.from_callback(
-                _manifest_definition(
-                    "Castlabs DynamicAssertion plus VSI regression",
-                    format="video/mp4",
-                ),
-                context,
-                callback,
-                C2paSigningAlg.ES256,
-                _cose_key(private_key, kid),
-                kid,
-                moof_sequence_number(media),
-                "2023-11-14T22:12:20Z",
-                3600,
-            ) as session:
-                signed_init = session.sign_init_segment(_unsigned_init())
-                assert signed_init
-                assert dynamic_calls
-        except Exception as error:
-            if "assertion.bmffHash.mismatch" in str(error):
-                raise _KnownDynamicAssertionVsiMismatch() from error
-            raise
+        with make_session(callback) as session:
+            signed_init = session.sign_init_segment(_unsigned_init())
+            signed_media = session.sign_media_segment_at(media, signing_time)
+            assert len(signed_media) > len(media)
+            assert session.next_sequence_number == first_sequence + 1
+            assert len(dynamic_calls) == 1
+            _, reserve_size, _, content = dynamic_calls[0]
+            assert len(content) == reserve_size == 64
+            _read_clean_report("video/mp4", signed_init)
+        assert [(purpose, sequence) for purpose, sequence, _ in callbacks] == [
+            ("signer_binding", None),
+            ("vsi", first_sequence),
+        ]
+
+        recovery_calls = []
+
+        def recovery_callback(purpose, sequence, payload):
+            recovery_calls.append((purpose, sequence))
+            return callback(purpose, sequence, payload)
+
+        with make_session(recovery_callback) as recovered:
+            recovered.restore(signed_init, signed_media)
+            assert recovery_calls == []
+            next_media = _with_sequence(media, first_sequence + 1)
+            signed_next = recovered.sign_media_segment_at(next_media, signing_time + 1)
+            assert len(signed_next) > len(next_media)
+            assert recovery_calls == [("vsi", first_sequence + 1)]
     finally:
         context.close()
 

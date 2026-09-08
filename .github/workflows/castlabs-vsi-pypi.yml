@@ -6,11 +6,11 @@ on:
       release_tag:
         description: Existing immutable Castlabs prerelease tag
         required: true
-        default: castlabs-v0.37.8.dev4
+        default: castlabs-v0.37.8.dev5
         type: string
 
 concurrency:
-  group: castlabs-vsi-pypi-0.37.8.dev4
+  group: castlabs-vsi-pypi-0.37.8.dev5
   cancel-in-progress: false
 
 permissions:
@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: castlabs/c2pa-python
-          ref: castlabs-v0.37.8.dev4
+          ref: castlabs-v0.37.8.dev5
           fetch-depth: 0
           path: c2pa-python
 
@@ -45,13 +45,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          test "${INPUT_RELEASE_TAG}" = castlabs-v0.37.8.dev4
-          test "$(python3 c2pa-python/scripts/castlabs_release.py lock-value package.version)" = 0.37.8.dev4
-          test "$(gh api repos/castlabs/c2pa-python/releases/tags/castlabs-v0.37.8.dev4 --jq '(.draft == false and .prerelease == true)')" = true
+          test "${INPUT_RELEASE_TAG}" = castlabs-v0.37.8.dev5
+          test "$(python3 c2pa-python/scripts/castlabs_release.py lock-value package.version)" = 0.37.8.dev5
+          test "$(gh api repos/castlabs/c2pa-python/releases/tags/castlabs-v0.37.8.dev5 --jq '(.draft == false and .prerelease == true)')" = true
           SOURCE_SHA=$(git -C c2pa-python rev-parse HEAD)
-          test "$(git -C c2pa-python rev-list -n 1 castlabs-v0.37.8.dev4)" = "$SOURCE_SHA"
+          test "$(git -C c2pa-python rev-list -n 1 castlabs-v0.37.8.dev5)" = "$SOURCE_SHA"
           mkdir -p download dist
-          gh release download castlabs-v0.37.8.dev4 \
+          gh release download castlabs-v0.37.8.dev5 \
             --repo castlabs/c2pa-python --dir download
           python3 c2pa-python/scripts/castlabs_release.py validate-release-assets \
             --assets-dir download
@@ -63,29 +63,29 @@ jobs:
               --repo castlabs/c2pa-python \
               --signer-workflow castlabs/c2pa-python/.github/workflows/castlabs-vsi-release.yml \
               --signer-digest "$SOURCE_SHA" \
-              --source-ref refs/tags/castlabs-v0.37.8.dev4 \
+              --source-ref refs/tags/castlabs-v0.37.8.dev5 \
               --source-digest "$SOURCE_SHA" \
               --deny-self-hosted-runners
           done
           python3 c2pa-python/scripts/castlabs_release.py validate-evidence \
-            --evidence download/c2pa-python-0.37.8.dev4-native-linux-x86_64.tar.gz.evidence.json \
+            --evidence download/c2pa-python-0.37.8.dev5-native-linux-x86_64.tar.gz.evidence.json \
             --artifact-dir download --source-sha "$SOURCE_SHA"
           python3 c2pa-python/scripts/castlabs_release.py validate-evidence \
-            --evidence download/c2pa-python-0.37.8.dev4-native-windows-x86_64.tar.gz.evidence.json \
+            --evidence download/c2pa-python-0.37.8.dev5-native-windows-x86_64.tar.gz.evidence.json \
             --artifact-dir download --source-sha "$SOURCE_SHA"
           python3 c2pa-python/scripts/castlabs_release.py validate-evidence \
-            --evidence download/c2pa-python-0.37.8.dev4-py3-none-wheels.tar.gz.evidence.json \
+            --evidence download/c2pa-python-0.37.8.dev5-py3-none-wheels.tar.gz.evidence.json \
             --artifact-dir download --source-sha "$SOURCE_SHA"
           python3 c2pa-python/scripts/castlabs_release.py extract \
-            --archive download/c2pa-python-0.37.8.dev4-py3-none-wheels.tar.gz \
+            --archive download/c2pa-python-0.37.8.dev5-py3-none-wheels.tar.gz \
             --destination dist
           test "$(find dist -maxdepth 1 -name '*.whl' | wc -l)" -eq 2
-          cmp dist/c2pa_python-0.37.8.dev4-py3-none-manylinux_2_28_x86_64.whl \
-            download/c2pa_python-0.37.8.dev4-py3-none-manylinux_2_28_x86_64.whl
-          cmp dist/c2pa_python-0.37.8.dev4-py3-none-win_amd64.whl \
-            download/c2pa_python-0.37.8.dev4-py3-none-win_amd64.whl
+          cmp dist/c2pa_python-0.37.8.dev5-py3-none-manylinux_2_28_x86_64.whl \
+            download/c2pa_python-0.37.8.dev5-py3-none-manylinux_2_28_x86_64.whl
+          cmp dist/c2pa_python-0.37.8.dev5-py3-none-win_amd64.whl \
+            download/c2pa_python-0.37.8.dev5-py3-none-win_amd64.whl
           python3 -m pip install packaging==25.0 twine==6.2.0
-          python3 -c 'from packaging.version import Version; v=Version("0.37.8.dev4"); assert v.is_prerelease and str(v)=="0.37.8.dev4"'
+          python3 -c 'from packaging.version import Version; v=Version("0.37.8.dev5"); assert v.is_prerelease and str(v)=="0.37.8.dev5"'
           python3 -m twine check dist/*.whl
 
       - name: Preflight retry-safe PyPI upload set
@@ -94,7 +94,7 @@ jobs:
         run: |
           STATUS=$(curl --silent --show-error --location \
             --output pypi-response.json --write-out '%{http_code}' \
-            https://pypi.org/pypi/c2pa-python/0.37.8.dev4/json)
+            https://pypi.org/pypi/c2pa-python/0.37.8.dev5/json)
           case "$STATUS" in
             200|404) ;;
             *) echo "unexpected PyPI JSON API status: $STATUS" >&2; exit 1 ;;

@@ -30,7 +30,7 @@
     "package": {
       "type": "object", "additionalProperties": false,
       "required": ["name", "version"],
-      "properties": {"name": {"const": "c2pa-python"}, "version": {"const": "0.37.8.dev4"}}
+      "properties": {"name": {"const": "c2pa-python"}, "version": {"const": "0.37.8.dev5"}}
     },
     "pythonSource": {
       "type": "object", "additionalProperties": false,
@@ -39,7 +39,7 @@
         "repository": {"const": "castlabs/c2pa-python"},
         "url": {"const": "https://github.com/castlabs/c2pa-python.git"},
         "releaseBranch": {"const": "feat/live-video-vsi"},
-        "releaseTag": {"const": "castlabs-v0.37.8.dev4"}
+        "releaseTag": {"const": "castlabs-v0.37.8.dev5"}
       }
     },
     "rustSource": {
@@ -48,7 +48,7 @@
       "properties": {
         "repository": {"const": "castlabs/c2pa-rs"},
         "url": {"const": "https://github.com/castlabs/c2pa-rs.git"},
-        "commit": {"const": "d511c7b96aba1f2be9f4eede4f76d70d2cd59bfa"},
+        "commit": {"const": "9b80687f386f2b373fd1ac9c705d8e61a07b608e"},
         "version": {"const": "0.91.0-dev"},
         "cargoLockSha256": {"const": "c4554b8fd3a1d3a1dc00482546750a40b06d0e5a86c9e66f4830c63fbd0df70f"}
       }
