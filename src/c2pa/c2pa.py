@@ -24,6 +24,7 @@ import warnings
 import weakref
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union, Callable, Any, overload
 import io
@@ -125,6 +126,43 @@ _LIVE_VIDEO_VSI_MFHD_PROBE_FUNCTIONS = (
     'c2pa_live_video_moof_sequence_number',
 )
 
+# Optional trusted-processor prehashed VSI API. The native ABI is being
+# developed independently, so every symbol remains optional and the Python
+# surface fails closed unless both the corresponding bit and symbols exist.
+_TRUSTED_VSI_CAPABILITIES_FUNCTIONS = (
+    'c2pa_live_video_trusted_vsi_capabilities',
+)
+_TRUSTED_VSI_CREATE_FUNCTIONS = (
+    'c2pa_live_video_trusted_vsi_session_create_callback_v1',
+)
+_TRUSTED_VSI_SPLIT_INIT_FUNCTIONS = (
+    'c2pa_live_video_trusted_vsi_session_reserve_init_uuid',
+    'c2pa_live_video_trusted_vsi_session_reserved_manifest_id',
+    'c2pa_live_video_trusted_vsi_session_finalize_init_uuid',
+    'c2pa_live_video_trusted_vsi_session_commit_init_uuid',
+)
+_TRUSTED_VSI_EXPERT_MEDIA_FUNCTIONS = (
+    'c2pa_live_video_trusted_vsi_session_sign_emsg_sig_structure',
+)
+_TRUSTED_VSI_COMPOSED_MEDIA_FUNCTIONS = (
+    'c2pa_live_video_trusted_vsi_session_reserve_media_emsg',
+    'c2pa_live_video_trusted_vsi_session_finalize_media_emsg',
+)
+_TRUSTED_VSI_RECOVERY_FUNCTIONS = (
+    'c2pa_live_video_trusted_vsi_session_recover',
+)
+_TRUSTED_VSI_STATUS_FUNCTIONS = (
+    'c2pa_live_video_trusted_vsi_session_status_v1',
+)
+
+_TRUSTED_VSI_CAP_SPLIT_INIT = 1 << 0
+_TRUSTED_VSI_CAP_EXPERT_MEDIA = 1 << 1
+_TRUSTED_VSI_CAP_COMPOSED_MEDIA = 1 << 2
+_TRUSTED_VSI_CAP_RECOVERY = 1 << 3
+_TRUSTED_VSI_CAP_SIGNING_CONTEXT_V1 = 1 << 4
+_TRUSTED_VSI_CAP_FULL_UINT32_SEQUENCE = 1 << 5
+_TRUSTED_VSI_PYTHON_API_ENABLED = False
+
 # Castlabs dynamic-assertion extension. Keep this optional so the package can
 # still be imported with standard upstream native libraries.
 _DYNAMIC_ASSERTION_FUNCTIONS = (
@@ -222,6 +260,28 @@ _LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE = all(
 _LIVE_VIDEO_VSI_MFHD_PROBE_AVAILABLE = all(
     hasattr(_lib, name) for name in _LIVE_VIDEO_VSI_MFHD_PROBE_FUNCTIONS
 )
+_TRUSTED_VSI_CAPABILITIES_FUNCTION_AVAILABLE = all(
+    hasattr(_lib, name) for name in _TRUSTED_VSI_CAPABILITIES_FUNCTIONS
+)
+_TRUSTED_VSI_CREATE_AVAILABLE = all(
+    hasattr(_lib, name) for name in _TRUSTED_VSI_CREATE_FUNCTIONS
+)
+_TRUSTED_VSI_SPLIT_INIT_AVAILABLE = all(
+    hasattr(_lib, name) for name in _TRUSTED_VSI_SPLIT_INIT_FUNCTIONS
+)
+_TRUSTED_VSI_EXPERT_MEDIA_AVAILABLE = all(
+    hasattr(_lib, name) for name in _TRUSTED_VSI_EXPERT_MEDIA_FUNCTIONS
+)
+_TRUSTED_VSI_COMPOSED_MEDIA_AVAILABLE = all(
+    hasattr(_lib, name) for name in _TRUSTED_VSI_COMPOSED_MEDIA_FUNCTIONS
+)
+_TRUSTED_VSI_RECOVERY_AVAILABLE = all(
+    hasattr(_lib, name) for name in _TRUSTED_VSI_RECOVERY_FUNCTIONS
+)
+_TRUSTED_VSI_STATUS_AVAILABLE = all(
+    hasattr(_lib, name) for name in _TRUSTED_VSI_STATUS_FUNCTIONS
+)
+_TRUSTED_VSI_CAPABILITIES = 0
 _DYNAMIC_ASSERTIONS_AVAILABLE = all(
     hasattr(_lib, name) for name in _DYNAMIC_ASSERTION_FUNCTIONS
 )
@@ -733,6 +793,45 @@ LiveVideoVsiSignCallback = ctypes.CFUNCTYPE(
     ctypes.POINTER(ctypes.c_ubyte),
     ctypes.c_size_t,
 )
+class C2paLiveVideoTrustedVsiSigningContextV1(ctypes.Structure):
+    """Version-one native trusted-VSI callback context."""
+
+    _fields_ = [
+        ("purpose", ctypes.c_uint32),
+        ("sequence_number", ctypes.c_uint32),
+        ("has_sequence_number", ctypes.c_bool),
+        ("event_id", ctypes.c_uint32),
+        ("has_event_id", ctypes.c_bool),
+        ("exhaust_after_sign", ctypes.c_bool),
+    ]
+
+
+class C2paLiveVideoTrustedVsiStatusV1(ctypes.Structure):
+    """Native public status for a trusted prehashed VSI session."""
+
+    _fields_ = [
+        ("init_uuid_committed", ctypes.c_bool),
+        ("init_uuid_pending", ctypes.c_bool),
+        ("media_emsg_pending", ctypes.c_bool),
+        ("has_next_sequence_number", ctypes.c_bool),
+        ("next_sequence_number", ctypes.c_uint32),
+        ("has_next_event_id", ctypes.c_bool),
+        ("next_event_id", ctypes.c_uint32),
+        ("exhausted", ctypes.c_bool),
+        ("has_exhaustion_reason", ctypes.c_bool),
+        ("exhaustion_reason", ctypes.c_uint32),
+    ]
+
+
+TrustedVsiSignCallbackV1 = ctypes.CFUNCTYPE(
+    ctypes.c_ssize_t,
+    ctypes.c_void_p,
+    ctypes.POINTER(C2paLiveVideoTrustedVsiSigningContextV1),
+    ctypes.POINTER(ctypes.c_ubyte),
+    ctypes.c_size_t,
+    ctypes.POINTER(ctypes.c_ubyte),
+    ctypes.c_size_t,
+)
 
 
 class StreamContext(ctypes.Structure):
@@ -897,6 +996,11 @@ class C2paContext(ctypes.Structure):
 
 class C2paLiveVideoVsiSigner(ctypes.Structure):
     """Opaque structure for a live-video VSI signing session."""
+    _fields_ = []  # Empty as it's opaque in the C API
+
+
+class C2paLiveVideoTrustedVsiSession(ctypes.Structure):
+    """Opaque structure for a trusted prehashed live-video VSI session."""
     _fields_ = []  # Empty as it's opaque in the C API
 
 # Helper function to set function prototypes
@@ -1269,6 +1373,112 @@ if _LIVE_VIDEO_VSI_MFHD_PROBE_AVAILABLE:
          ctypes.c_size_t,
          ctypes.POINTER(ctypes.c_uint32)],
         ctypes.c_int
+    )
+
+# Provisional declarations for the separately versioned trusted-processor ABI.
+# Calls remain unavailable from this Python scaffold; keeping setup conditional
+# ensures older native libraries are never asked for these optional symbols.
+if _TRUSTED_VSI_CAPABILITIES_FUNCTION_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_capabilities,
+        [],
+        ctypes.c_uint64,
+    )
+    try:
+        _TRUSTED_VSI_CAPABILITIES = int(
+            _lib.c2pa_live_video_trusted_vsi_capabilities()
+        )
+    except Exception:  # pragma: no cover - defensive import compatibility
+        _TRUSTED_VSI_CAPABILITIES = 0
+if _TRUSTED_VSI_CREATE_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_create_callback_v1,
+        [ctypes.POINTER(C2paContext),
+         ctypes.c_char_p,
+         ctypes.c_int,
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t,
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t,
+         ctypes.c_uint64,
+         ctypes.c_char_p,
+         ctypes.c_uint64,
+         ctypes.c_void_p,
+         TrustedVsiSignCallbackV1],
+        ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
+    )
+if _TRUSTED_VSI_SPLIT_INIT_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_reserve_init_uuid,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
+         ctypes.c_char_p,
+         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
+        ctypes.c_int64,
+    )
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_reserved_manifest_id,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession)],
+        ctypes.c_void_p,
+    )
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_finalize_init_uuid,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t,
+         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
+        ctypes.c_int64,
+    )
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_commit_init_uuid,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession)],
+        ctypes.c_int,
+    )
+if _TRUSTED_VSI_EXPERT_MEDIA_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_sign_emsg_sig_structure,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t,
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t,
+         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
+        ctypes.c_int64,
+    )
+if _TRUSTED_VSI_COMPOSED_MEDIA_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_reserve_media_emsg,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
+         ctypes.c_int64,
+         ctypes.c_uint32,
+         ctypes.c_uint32,
+         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
+         ctypes.POINTER(C2paLiveVideoTrustedVsiSigningContextV1)],
+        ctypes.c_int64,
+    )
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_finalize_media_emsg,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t,
+         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
+        ctypes.c_int64,
+    )
+if _TRUSTED_VSI_RECOVERY_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_recover,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t,
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t],
+        ctypes.c_int,
+    )
+if _TRUSTED_VSI_STATUS_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_status_v1,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
+         ctypes.POINTER(C2paLiveVideoTrustedVsiStatusV1)],
+        ctypes.c_int,
     )
 
 
@@ -2025,6 +2235,100 @@ class Context(ManagedResource, ContextProvider):
         return self._handle
 
 
+@dataclass(frozen=True)
+class VsiSigningContextV1:
+    """Purpose-bound context supplied to a trusted VSI signing callback."""
+
+    purpose: str
+    sequence_number: Optional[int] = None
+    event_id: Optional[int] = None
+    exhaust_after_sign: bool = False
+
+
+@dataclass(frozen=True)
+class TrustedVsiInitUuidReservation:
+    """Opaque complete placeholder UUID box returned by init reservation."""
+
+    placeholder_uuid_box: bytes
+    manifest_id: str
+
+
+@dataclass(frozen=True)
+class TrustedVsiMediaEmsgReservation:
+    """Complete placeholder EMSG box and its pinned media facts."""
+
+    placeholder_emsg_box: bytes
+    signing_context: VsiSigningContextV1
+    signing_time_unix_seconds: int
+    timescale: int
+    event_duration: int
+
+
+@dataclass(frozen=True)
+class TrustedVsiStatus:
+    """Public state snapshot for a trusted prehashed VSI session."""
+
+    init_uuid_committed: bool
+    init_uuid_pending: bool
+    media_emsg_pending: bool
+    next_sequence_number: Optional[int]
+    next_event_id: Optional[int]
+    exhausted: bool
+    exhaustion_reason: Optional[str] = None
+
+
+def _has_trusted_vsi_capability(bit: int, symbols_available: bool = True) -> bool:
+    return (
+        _TRUSTED_VSI_PYTHON_API_ENABLED
+        and _TRUSTED_VSI_CAPABILITIES_FUNCTION_AVAILABLE
+        and _TRUSTED_VSI_CREATE_AVAILABLE
+        and symbols_available
+        and bool(_TRUSTED_VSI_CAPABILITIES & bit)
+    )
+
+
+def has_live_video_trusted_vsi_split_init() -> bool:
+    """Return whether split-init complete-UUID operations are available."""
+    return _has_trusted_vsi_capability(
+        _TRUSTED_VSI_CAP_SPLIT_INIT,
+        _TRUSTED_VSI_SPLIT_INIT_AVAILABLE,
+    )
+
+
+def has_live_video_trusted_vsi_expert_emsg() -> bool:
+    """Return whether expert EMSG/Sig_structure signing is available."""
+    return _has_trusted_vsi_capability(
+        _TRUSTED_VSI_CAP_EXPERT_MEDIA,
+        _TRUSTED_VSI_EXPERT_MEDIA_AVAILABLE,
+    )
+
+
+def has_live_video_trusted_vsi_composed_emsg() -> bool:
+    """Return whether signer-composed complete-EMSG operations are available."""
+    return _has_trusted_vsi_capability(
+        _TRUSTED_VSI_CAP_COMPOSED_MEDIA,
+        _TRUSTED_VSI_COMPOSED_MEDIA_AVAILABLE,
+    )
+
+
+def has_live_video_trusted_vsi_recovery() -> bool:
+    """Return whether trusted prehashed VSI recovery is available."""
+    return _has_trusted_vsi_capability(
+        _TRUSTED_VSI_CAP_RECOVERY,
+        _TRUSTED_VSI_RECOVERY_AVAILABLE,
+    )
+
+
+def has_live_video_trusted_vsi_signing_context_v1() -> bool:
+    """Return whether version-1 purpose-bound callback contexts are available."""
+    return _has_trusted_vsi_capability(_TRUSTED_VSI_CAP_SIGNING_CONTEXT_V1)
+
+
+def has_live_video_trusted_vsi_full_uint32_exhaustion() -> bool:
+    """Return whether VSI supports signing then exhausting at uint32 max."""
+    return _has_trusted_vsi_capability(_TRUSTED_VSI_CAP_FULL_UINT32_SEQUENCE)
+
+
 def has_live_video_vsi() -> bool:
     """Return whether the loaded native library provides live-video VSI."""
     return _LIVE_VIDEO_VSI_AVAILABLE
@@ -2092,6 +2396,152 @@ def has_fragmented_files() -> bool:
         and _FRAGMENTED_READER_AVAILABLE
         and _FRAGMENTED_CONTEXT_READER_AVAILABLE
     )
+
+
+class TrustedVsiPrehashedSession(ManagedResource):
+    """Managed scaffold for trusted-processor prehashed VSI sessions.
+
+    This release publishes the stable Python shape but intentionally does not
+    enable trusted signing. Every entry point fails closed before invoking a
+    callback or native operation.
+    """
+
+    def __init__(
+        self,
+        manifest_json: Union[str, dict],
+        context: 'Context',
+        callback: Callable[[VsiSigningContextV1, bytes], bytes],
+        algorithm: Union[C2paSigningAlg, str],
+        public_cose_key: bytes,
+        kid: bytes,
+        min_sequence_number: int,
+        created_at: str,
+        validity_period_secs: int,
+    ):
+        super().__init__()
+        self._init_attrs()
+        self._raise_scaffold_unavailable(
+            has_live_video_trusted_vsi_signing_context_v1(),
+            "trusted prehashed VSI session creation",
+        )
+
+    @classmethod
+    def from_callback(
+        cls,
+        manifest_json: Union[str, dict],
+        context: 'Context',
+        callback: Callable[[VsiSigningContextV1, bytes], bytes],
+        algorithm: Union[C2paSigningAlg, str],
+        public_cose_key: bytes,
+        kid: bytes,
+        min_sequence_number: int,
+        created_at: str,
+        validity_period_secs: int,
+    ) -> 'TrustedVsiPrehashedSession':
+        """Create a trusted session backed by a purpose-bound callback."""
+        return cls(
+            manifest_json,
+            context,
+            callback,
+            algorithm,
+            public_cose_key,
+            kid,
+            min_sequence_number,
+            created_at,
+            validity_period_secs,
+        )
+
+    def _init_attrs(self):
+        super()._init_attrs()
+        self._trusted_vsi_callback = None
+
+    def _release(self):
+        self._trusted_vsi_callback = None
+
+    @staticmethod
+    def _raise_scaffold_unavailable(available: bool, operation: str) -> None:
+        if not _TRUSTED_VSI_PYTHON_API_ENABLED:
+            raise C2paError.NotSupported(
+                f"{operation} is not enabled by this Python API scaffold"
+            )
+        if not available:
+            raise C2paError.NotSupported(
+                f"{operation} is unavailable in the loaded native library"
+            )
+        raise C2paError.NotSupported(f"{operation} is unavailable")
+
+    def reserve_init_uuid(
+        self,
+        format: str = "video/mp4",
+    ) -> TrustedVsiInitUuidReservation:
+        """Reserve a complete fixed-size placeholder C2PA UUID box."""
+        self._raise_scaffold_unavailable(
+            has_live_video_trusted_vsi_split_init(),
+            "trusted VSI init UUID reservation",
+        )
+
+    def finalize_init_uuid(self, canonical_hash: bytes) -> bytes:
+        """Finalize the reserved UUID box with a canonical hard binding."""
+        self._raise_scaffold_unavailable(
+            has_live_video_trusted_vsi_split_init(),
+            "trusted VSI init UUID finalization",
+        )
+
+    def commit_init_uuid(self) -> None:
+        """Commit publication of the finalized init UUID box."""
+        self._raise_scaffold_unavailable(
+            has_live_video_trusted_vsi_split_init(),
+            "trusted VSI init publication commit",
+        )
+
+    def sign_emsg_sig_structure(
+        self,
+        emsg_skeleton: bytes,
+        sig_structure: bytes,
+    ) -> bytes:
+        """Sign a validated expert-mode EMSG COSE Sig_structure."""
+        self._raise_scaffold_unavailable(
+            has_live_video_trusted_vsi_expert_emsg(),
+            "trusted VSI expert EMSG signing",
+        )
+
+    def reserve_media_emsg_at(
+        self,
+        signing_time_unix_seconds: int,
+        timescale: int,
+        event_duration: int,
+    ) -> TrustedVsiMediaEmsgReservation:
+        """Reserve a complete fixed-size placeholder VSI EMSG box."""
+        self._raise_scaffold_unavailable(
+            has_live_video_trusted_vsi_composed_emsg(),
+            "trusted VSI media EMSG reservation",
+        )
+
+    def finalize_media_emsg(self, canonical_hash: bytes) -> bytes:
+        """Finalize the reserved EMSG with a canonical BMFF hard binding."""
+        self._raise_scaffold_unavailable(
+            has_live_video_trusted_vsi_composed_emsg(),
+            "trusted VSI media EMSG finalization",
+        )
+
+    def recover(
+        self,
+        signed_init_uuid: bytes,
+        previous_emsg: Optional[bytes] = None,
+    ) -> None:
+        """Restore trusted session state from published complete boxes."""
+        self._raise_scaffold_unavailable(
+            has_live_video_trusted_vsi_recovery(),
+            "trusted prehashed VSI recovery",
+        )
+
+    def status(self) -> TrustedVsiStatus:
+        """Return the trusted session's public transaction state."""
+        available = (
+            has_live_video_trusted_vsi_signing_context_v1()
+            and _TRUSTED_VSI_STATUS_AVAILABLE
+        )
+        self._raise_scaffold_unavailable(available, "trusted VSI status")
 
 
 class LiveVideoVsiSession(ManagedResource):
@@ -5383,6 +5833,11 @@ __all__ = [
     'Builder',
     'Signer',
     'LiveVideoVsiSession',
+    'TrustedVsiPrehashedSession',
+    'VsiSigningContextV1',
+    'TrustedVsiInitUuidReservation',
+    'TrustedVsiMediaEmsgReservation',
+    'TrustedVsiStatus',
     'has_dynamic_assertions',
     'has_fragmented_files',
     'has_live_video_vsi',
@@ -5390,6 +5845,12 @@ __all__ = [
     'has_live_video_vsi_explicit_time',
     'has_live_video_vsi_mfhd_probe',
     'has_live_video_vsi_recovery',
+    'has_live_video_trusted_vsi_split_init',
+    'has_live_video_trusted_vsi_expert_emsg',
+    'has_live_video_trusted_vsi_composed_emsg',
+    'has_live_video_trusted_vsi_recovery',
+    'has_live_video_trusted_vsi_signing_context_v1',
+    'has_live_video_trusted_vsi_full_uint32_exhaustion',
     'moof_sequence_number',
     'load_settings',
     'format_embeddable',
