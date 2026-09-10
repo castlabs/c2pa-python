@@ -141,8 +141,8 @@ _TRUSTED_VSI_SPLIT_INIT_FUNCTIONS = (
     'c2pa_live_video_trusted_vsi_session_finalize_init_uuid',
     'c2pa_live_video_trusted_vsi_session_commit_init_uuid',
 )
-_TRUSTED_VSI_EXPERT_MEDIA_FUNCTIONS = (
-    'c2pa_live_video_trusted_vsi_session_sign_emsg_sig_structure',
+_TRUSTED_VSI_EXPERT_SIG_STRUCTURE_FUNCTIONS = (
+    'c2pa_live_video_trusted_vsi_session_sign_sig_structure',
 )
 _TRUSTED_VSI_COMPOSED_MEDIA_FUNCTIONS = (
     'c2pa_live_video_trusted_vsi_session_reserve_media_emsg',
@@ -156,7 +156,7 @@ _TRUSTED_VSI_STATUS_FUNCTIONS = (
 )
 
 _TRUSTED_VSI_CAP_SPLIT_INIT = 1 << 0
-_TRUSTED_VSI_CAP_EXPERT_MEDIA = 1 << 1
+_TRUSTED_VSI_CAP_EXPERT_SIG_STRUCTURE = 1 << 1
 _TRUSTED_VSI_CAP_COMPOSED_MEDIA = 1 << 2
 _TRUSTED_VSI_CAP_RECOVERY = 1 << 3
 _TRUSTED_VSI_CAP_SIGNING_CONTEXT_V1 = 1 << 4
@@ -269,8 +269,8 @@ _TRUSTED_VSI_CREATE_AVAILABLE = all(
 _TRUSTED_VSI_SPLIT_INIT_AVAILABLE = all(
     hasattr(_lib, name) for name in _TRUSTED_VSI_SPLIT_INIT_FUNCTIONS
 )
-_TRUSTED_VSI_EXPERT_MEDIA_AVAILABLE = all(
-    hasattr(_lib, name) for name in _TRUSTED_VSI_EXPERT_MEDIA_FUNCTIONS
+_TRUSTED_VSI_EXPERT_SIG_STRUCTURE_AVAILABLE = all(
+    hasattr(_lib, name) for name in _TRUSTED_VSI_EXPERT_SIG_STRUCTURE_FUNCTIONS
 )
 _TRUSTED_VSI_COMPOSED_MEDIA_AVAILABLE = all(
     hasattr(_lib, name) for name in _TRUSTED_VSI_COMPOSED_MEDIA_FUNCTIONS
@@ -1384,12 +1384,13 @@ if _TRUSTED_VSI_CAPABILITIES_FUNCTION_AVAILABLE:
         [],
         ctypes.c_uint64,
     )
-    try:
-        _TRUSTED_VSI_CAPABILITIES = int(
-            _lib.c2pa_live_video_trusted_vsi_capabilities()
-        )
-    except Exception:  # pragma: no cover - defensive import compatibility
-        _TRUSTED_VSI_CAPABILITIES = 0
+    if _TRUSTED_VSI_PYTHON_API_ENABLED:
+        try:
+            _TRUSTED_VSI_CAPABILITIES = int(
+                _lib.c2pa_live_video_trusted_vsi_capabilities()
+            )
+        except Exception:  # pragma: no cover - defensive import compatibility
+            _TRUSTED_VSI_CAPABILITIES = 0
 if _TRUSTED_VSI_CREATE_AVAILABLE:
     _setup_function(
         _lib.c2pa_live_video_trusted_vsi_session_create_callback_v1,
@@ -1433,15 +1434,16 @@ if _TRUSTED_VSI_SPLIT_INIT_AVAILABLE:
         [ctypes.POINTER(C2paLiveVideoTrustedVsiSession)],
         ctypes.c_int,
     )
-if _TRUSTED_VSI_EXPERT_MEDIA_AVAILABLE:
+if _TRUSTED_VSI_EXPERT_SIG_STRUCTURE_AVAILABLE:
     _setup_function(
-        _lib.c2pa_live_video_trusted_vsi_session_sign_emsg_sig_structure,
+        _lib.c2pa_live_video_trusted_vsi_session_sign_sig_structure,
         [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
          ctypes.POINTER(ctypes.c_ubyte),
          ctypes.c_size_t,
-         ctypes.POINTER(ctypes.c_ubyte),
-         ctypes.c_size_t,
-         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
+         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
+         ctypes.POINTER(ctypes.c_uint32),
+         ctypes.POINTER(ctypes.c_uint32),
+         ctypes.POINTER(ctypes.c_bool)],
         ctypes.c_int64,
     )
 if _TRUSTED_VSI_COMPOSED_MEDIA_AVAILABLE:
@@ -2246,6 +2248,35 @@ class VsiSigningContextV1:
 
 
 @dataclass(frozen=True)
+class TrustedVsiSignResult:
+    """Fixed-format signature and signer-assigned uint32 sequence metadata.
+
+    ``sequence_max`` is an optional inclusive ceiling, not an event ID.
+    """
+
+    signature: bytes
+    sequence_number: int
+    sequence_max: Optional[int] = None
+
+    def __post_init__(self):
+        if not isinstance(self.signature, bytes):
+            raise TypeError("signature must be bytes")
+        if len(self.signature) != 64:
+            raise ValueError("signature must be exactly 64 bytes")
+        for name, value in (("sequence_number", self.sequence_number),
+                            ("sequence_max", self.sequence_max)):
+            if name == "sequence_max" and value is None:
+                continue
+            if type(value) is not int:
+                raise TypeError(f"{name} must be an integer")
+            if not 0 <= value <= 2**32 - 1:
+                raise ValueError(f"{name} must be a uint32")
+        if (self.sequence_max is not None
+                and self.sequence_max < self.sequence_number):
+            raise ValueError("sequence_max must not be below sequence_number")
+
+
+@dataclass(frozen=True)
 class TrustedVsiInitUuidReservation:
     """Opaque complete placeholder UUID box returned by init reservation."""
 
@@ -2295,11 +2326,11 @@ def has_live_video_trusted_vsi_split_init() -> bool:
     )
 
 
-def has_live_video_trusted_vsi_expert_emsg() -> bool:
-    """Return whether expert EMSG/Sig_structure signing is available."""
+def has_live_video_trusted_vsi_expert_sig_structure() -> bool:
+    """Return whether exact expert COSE Sig_structure signing is available."""
     return _has_trusted_vsi_capability(
-        _TRUSTED_VSI_CAP_EXPERT_MEDIA,
-        _TRUSTED_VSI_EXPERT_MEDIA_AVAILABLE,
+        _TRUSTED_VSI_CAP_EXPERT_SIG_STRUCTURE,
+        _TRUSTED_VSI_EXPERT_SIG_STRUCTURE_AVAILABLE,
     )
 
 
@@ -2401,9 +2432,9 @@ def has_fragmented_files() -> bool:
 class TrustedVsiPrehashedSession(ManagedResource):
     """Managed scaffold for trusted-processor prehashed VSI sessions.
 
-    This release publishes the stable Python shape but intentionally does not
-    enable trusted signing. Every entry point fails closed before invoking a
-    callback or native operation.
+    This unreleased API shape intentionally does not enable trusted signing.
+    Every entry point fails closed before argument inspection, callbacks,
+    native operations, or managed-resource bookkeeping.
     """
 
     def __init__(
@@ -2418,8 +2449,6 @@ class TrustedVsiPrehashedSession(ManagedResource):
         created_at: str,
         validity_period_secs: int,
     ):
-        super().__init__()
-        self._init_attrs()
         self._raise_scaffold_unavailable(
             has_live_video_trusted_vsi_signing_context_v1(),
             "trusted prehashed VSI session creation",
@@ -2439,17 +2468,30 @@ class TrustedVsiPrehashedSession(ManagedResource):
         validity_period_secs: int,
     ) -> 'TrustedVsiPrehashedSession':
         """Create a trusted session backed by a purpose-bound callback."""
-        return cls(
-            manifest_json,
-            context,
-            callback,
-            algorithm,
-            public_cose_key,
-            kid,
-            min_sequence_number,
-            created_at,
-            validity_period_secs,
+        cls._raise_scaffold_unavailable(
+            has_live_video_trusted_vsi_signing_context_v1(),
+            "trusted prehashed VSI session creation",
         )
+
+    def _cleanup_resources(self):
+        # Rejected construction owns nothing, including no PID/lifecycle state.
+        if _TRUSTED_VSI_PYTHON_API_ENABLED:
+            super()._cleanup_resources()
+
+    def close(self) -> None:
+        """Unavailable while the trusted session scaffold is disabled."""
+        self._raise_scaffold_unavailable(False, "trusted VSI close")
+
+    def __enter__(self):
+        self._raise_scaffold_unavailable(False, "trusted VSI context entry")
+
+    @property
+    def is_valid(self) -> bool:
+        self._raise_scaffold_unavailable(False, "trusted VSI validity")
+
+    @classmethod
+    def _wrap_native_handle(cls, handle):
+        cls._raise_scaffold_unavailable(False, "trusted VSI handle wrapping")
 
     def _init_attrs(self):
         super()._init_attrs()
@@ -2494,15 +2536,19 @@ class TrustedVsiPrehashedSession(ManagedResource):
             "trusted VSI init publication commit",
         )
 
-    def sign_emsg_sig_structure(
+    def sign_sig_structure(
         self,
-        emsg_skeleton: bytes,
         sig_structure: bytes,
-    ) -> bytes:
-        """Sign a validated expert-mode EMSG COSE Sig_structure."""
+    ) -> TrustedVsiSignResult:
+        """Sign exact caller-composed COSE Sig_structure bytes (disabled).
+
+        The caller owns EMSG construction, event IDs, and payload semantics.
+        The future signer owns sequence allocation and signs without rebuilding
+        these bytes. No CBOR/COSE validator is implemented by this scaffold.
+        """
         self._raise_scaffold_unavailable(
-            has_live_video_trusted_vsi_expert_emsg(),
-            "trusted VSI expert EMSG signing",
+            has_live_video_trusted_vsi_expert_sig_structure(),
+            "trusted VSI expert Sig_structure signing",
         )
 
     def reserve_media_emsg_at(
@@ -5835,6 +5881,7 @@ __all__ = [
     'LiveVideoVsiSession',
     'TrustedVsiPrehashedSession',
     'VsiSigningContextV1',
+    'TrustedVsiSignResult',
     'TrustedVsiInitUuidReservation',
     'TrustedVsiMediaEmsgReservation',
     'TrustedVsiStatus',
@@ -5846,7 +5893,7 @@ __all__ = [
     'has_live_video_vsi_mfhd_probe',
     'has_live_video_vsi_recovery',
     'has_live_video_trusted_vsi_split_init',
-    'has_live_video_trusted_vsi_expert_emsg',
+    'has_live_video_trusted_vsi_expert_sig_structure',
     'has_live_video_trusted_vsi_composed_emsg',
     'has_live_video_trusted_vsi_recovery',
     'has_live_video_trusted_vsi_signing_context_v1',

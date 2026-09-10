@@ -1,5 +1,21 @@
 # Release notes
 
+## Unreleased: disabled trusted-processor VSI API
+
+- Replaces the unshipped expert EMSG scaffold with
+  `TrustedVsiPrehashedSession.sign_sig_structure(sig_structure)` and
+  `has_live_video_trusted_vsi_expert_sig_structure()`. No old aliases remain.
+- Adds frozen `TrustedVsiSignResult`: a 64-byte fixed-format signature, uint32
+  sequence number, and optional inclusive uint32 maximum not below that number.
+- Mirrors the paired native signature/sequence output ABI. Split-init,
+  signer-composed EMSG, status, recovery, and V1 callback-context targets remain.
+- All trusted capabilities remain false. Import does not invoke the native
+  trusted capability function; construction and operations reject before
+  argument inspection, callbacks, native calls, or managed-resource bookkeeping.
+- Adds isolated Linux/Windows paired-source API tests. This is not functional
+  signing, CBOR/COSE validation, or dev5 artifact qualification. The immutable
+  dev5 release, source pins, version, and publication identity are unchanged.
+
 ## Version 0.37.8.dev5
 
 ### Breaking changes

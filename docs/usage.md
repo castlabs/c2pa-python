@@ -24,6 +24,44 @@ from c2pa import Settings, Context, ContextBuilder, ContextProvider
 
 All of `Builder`, `Reader`, `Signer`, `Context`, and `Settings` support context managers (the `with` statement) for automatic resource cleanup.
 
+## Trusted-processor VSI (unreleased, disabled)
+
+This is a separate target API, not the existing complete-buffer
+`LiveVideoVsiSession` implementation. Every
+`has_live_video_trusted_vsi_*()` probe returns `False`, including
+`has_live_video_trusted_vsi_expert_sig_structure()`. Do not enable the private
+Python gate: construction and every session operation raise
+`C2paError.NotSupported` before inspecting inputs or invoking callbacks/native
+code or allocating managed resources. Import does not call the native trusted
+capability function while gated.
+
+The expert target signature is
+`TrustedVsiPrehashedSession.sign_sig_structure(sig_structure: bytes) -> TrustedVsiSignResult`.
+It accepts only the caller's exact COSE `Sig_structure`, without an EMSG skeleton
+or duplicate hash/header envelope. The packager owns EMSG construction and event
+IDs. The future signer owns ordered sequence allocation and signs the supplied
+bytes without reconstruction. Its frozen result has exactly these fields:
+
+- `signature: bytes`: exactly 64 fixed-format bytes (not DER ECDSA).
+- `sequence_number: int`: uint32, including zero and `2**32 - 1`.
+- `sequence_max: Optional[int] = None`: optional inclusive uint32 ceiling, at
+  least `sequence_number`; absence advertises no ceiling.
+
+The packager predicts the sequence when composing the payload and treats the
+result as confirmation. The future validator is limited to one canonical CBOR
+item, an untagged four-element `Signature1` array, protected-header bytes, empty
+external-AAD bytes, payload bytes, and a canonical protected-header algorithm
+matching the session's fixed signature shape. This scaffold implements **no**
+CBOR/COSE validation, signing, persistence, or state transitions. It does not
+inspect payload sequence, hash, manifest, timing, or EMSG fields.
+
+Split-init reservation/finalization/commit, signer-composed EMSG reservation/
+finalization, recovery, status, and `VsiSigningContextV1` remain disabled native
+target contracts. Expert callback context uses purpose `vsi`, the assigned
+sequence, `event_id=None`, and sequence-derived `exhaust_after_sign`. Existing
+complete-buffer VSI APIs are unchanged. Superseded unshipped expert names are
+removed, not compatibility aliases. These changes are not in immutable dev5.
+
 ## Define manifest JSON
 
 The Python library works with both file-based and stream-based operations.

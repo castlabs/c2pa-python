@@ -100,6 +100,50 @@ make build-from-source C2PA_RS_PATH=$C2PA_RS_PATH
 
 ## Castlabs VSI prerelease process
 
+### Unreleased trusted-processor API qualification
+
+The [trusted-processor target API](docs/usage.md#trusted-processor-vsi-unreleased-disabled)
+is disabled and separate from complete-buffer VSI and immutable dev5. Expert
+signing accepts only exact `Sig_structure` bytes and targets a frozen
+`TrustedVsiSignResult` (64-byte signature, uint32 sequence, optional inclusive
+maximum). Every trusted probe remains false, import makes no native trusted
+capability call, and session construction/operations fail before side effects.
+
+`build.yml` runs baseline-gated tests against its upstream downloaded native
+library (`-k "not paired"`). Separately, both it and the dedicated workflow use
+[`trusted-vsi-paired.yml`](.github/workflows/trusted-vsi-paired.yml) for isolated
+Linux/Windows source builds and the full focused `tests/test_trusted_vsi_api.py`
+with `C2PA_TRUSTED_VSI_ABI_REQUIRED=1`. Missing reduced ABI symbols fail rather
+than skip. The paired Rust source is pinned to
+`castlabs/c2pa-rs@cee86aae03887b5a0dddcd765a39e96360963bb0`; the job logs resolved
+Python/Rust SHAs. This disabled-scaffold qualification pin is separate from
+immutable dev5 release inputs and is not release-artifact evidence.
+
+For the dedicated workflow, manually select the trusted-API workflow revision,
+set `trusted_vsi_only=true`, and supply its full Python `source_sha`. This path
+skips **all** dev5 prepare/build/test/publish jobs. The reusable job builds only
+an isolated native library and source-import metadata, never stages a release
+native, builds/uploads a wheel, or publishes anything. Ordinary dev5 dispatch
+and tag behavior, native pins, evidence, and release identity remain unchanged.
+Do not package this new ABI under a dev5 artifact name.
+
+To test a locally built paired native without reinstalling the Python package:
+
+```sh
+PYTHONPATH="$PWD/src" \
+C2PA_LIBRARY_NAME=/absolute/path/to/paired-c2pa-rs/target/debug/libc2pa_c.so \
+C2PA_SOURCE_BUILD_VERSION=0.91.0-dev \
+C2PA_TRUSTED_VSI_ABI_REQUIRED=1 \
+python -m pytest -q tests/test_trusted_vsi_api.py -ra
+```
+
+For an old native library, omit the required-ABI variable for honest local
+skips, or use `-k "not paired"` for baseline-only coverage. Neither is paired
+qualification. A fresh source checkout also needs distribution metadata for
+imports (`python setup.py egg_info`, without a native download or wheel build).
+
+### Immutable dev5 process
+
 The dedicated [`Castlabs VSI prerelease`](.github/workflows/castlabs-vsi-release.yml) workflow builds version `0.37.8.dev5` for Linux x86-64 and Windows x86-64. It does not call `scripts/download_artifacts.py`: both native libraries are compiled with Cargo `--locked` and `CARGO_BUILD_JOBS=1` from the exact [Castlabs c2pa-rs](https://github.com/castlabs/c2pa-rs) commit in [`release/castlabs-vsi-inputs.lock.json`](release/castlabs-vsi-inputs.lock.json). The lock also fixes the Rust 1.88.0 toolchain coordinated with c2pa-rs qualification, checksum-verified rustup installers, no-default-feature set, target set, and the Linux manylinux container digest. The legacy `build.yml` explicitly excludes `castlabs-v*` tag pushes and guards its jobs and PyPI publisher against manual dispatch on those tags; the dedicated workflow alone owns them. Ordinary non-Castlabs tag releases retain the legacy behavior, while manual legacy publication additionally requires `refs/heads/main` and a final `X.Y.Z` package version.
 
 The immutable `castlabs-v0.37.8.dev1` tag records failed prerelease workflow run `34030865864`. Linux compiled successfully but its combined DynamicAssertion-plus-VSI smoke used a 5-byte callback result for a 64-byte reservation and later failed with `assertion.bmffHash.mismatch`; Windows compiled successfully and failed only in platform-sensitive wheel metadata parsing. The Linux failure was an undersized callback contract violation, not an inherent incompatibility between DynamicAssertions and VSI. No dev1 draft or GitHub release was created, and the tag remains unchanged.

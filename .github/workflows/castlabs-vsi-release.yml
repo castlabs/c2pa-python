@@ -7,9 +7,14 @@ on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Full feat/live-video-vsi branch-tip SHA to release
+        description: Full Python SHA (feat/live-video-vsi tip for dev5; paired source for trusted_vsi_only)
         required: true
         type: string
+      trusted_vsi_only:
+        description: Only non-publishing paired-source trusted API tests; bypass all dev5 jobs
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: castlabs-vsi-release-0.37.8.dev5
@@ -24,7 +29,14 @@ env:
   PYTHONHASHSEED: "0"
 
 jobs:
+  trusted-vsi-paired:
+    if: github.event_name == 'workflow_dispatch' && inputs.trusted_vsi_only
+    uses: ./.github/workflows/trusted-vsi-paired.yml
+    with:
+      python-ref: ${{ inputs.source_sha }}
+
   prepare:
+    if: ${{ !inputs.trusted_vsi_only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:

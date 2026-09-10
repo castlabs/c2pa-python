@@ -26,6 +26,17 @@ permissions:
   actions: read
 
 jobs:
+  trusted-vsi-paired:
+    name: Trusted VSI paired-source API (not release artifacts)
+    if: |
+      !startsWith(github.ref, 'refs/tags/castlabs-v') &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.author_association == 'COLLABORATOR' ||
+       github.event.pull_request.author_association == 'MEMBER' ||
+       github.event.pull_request.user.login == 'dependabot[bot]' ||
+       contains(github.event.pull_request.labels.*.name, 'safe to test'))
+    uses: ./.github/workflows/trusted-vsi-paired.yml
+
   read-version:
     name: Read C2PA version
     if: ${{ !startsWith(github.ref, 'refs/tags/castlabs-v') }}
@@ -146,6 +157,9 @@ jobs:
       - name: Run tests
         run: python3 ./tests/test_unit_tests.py
 
+      - name: Test disabled trusted API against upstream native (not ABI qualification)
+        run: python3 -m pytest -q tests/test_trusted_vsi_api.py -k "not paired"
+
   tests-windows:
     name: Unit tests for developer setup (Windows)
     needs: read-version
@@ -231,6 +245,9 @@ jobs:
 
       - name: Run tests
         run: python .\tests\test_unit_tests.py
+
+      - name: Test disabled trusted API against upstream native (not ABI qualification)
+        run: python -m pytest -q tests/test_trusted_vsi_api.py -k "not paired"
 
   build-linux-wheel:
     name: Build Linux wheel

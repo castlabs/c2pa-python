@@ -1,0 +1,75 @@
+name: Trusted VSI paired-source API qualification (non-publishing)
+
+on:
+  workflow_call:
+    inputs:
+      python-ref:
+        description: Python source under test (defaults to the caller commit)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  paired-api:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            library: libc2pa_c.so
+          - os: windows-2022
+            library: c2pa_c.dll
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    env:
+      CARGO_BUILD_JOBS: "1"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/paired-rust/target
+      PYTHONPATH: ${{ github.workspace }}/python-source/src
+      C2PA_LIBRARY_NAME: ${{ github.workspace }}/paired-rust/target/debug/${{ matrix.library }}
+      C2PA_SOURCE_BUILD_VERSION: 0.91.0-dev
+      C2PA_TRUSTED_VSI_ABI_REQUIRED: "1"
+    steps:
+      - name: Require a full Python source SHA
+        shell: bash
+        env:
+          PYTHON_SOURCE_SHA: ${{ inputs.python-ref || github.sha }}
+        run: '[[ "$PYTHON_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.python-ref || github.sha }}
+          path: python-source
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: castlabs/c2pa-rs
+          # Reviewed reduced scaffold, NOT the immutable dev5 release input.
+          ref: cee86aae03887b5a0dddcd765a39e96360963bb0
+          path: paired-rust
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.10"
+      - name: Record paired source identities
+        shell: bash
+        run: |
+          git -C python-source rev-parse HEAD
+          git -C paired-rust rev-parse HEAD
+      - name: Build isolated paired native scaffold
+        shell: bash
+        working-directory: paired-rust
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          cargo +1.88.0 build --locked -p c2pa-c-ffi --no-default-features \
+            --features rust_native_crypto,http,add_thumbnails,file_io,unstable_live_video
+      - name: Prepare source imports (no wheel or native staging)
+        shell: bash
+        working-directory: python-source
+        run: |
+          python -m pip install -r requirements.txt pytest==8.4.1 setuptools==68.0.0 toml==0.10.2
+          python setup.py egg_info
+      - name: Require reduced trusted ABI and run focused tests without skips
+        shell: bash
+        working-directory: python-source
+        run: python -m pytest -q tests/test_trusted_vsi_api.py -ra
+      # No artifacts, release metadata, wheels, or publication from this job.

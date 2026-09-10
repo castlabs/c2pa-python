@@ -60,6 +60,33 @@ def test_release_lock_and_schemas_are_valid_json():
         jsonschema.validate(lock, schema)
 
 
+def test_trusted_vsi_workflows_isolate_paired_abi_from_dev5():
+    workflow_dir = ROOT / ".github" / "workflows"
+    paired = (workflow_dir / "trusted-vsi-paired.yml").read_text(encoding="utf-8")
+    legacy = (workflow_dir / "build.yml").read_text(encoding="utf-8")
+    dedicated = (workflow_dir / "castlabs-vsi-release.yml").read_text(encoding="utf-8")
+    for caller in (legacy, dedicated):
+        assert "uses: ./.github/workflows/trusted-vsi-paired.yml" in caller
+    assert legacy.count('tests/test_trusted_vsi_api.py -k "not paired"') == 2
+    assert "if: github.event_name == 'workflow_dispatch' && inputs.trusted_vsi_only" in dedicated
+    assert "  prepare:\n    if: ${{ !inputs.trusted_vsi_only }}" in dedicated
+    assert dedicated.count(f"ref: {release.RUST_COMMIT}") == 3
+    assert 'C2PA_TRUSTED_VSI_ABI_REQUIRED: "1"' in paired
+    assert "python -m pytest -q tests/test_trusted_vsi_api.py -ra" in paired
+    assert "-k " not in paired
+    assert "ubuntu-24.04" in paired and "windows-2022" in paired
+    assert "C2PA_LIBRARY_NAME: ${{ github.workspace }}/paired-rust/target/debug/" in paired
+    assert "PYTHONPATH: ${{ github.workspace }}/python-source/src" in paired
+    assert "python setup.py egg_info" in paired
+    assert "cargo +1.88.0 build --locked" in paired
+    assert re.search(r"^\s+ref: [0-9a-f]{40}$", paired, re.MULTILINE)
+    assert "ref: feat/" not in paired
+    for forbidden in ("download_artifacts.py", "castlabs_release.py",
+                      "upload-artifact@", "bdist_wheel", "contents: write",
+                      "id-token: write", "continue-on-error", "gh release"):
+        assert forbidden not in paired
+
+
 def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
     tmp_path,
 ):
@@ -72,13 +99,20 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
     legacy_workflow = (ROOT / ".github" / "workflows" / "build.yml").read_text(
         encoding="utf-8"
     )
-    for workflow in (release_workflow, pypi_workflow):
+    paired_workflow = (
+        ROOT / ".github" / "workflows" / "trusted-vsi-paired.yml"
+    ).read_text(encoding="utf-8")
+    for workflow in (release_workflow, pypi_workflow, paired_workflow):
         action_shas = re.findall(
             r"^\s*(?:-\s+)?uses:\s+[^@\s]+@([0-9a-f]{40})(?:\s+#.*)?$",
             workflow,
             re.MULTILINE,
         )
-        assert len(action_shas) == workflow.count("uses:")
+        local_calls = workflow.count(
+            "uses: ./.github/workflows/trusted-vsi-paired.yml"
+        )
+        assert local_calls == (1 if workflow == release_workflow else 0)
+        assert len(action_shas) + local_calls == workflow.count("uses:")
         assert "mstattma/" not in workflow
     assert release_workflow.count("timeout-minutes:") == 6
     assert pypi_workflow.count("timeout-minutes:") == 1
