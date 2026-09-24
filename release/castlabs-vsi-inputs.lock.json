@@ -2,18 +2,18 @@
   "schemaVersion": 1,
   "package": {
     "name": "c2pa-python",
-    "version": "0.37.12.dev1"
+    "version": "0.37.12.dev2"
   },
   "pythonSource": {
     "repository": "castlabs/c2pa-python",
     "url": "https://github.com/castlabs/c2pa-python.git",
     "releaseBranch": "feat/conformance-validation-v02",
-    "releaseTag": "castlabs-v0.37.12.dev1"
+    "releaseTag": "castlabs-v0.37.12.dev2"
   },
   "rustSource": {
     "repository": "castlabs/c2pa-rs",
     "url": "https://github.com/castlabs/c2pa-rs.git",
-    "commit": "a2739fd66092c410773bdc6881474ec34fb8ea16",
+    "commit": "6ca7fb168b10bde7a1ef8bb8e577ffbae73233c7",
     "version": "0.92.0-dev",
     "cargoLockSha256": "e074f31ad8c7d4d4278967bb0aaf12bde0013a5f9cb7517cc7af462dbed962e2"
   },
