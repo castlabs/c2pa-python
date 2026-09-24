@@ -5623,10 +5623,6 @@ class TestBuilderWithSigner(unittest.TestCase):
                         "actions": [
                             _empty_created_action(),
                             {
-                                "action": "c2pa.created",
-                                "digitalSourceType": "http://c2pa.org/digitalsourcetype/empty",
-                            },
-                            {
                                 "action": "c2pa.placed",
                                 "parameters": {
                                     "ingredientIds": ["my-ingredient"]
@@ -5862,10 +5858,6 @@ class TestBuilderWithSigner(unittest.TestCase):
                     "data": {
                         "actions": [
                             _empty_created_action(),
-                            {
-                                "action": "c2pa.created",
-                                "digitalSourceType": "http://c2pa.org/digitalsourcetype/empty",
-                            },
                             {
                                 "action": "c2pa.placed",
                                 "parameters": {
@@ -10895,3 +10887,22 @@ class TestErrorsStillRaiseAfterCleanup(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(warnings='ignore')
+
+
+class TestConformanceValidationSettings(unittest.TestCase):
+    """Native caller-controlled validation time and checked crJSON."""
+
+    def test_invalid_validation_time_is_rejected(self):
+        with self.assertRaises(Exception):
+            Context.from_dict({"verify": {"validation_time": "2027-01-15 08:00:00"}})
+
+    def test_validation_time_is_reported_in_crjson(self):
+        context = Context.from_dict({
+            "verify": {"validation_time": "2027-01-15T10:00:00+02:00"},
+        })
+        fixture = os.path.join(FIXTURES_DIR, "C.jpg")
+        with open(fixture, "rb") as stream:
+            reader = Reader("image/jpeg", stream, context=context)
+            document = json.loads(reader.crjson())
+        results = document["manifests"][0]["validationResults"]
+        self.assertEqual(results["validationTime"], "2027-01-15T08:00:00Z")
