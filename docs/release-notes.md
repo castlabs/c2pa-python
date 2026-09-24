@@ -1,5 +1,20 @@
 # Release notes
 
+## Version 0.37.12.dev1
+
+Castlabs Conformance Program 0.2 / C2PA 2.4 candidate prerelease.
+
+- Native `castlabs/c2pa-rs` `a2739fd66092c410773bdc6881474ec34fb8ea16`: the
+  live-video VSI line merged with contentauth main `6c92bc32` (C2PA 2.4
+  validation), plus the single-file fMP4 Merkle and TFRA fixes.
+- `verify.validation_time` (RFC 3339) selects the evaluation instant for
+  certificate, chain and OCSP decisions and the reported `validationTime`.
+- Purpose-scoped trust anchors (`trust.anchors` with `trust_kind`
+  `manifest`/`tsa`/`cawg`) and `verify.strict_trust_purposes`.
+- `Reader.crjson()` is checked: exporter failures raise instead of `{}`.
+- 2.4 `specVersion` in `claim_generator_info` serializes correctly, and the
+  default EKU allow-list survives context trust settings.
+
 ## Version 0.37.8.dev5
 
 ### Breaking changes

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/castlabs/c2pa-python/blob/feat/live-video-vsi/release/castlabs-vsi-inputs.schema.json",
+  "$id": "https://github.com/castlabs/c2pa-python/blob/feat/conformance-validation-v02/release/castlabs-vsi-inputs.schema.json",
   "title": "Castlabs VSI c2pa-python release input lock",
   "type": "object",
   "additionalProperties": false,
@@ -30,7 +30,7 @@
     "package": {
       "type": "object", "additionalProperties": false,
       "required": ["name", "version"],
-      "properties": {"name": {"const": "c2pa-python"}, "version": {"const": "0.37.8.dev5"}}
+      "properties": {"name": {"const": "c2pa-python"}, "version": {"const": "0.37.12.dev1"}}
     },
     "pythonSource": {
       "type": "object", "additionalProperties": false,
@@ -38,8 +38,8 @@
       "properties": {
         "repository": {"const": "castlabs/c2pa-python"},
         "url": {"const": "https://github.com/castlabs/c2pa-python.git"},
-        "releaseBranch": {"const": "feat/live-video-vsi"},
-        "releaseTag": {"const": "castlabs-v0.37.8.dev5"}
+        "releaseBranch": {"const": "feat/conformance-validation-v02"},
+        "releaseTag": {"const": "castlabs-v0.37.12.dev1"}
       }
     },
     "rustSource": {
@@ -48,9 +48,9 @@
       "properties": {
         "repository": {"const": "castlabs/c2pa-rs"},
         "url": {"const": "https://github.com/castlabs/c2pa-rs.git"},
-        "commit": {"const": "9b80687f386f2b373fd1ac9c705d8e61a07b608e"},
-        "version": {"const": "0.91.0-dev"},
-        "cargoLockSha256": {"const": "c4554b8fd3a1d3a1dc00482546750a40b06d0e5a86c9e66f4830c63fbd0df70f"}
+        "commit": {"const": "a2739fd66092c410773bdc6881474ec34fb8ea16"},
+        "version": {"const": "0.92.0-dev"},
+        "cargoLockSha256": {"const": "e074f31ad8c7d4d4278967bb0aaf12bde0013a5f9cb7517cc7af462dbed962e2"}
       }
     },
     "installer": {
@@ -62,7 +62,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["channel", "rustupVersion", "installers"],
       "properties": {
-        "channel": {"const": "1.88.0"},
+        "channel": {"const": "1.96.0"},
         "rustupVersion": {"const": "1.28.2"},
         "installers": {
           "type": "object", "additionalProperties": false,

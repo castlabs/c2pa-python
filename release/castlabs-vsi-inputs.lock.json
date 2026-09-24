@@ -2,23 +2,23 @@
   "schemaVersion": 1,
   "package": {
     "name": "c2pa-python",
-    "version": "0.37.8.dev5"
+    "version": "0.37.12.dev1"
   },
   "pythonSource": {
     "repository": "castlabs/c2pa-python",
     "url": "https://github.com/castlabs/c2pa-python.git",
-    "releaseBranch": "feat/live-video-vsi",
-    "releaseTag": "castlabs-v0.37.8.dev5"
+    "releaseBranch": "feat/conformance-validation-v02",
+    "releaseTag": "castlabs-v0.37.12.dev1"
   },
   "rustSource": {
     "repository": "castlabs/c2pa-rs",
     "url": "https://github.com/castlabs/c2pa-rs.git",
-    "commit": "9b80687f386f2b373fd1ac9c705d8e61a07b608e",
-    "version": "0.91.0-dev",
-    "cargoLockSha256": "c4554b8fd3a1d3a1dc00482546750a40b06d0e5a86c9e66f4830c63fbd0df70f"
+    "commit": "a2739fd66092c410773bdc6881474ec34fb8ea16",
+    "version": "0.92.0-dev",
+    "cargoLockSha256": "e074f31ad8c7d4d4278967bb0aaf12bde0013a5f9cb7517cc7af462dbed962e2"
   },
   "rustToolchain": {
-    "channel": "1.88.0",
+    "channel": "1.96.0",
     "rustupVersion": "1.28.2",
     "installers": {
       "x86_64-unknown-linux-gnu": {
