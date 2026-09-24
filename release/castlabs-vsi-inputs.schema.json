@@ -30,7 +30,7 @@
     "package": {
       "type": "object", "additionalProperties": false,
       "required": ["name", "version"],
-      "properties": {"name": {"const": "c2pa-python"}, "version": {"const": "0.37.12.dev3"}}
+      "properties": {"name": {"const": "c2pa-python"}, "version": {"const": "0.37.12.dev4"}}
     },
     "pythonSource": {
       "type": "object", "additionalProperties": false,
@@ -39,7 +39,7 @@
         "repository": {"const": "castlabs/c2pa-python"},
         "url": {"const": "https://github.com/castlabs/c2pa-python.git"},
         "releaseBranch": {"const": "feat/conformance-validation-v02"},
-        "releaseTag": {"const": "castlabs-v0.37.12.dev3"}
+        "releaseTag": {"const": "castlabs-v0.37.12.dev4"}
       }
     },
     "rustSource": {
@@ -48,7 +48,7 @@
       "properties": {
         "repository": {"const": "castlabs/c2pa-rs"},
         "url": {"const": "https://github.com/castlabs/c2pa-rs.git"},
-        "commit": {"const": "6fa3e01097a87ee9265c97e00d9ec12be3052288"},
+        "commit": {"const": "e1cc897d5c04d11e7773f54a659f98ec89ae224f"},
         "version": {"const": "0.92.0-dev"},
         "cargoLockSha256": {"const": "e074f31ad8c7d4d4278967bb0aaf12bde0013a5f9cb7517cc7af462dbed962e2"}
       }

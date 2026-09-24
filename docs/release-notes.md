@@ -1,5 +1,14 @@
 # Release notes
 
+## Version 0.37.12.dev4
+
+Supersedes the published 0.37.12.dev3 (which remains unchanged). Native
+`castlabs/c2pa-rs` `e1cc897d5c04d11e7773f54a659f98ec89ae224f` makes `Reader.crjson()`
+conform to the published crJSON 2.4 schema: `validationResults.specVersion`
+reports `2.4.0` (the validator's C2PA version) instead of `2.3.0`, and the
+post-2.4 `isUpdateManifest` / `isCompressedManifest` manifest fields are no
+longer emitted.
+
 ## Version 0.37.12.dev3
 
 Supersedes 0.37.12.dev2 (run `35997070721`, cancelled before publication): the

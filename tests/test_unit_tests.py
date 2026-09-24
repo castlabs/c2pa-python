@@ -10906,3 +10906,8 @@ class TestConformanceValidationSettings(unittest.TestCase):
             document = json.loads(reader.crjson())
         results = document["manifests"][0]["validationResults"]
         self.assertEqual(results["validationTime"], "2027-01-15T08:00:00Z")
+        # crJSON 2.4: the validator version, and no post-2.4 manifest fields.
+        self.assertEqual(results["specVersion"], "2.4.0")
+        for manifest in document["manifests"]:
+            self.assertNotIn("isUpdateManifest", manifest)
+            self.assertNotIn("isCompressedManifest", manifest)
