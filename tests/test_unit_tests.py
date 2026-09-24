@@ -88,16 +88,27 @@ def load_test_settings_json():
 
 def parse_native_version():
     """
-    Parse the expected native SDK version from c2pa-native-version.txt.
+    Parse the expected native SDK version.
+
+    Reads c2pa-rs-preflight-ref.txt instead of c2pa-native-version.txt when
+    C2PA_PREFLIGHT_RUN is set: that flag is set only by
+    test-c2pa-rs-source-build.yml's own "Run tests" step, because the
+    presence of c2pa-rs-preflight-ref.txt in the checked-out tree isn't by
+    itself proof of anything -- an ordinary build.yml run on a branch that
+    happens to carry that file (e.g. this PR) still downloads and installs
+    the real pinned release, not the preflight ref.
 
     Returns:
         str: The semantic version string (e.g. "0.85.2").
     """
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    version_path = os.path.join(repo_root, 'c2pa-native-version.txt')
-    with open(version_path, 'r') as f:
+    if os.environ.get('C2PA_PREFLIGHT_RUN'):
+        path = os.path.join(repo_root, 'c2pa-rs-preflight-ref.txt')
+    else:
+        path = os.path.join(repo_root, 'c2pa-native-version.txt')
+    with open(path, 'r') as f:
         raw = f.read().strip()
-    # Strip the "c2pa-v" prefix to get the bare semantic version.
+    # Strip the "c2pa-v" / "c2pa-rc-v" prefix to get the bare semantic version.
     return raw.split('v', 1)[1] if 'v' in raw else raw
 
 
@@ -3508,7 +3519,7 @@ class TestBuilderWithSigner(unittest.TestCase):
         # Test adding another ingredient
         ingredient_json = '{"test": "ingredient2"}'
         with open(self.testPath2, 'rb') as f:
-            builder.add_ingredient(ingredient_json, "image/png", f)
+            builder.add_ingredient(ingredient_json, "image/jpeg", f)
 
         builder.close()
 
@@ -3528,7 +3539,7 @@ class TestBuilderWithSigner(unittest.TestCase):
         # Test adding another ingredient with a JSON string
         ingredient_json = '{"test": "ingredient2"}'
         with open(self.testPath2, 'rb') as f:
-            builder.add_ingredient(ingredient_json, "image/png", f)
+            builder.add_ingredient(ingredient_json, "image/jpeg", f)
 
         builder.close()
 
@@ -3557,7 +3568,7 @@ class TestBuilderWithSigner(unittest.TestCase):
 
         ingredient_json = '{"test": "ingredient2"}'
         with open(self.testPath2, 'rb') as f:
-            builder.add_ingredient(ingredient_json, "image/png", f)
+            builder.add_ingredient(ingredient_json, "image/jpeg", f)
 
         builder.close()
 
@@ -3615,7 +3626,7 @@ class TestBuilderWithSigner(unittest.TestCase):
 
         ingredient_json = '{"test": "ingredient2"}'
         with open(self.testPath2, 'rb') as f:
-            builder.add_ingredient(ingredient_json, "image/png", f)
+            builder.add_ingredient(ingredient_json, "image/jpeg", f)
 
         builder.close()
 
@@ -5612,6 +5623,10 @@ class TestBuilderWithSigner(unittest.TestCase):
                         "actions": [
                             _empty_created_action(),
                             {
+                                "action": "c2pa.created",
+                                "digitalSourceType": "http://c2pa.org/digitalsourcetype/empty",
+                            },
+                            {
                                 "action": "c2pa.placed",
                                 "parameters": {
                                     "ingredientIds": ["my-ingredient"]
@@ -5847,6 +5862,10 @@ class TestBuilderWithSigner(unittest.TestCase):
                     "data": {
                         "actions": [
                             _empty_created_action(),
+                            {
+                                "action": "c2pa.created",
+                                "digitalSourceType": "http://c2pa.org/digitalsourcetype/empty",
+                            },
                             {
                                 "action": "c2pa.placed",
                                 "parameters": {
