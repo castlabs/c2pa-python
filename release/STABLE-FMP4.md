@@ -30,16 +30,24 @@ published as a release**. The unescaped `+` in its Actions tag filter prevented
 the release run from starting. Do not delete, move, reuse, or publish that tag.
 The `.4` repair uses a single-quoted filter with one literal backslash before
 `+`; exact event refs, evidence and asset names retain the unescaped `+`.
-The published `.4` source is `c916e8a82df97f740dd05ec58911dd02ea58325d`;
-its tag and release remain immutable. The `.5` TFRA hotfix retains the corrected
-literal tag filter and advances only the reviewed stable native pin and gates.
+The `.4` source is `c916e8a82df97f740dd05ec58911dd02ea58325d`, but that build
+lacks the legacy TFRA correction and must not be used or republished. Use `.5`,
+which retains the corrected literal tag filter and advances only the reviewed
+stable native pin and gates. Regenerate affected assets from unsigned masters.
 
 The native audit is cleared and the approved source is committed and pushed in
-`castlabs/c2pa-rs`, branch `fix/stable-tfra-offsets`:
+`castlabs/c2pa-rs`, canonical branch `fix/stable-single-file-fmp4`:
 
 - Commit: `589174898eca4c2c42289d3251c0619420806f43`.
 - Cargo.lock SHA-256: `fc10bef635df091377d02cfa9f1597462aa016c3db3439d43451a3b93c37edcf`.
 - Native runtime version: `0.80.0`.
+
+The branch consolidation preserves the native commit already shipped in `.5`;
+it is not a new release or a change to the published release evidence.
+
+- Stable consolidation: https://github.com/castlabs/c2pa-rs/pull/4.
+- Upstream TFRA: https://github.com/contentauth/c2pa-rs/issues/2709 and https://github.com/contentauth/c2pa-rs/pull/2710.
+- Upstream fMP4: https://github.com/contentauth/c2pa-rs/issues/2714 and https://github.com/contentauth/c2pa-rs/pull/2715.
 
 These actual pins are recorded in `castlabs-stable-fmp4-inputs.lock.json` and the
 helper's `RUST_COMMIT` / `CARGO_LOCK_SHA256` constants. The Python `c2pa-rs` gitlink

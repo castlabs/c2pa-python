@@ -52,7 +52,7 @@ c2pa-python (this repo)
 └── setup.py                   ← Modified to build from source
 ```
 
-The native library (`libc2pa_c.so` / `.dylib` / `.dll`) is built from the `c2pa-rs` git submodule which contains our Rust patches. The submodule uses `https://github.com/castlabs/c2pa-rs.git`, branch `fix/stable-tfra-offsets`, at the approved immutable commit above.
+The native library (`libc2pa_c.so` / `.dylib` / `.dll`) is built from the `c2pa-rs` git submodule which contains our Rust patches. The submodule uses `https://github.com/castlabs/c2pa-rs.git`, branch `fix/stable-single-file-fmp4`, at the approved immutable commit above.
 
 ## Patches Summary
 
