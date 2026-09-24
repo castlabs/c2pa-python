@@ -1,6 +1,13 @@
 # Release notes
 
-## Version 0.37.12.dev2
+## Version 0.37.12.dev3
+
+Supersedes 0.37.12.dev2 (run `35997070721`, cancelled before publication): the
+native source is re-pinned to `6fa3e01097a87ee9265c97e00d9ec12be3052288`, whose
+only change over dev2's `6ca7fb16` aligns c2patool CLI tests with contentauth
+main, so native qualification passes on both platforms.
+
+### 0.37.12.dev2 (not released)
 
 Castlabs Conformance Program 0.2 / C2PA 2.4 candidate prerelease. Successor to
 0.37.12.dev1, whose tag-triggered run `35961050991` built both platforms but
@@ -8,7 +15,7 @@ failed installed-wheel tests (pytest no longer a runtime dependency) and whose
 native source failed one upstream test under `http_reqwest_blocking`; no dev1
 draft or GitHub release was created.
 
-- Native `castlabs/c2pa-rs` `6ca7fb168b10bde7a1ef8bb8e577ffbae73233c7`: the
+- Native `castlabs/c2pa-rs` `6ca7fb168b10bde7a1ef8bb8e577ffbae73233c7` (dev3: `6fa3e010`): the
   live-video VSI line merged with contentauth main `6c92bc32` (C2PA 2.4
   validation), plus the single-file fMP4 Merkle and TFRA fixes.
 - `verify.validation_time` (RFC 3339) selects the evaluation instant for

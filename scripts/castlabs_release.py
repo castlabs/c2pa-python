@@ -26,21 +26,21 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / "release" / "castlabs-vsi-inputs.lock.json"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-RELEASE_VERSION = "0.37.12.dev2"
-RUST_COMMIT = "6ca7fb168b10bde7a1ef8bb8e577ffbae73233c7"
+RELEASE_VERSION = "0.37.12.dev3"
+RUST_COMMIT = "6fa3e01097a87ee9265c97e00d9ec12be3052288"
 CARGO_LOCK_SHA256 = "e074f31ad8c7d4d4278967bb0aaf12bde0013a5f9cb7517cc7af462dbed962e2"
 RUST_TOOLCHAIN = "1.96.0"
 MANYLINUX_IMAGE = "quay.io/pypa/manylinux_2_28_x86_64"
 MANYLINUX_DIGEST = (
     "sha256:0d9c2a66a745961947a8cecbe217ca0a7ee7a5849ba2517f20f9581d18444977"
 )
-RELEASE_TAG = "castlabs-v0.37.12.dev2"
+RELEASE_TAG = "castlabs-v0.37.12.dev3"
 RELEASE_NAME = f"Castlabs c2pa-python {RELEASE_VERSION} (VSI)"
 RELEASE_BODY_MARKER = f"castlabs-vsi-release:{RELEASE_VERSION}"
 RELEASE_IDENTITY_TEXT = f"Castlabs c2pa-python {RELEASE_VERSION} immutable prerelease"
 RELEASE_BODY = (
     f"{RELEASE_BODY_MARKER}\n\n"
-    f"{RELEASE_IDENTITY_TEXT}. Conformance Program 0.2 / C2PA 2.4 candidate (successor to dev1 run 35961050991; no dev1 release): "
+    f"{RELEASE_IDENTITY_TEXT}. Conformance Program 0.2 / C2PA 2.4 candidate (successor to dev1 run 35961050991 and dev2 run 35997070721; neither was released): "
     "live-video VSI merged with contentauth main 6c92bc32, single-file fMP4 "
     "Merkle and TFRA fixes, caller-controlled validation time and purpose-scoped "
     "trust. See the attached schema-2 evidence and SHA-256 sidecars."
@@ -219,12 +219,12 @@ def validate_lock(lock: dict[str, Any]) -> None:
     if set(lock) != required or lock.get("schemaVersion") != 1:
         fail("release lock does not match schema version 1")
     if lock["package"] != {"name": "c2pa-python", "version": RELEASE_VERSION}:
-        fail("release lock package identity is not 0.37.12.dev2")
+        fail("release lock package identity is not 0.37.12.dev3")
     if lock["pythonSource"] != {
         "repository": "castlabs/c2pa-python",
         "url": "https://github.com/castlabs/c2pa-python.git",
         "releaseBranch": "feat/conformance-validation-v02",
-        "releaseTag": "castlabs-v0.37.12.dev2",
+        "releaseTag": "castlabs-v0.37.12.dev3",
     }:
         fail("unexpected c2pa-python release source policy")
     rust = lock["rustSource"]
