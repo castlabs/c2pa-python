@@ -789,6 +789,21 @@ _setup_function(
      ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
     ctypes.c_int64
 )
+# Optional: present only in native builds carrying castlabs/c2pa-rs#9. Not
+# listed in _REQUIRED_FUNCTIONS, so older libraries still import; sign_ladder
+# reports the missing capability itself.
+_HAS_SIGN_LADDER = hasattr(_lib, "c2pa_builder_sign_ladder")
+if _HAS_SIGN_LADDER:
+    _setup_function(
+        _lib.c2pa_builder_sign_ladder,
+        [ctypes.POINTER(C2paBuilder),
+         ctypes.POINTER(C2paSigner),
+         ctypes.POINTER(ctypes.c_char_p),  # sources
+         ctypes.POINTER(ctypes.c_char_p),  # dests
+         ctypes.c_size_t,                  # count
+         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
+        ctypes.c_int64
+    )
 
 
 class C2paError(Exception):
@@ -3178,6 +3193,28 @@ class Signer(ManagedResource):
             _parse_operation_result_for_error(None)
 
 
+def _ladder_path_bytes(path, name: str, index: int) -> bytes:
+    """Encode one ladder path for the C API.
+
+    ``c_char_p`` hands C a NUL-terminated string, so a path with an embedded
+    NUL would silently become its prefix -- a different file read or written
+    instead of an error. Refuse it here, and turn an unencodable path into the
+    same error type rather than a bare UnicodeEncodeError.
+    """
+    try:
+        raw = os.fspath(path)
+        encoded = raw if isinstance(raw, bytes) else raw.encode("utf-8")
+    except TypeError as e:
+        raise C2paError(f"{name}[{index}] is not a path: {path!r}") from e
+    except UnicodeEncodeError as e:
+        raise C2paError(
+            f"{name}[{index}] cannot be encoded as UTF-8: {path!r}"
+        ) from e
+    if b"\0" in encoded:
+        raise C2paError(f"{name}[{index}] contains a NUL byte: {path!r}")
+    return encoded
+
+
 class Builder(ManagedResource):
     """High-level wrapper for C2PA Builder operations."""
 
@@ -3947,6 +3984,115 @@ class Builder(ManagedResource):
                     )
 
         return manifest_bytes
+
+    def sign_ladder(
+        self,
+        signer: Signer,
+        sources: list[Union[str, Path]],
+        dests: list[Union[str, Path]],
+    ) -> bytes:
+        """Sign an ABR ladder of single-file fragmented MP4s into ONE manifest.
+
+        Wraps ``c2pa::Builder::sign_ladder_files`` via the
+        ``c2pa_builder_sign_ladder`` FFI. Every rendition of the ladder is
+        covered by a single claim: the BMFF hash assertion carries one Merkle
+        tree per rendition, and the identical manifest is embedded into each
+        output file, so the set validates together and a watermark that
+        resolves to the session resolves to one manifest rather than one per
+        rendition.
+
+        Each source must be a *single-file* fragmented MP4 -- its own ``moov``
+        and ``moof`` boxes. A multiplexed asset (several tracks in one file) is
+        rejected; demux it into one file per rendition first. For the
+        init-segment-plus-fragments layout use
+        :py:meth:`sign_fragmented` instead.
+
+        Args:
+            signer: The signer to use. Either kind works -- one built from
+                ``C2paSignerInfo`` or one with an explicit callback.
+            sources: One path per rendition.
+            dests: Output paths, positionally matched to ``sources``. Must be
+                distinct and must not alias a source.
+
+        Returns:
+            The manifest bytes embedded in every rendition.
+
+        Raises:
+            C2paError.NotSupported: If the loaded native library has no
+                ``c2pa_builder_sign_ladder`` (see ``_HAS_SIGN_LADDER``).
+            C2paError: If signing fails, or if the inputs are not a valid
+                ladder (empty, mismatched lengths, a path that cannot be
+                handed to C, a rendition that is not single-file fragmented,
+                or overlapping paths).
+        """
+        self._ensure_valid_state()
+        if not _HAS_SIGN_LADDER:
+            raise C2paError.NotSupported(
+                "this native library cannot sign a ladder: "
+                "c2pa_builder_sign_ladder is absent. It needs a build "
+                "carrying castlabs/c2pa-rs#9."
+            )
+        if not hasattr(signer, "_handle") or not signer._handle:
+            raise C2paError("Invalid or closed signer")
+        if len(sources) != len(dests):
+            raise C2paError(
+                f"sources and dests must have the same length; "
+                f"got {len(sources)} and {len(dests)}"
+            )
+        if not sources:
+            raise C2paError("a ladder needs at least one rendition")
+
+        count = len(sources)
+        source_bytes = [
+            _ladder_path_bytes(p, "sources", i) for i, p in enumerate(sources)
+        ]
+        dest_bytes = [
+            _ladder_path_bytes(p, "dests", i) for i, p in enumerate(dests)
+        ]
+        # Keep the Python bytes objects alive for the duration of the call --
+        # the arrays below hold borrowed pointers into them.
+        source_array = (ctypes.c_char_p * count)(*source_bytes)
+        dest_array = (ctypes.c_char_p * count)(*dest_bytes)
+
+        manifest_bytes_ptr = ctypes.POINTER(ctypes.c_ubyte)()
+        try:
+            result = _lib.c2pa_builder_sign_ladder(
+                self._handle,
+                signer._handle,
+                source_array,
+                dest_array,
+                count,
+                ctypes.byref(manifest_bytes_ptr),
+            )
+        except Exception as e:
+            raise C2paError(f"Error during ladder signing: {e}")
+        # The FFI borrows the builder and does not free it, so the handle is
+        # kept: it is released by close() or on collection, on success and on
+        # failure alike. Discarding it here would leak the native object.
+
+        _check_ffi_operation_result(
+            result,
+            "Error during ladder signing",
+            check=lambda r: r < 0,
+        )
+
+        if result == 0:
+            return b""
+        if not manifest_bytes_ptr:
+            raise C2paError(
+                f"native ladder signing reported {result} manifest bytes but "
+                "returned no buffer"
+            )
+        # A failed copy is a failed call: the manifest was not delivered, so
+        # it must not come back as successful empty bytes. The native buffer
+        # is released exactly once either way.
+        try:
+            return ctypes.string_at(manifest_bytes_ptr, result)
+        finally:
+            try:
+                _lib.c2pa_manifest_bytes_free(manifest_bytes_ptr)
+            except Exception:
+                logger.error("Failed to release native manifest bytes memory")
 
     @overload
     def sign_file(
