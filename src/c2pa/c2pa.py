@@ -1052,6 +1052,21 @@ _setup_function(
 )
 
 
+# Optional capability: older native libraries still support ordinary signing.
+_HAS_SIGN_LADDER = hasattr(_lib, "c2pa_builder_sign_ladder")
+if _HAS_SIGN_LADDER:
+    _setup_function(
+        _lib.c2pa_builder_sign_ladder,
+        [ctypes.POINTER(C2paBuilder),
+         ctypes.POINTER(C2paSigner),
+         ctypes.POINTER(ctypes.c_char_p),
+         ctypes.POINTER(ctypes.c_char_p),
+         ctypes.c_size_t,
+         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
+        ctypes.c_int64
+    )
+
+
 class C2paError(Exception):
     """Exception raised for C2PA errors.
 
@@ -3902,6 +3917,98 @@ class Builder(ManagedResource):
             raise C2paError(
                 "First argument must be a Signer or a format string (MIME type)."
             )
+
+    def sign_ladder(
+        self,
+        signer: Signer,
+        sources: list[Union[str, Path]],
+        dests: list[Union[str, Path]],
+    ) -> bytes:
+        """Sign single-file fragmented MP4 renditions with one shared manifest.
+
+        Each source must contain its own initialization and media fragments,
+        with one track per file. This is not an init-segment-plus-fragments
+        API. Sources must not already contain a C2PA manifest. Destinations
+        correspond to sources in order; they must be distinct, must not exist,
+        and their parent directories must exist. Native code validates the file
+        layout and path overlap. Errors may leave partial newly created outputs;
+        discard these files.
+
+        Like :py:meth:`sign`, an attempted native signing call closes this
+        Builder on success or failure. Preflight errors (including unavailable
+        native capability) leave it usable. The signer is borrowed and remains
+        usable. A context signer is not used by this method.
+
+        Args:
+            signer: An explicit, active Signer (from info or a callback).
+            sources: List of 1 to 256 UTF-8 paths, one per rendition.
+            dests: Equally sized list of corresponding output paths.
+
+        Returns:
+            The manifest bytes embedded in every output rendition.
+
+        Raises:
+            C2paError.NotSupported: If the native library lacks ladder signing.
+            C2paError.Encoding: If a path is invalid UTF-8 or contains NUL.
+            C2paError: If inputs are invalid, signing fails, or copying the
+                returned manifest fails.
+        """
+        self._ensure_valid_state()
+        if not _HAS_SIGN_LADDER:
+            raise C2paError.NotSupported(
+                "This native library does not export c2pa_builder_sign_ladder; "
+                "use a native library with single-file ladder signing support.")
+        if not isinstance(signer, Signer):
+            raise C2paError("An explicit Signer is required for ladder signing")
+        signer._ensure_valid_state()
+        if not isinstance(sources, list) or not isinstance(dests, list):
+            raise C2paError("sources and dests must be lists of paths")
+        if len(sources) != len(dests):
+            raise C2paError("sources and dests must have the same length")
+        if not 1 <= len(sources) <= 256:
+            raise C2paError("A ladder requires 1 to 256 renditions")
+
+        # Retain both the encoded strings and ordered pointer arrays until
+        # the borrowed native call returns.
+        encoded_paths = []
+        for paths in (sources, dests):
+            encoded = []
+            for path in paths:
+                try:
+                    text = os.fspath(path)
+                    if not isinstance(text, str) or "\0" in text:
+                        raise ValueError("paths must be strings without NUL")
+                    encoded.append(text.encode("utf-8"))
+                except (TypeError, ValueError) as e:
+                    raise C2paError.Encoding(
+                        f"Invalid ladder path: {e}") from e
+            encoded_paths.append(encoded)
+        count = len(sources)
+        source_array = (ctypes.c_char_p * count)(*encoded_paths[0])
+        dest_array = (ctypes.c_char_p * count)(*encoded_paths[1])
+        manifest_bytes_ptr = ctypes.POINTER(ctypes.c_ubyte)()
+
+        try:
+            result = _lib.c2pa_builder_sign_ladder(
+                self._handle, signer._handle, source_array, dest_array,
+                count, ctypes.byref(manifest_bytes_ptr))
+            _check_ffi_operation_result(
+                result, "Error during ladder signing", check=lambda r: r < 0)
+            if result <= 0 or not manifest_bytes_ptr:
+                raise C2paError("Ladder signing returned no manifest bytes")
+            return ctypes.string_at(manifest_bytes_ptr, result)
+        except C2paError:
+            raise
+        except Exception as e:
+            raise C2paError(f"Error during ladder signing: {e}") from e
+        finally:
+            if manifest_bytes_ptr:
+                try:
+                    _lib.c2pa_manifest_bytes_free(manifest_bytes_ptr)
+                except Exception:
+                    logger.error("Failed to release native manifest bytes memory")
+            # Native code borrows both handles. Free our builder, not the signer.
+            self.close()
 
     @overload
     def sign_file(
