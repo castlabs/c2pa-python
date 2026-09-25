@@ -317,6 +317,12 @@ While `ACTIVE`, callers can use `.add_ingredient()`, `.add_action()`, etc. repea
 
 The native sign call borrows the builder's pointer rather than taking ownership of it, so `Builder` never marks it consumed and the pointer is freed normally through `c2pa_free`. The close enforces single use; it is not a memory-management requirement.
 
+[`sign_ladder()`](ladder-signing.md) follows the same single-use rule after an
+attempted native call, while preflight errors (including unavailable capability)
+leave the builder usable. The explicit signer is borrowed and remains usable.
+Any returned manifest buffer is freed through `ManagedResource._free_native_ptr`
+(`c2pa_free`) even when signing or copying fails, without masking the original error.
+
 ## Ownership transfer
 
 Some operations transfer a native pointer from one object to another. When this happens, the original object must stop managing the pointer (e.g. so it is not freed twice).

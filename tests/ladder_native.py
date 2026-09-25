@@ -177,6 +177,10 @@ def run_lane(args):
 
 
 def main():
+    if sys.flags.optimize:
+        raise SystemExit(
+            "Native ladder verification requires assertions; "
+            "rerun without -O/-OO or PYTHONOPTIMIZE.")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--library", type=Path, required=True)
     parser.add_argument("--lane", choices=("stock", "candidate"), required=True)
@@ -197,6 +201,7 @@ def main():
         staged = package / args.library.name
         shutil.copy2(args.library, staged)
         env = os.environ.copy()
+        env.pop("PYTHONOPTIMIZE", None)
         env["PYTHONPATH"] = str(root)
         # Existing loader seam, with an absolute filename and a checked result.
         env["C2PA_LIBRARY_NAME"] = str(staged)

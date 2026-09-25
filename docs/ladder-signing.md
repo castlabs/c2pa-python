@@ -44,6 +44,9 @@ It checks the exact loaded path and SHA-256 and reports the native SDK version.
 It uses the existing `C2PA_LIBRARY_NAME` loader seam, not a new loader override.
 It does not replace an installed package's library.
 
+Run the harness without `-O`, `-OO`, or `PYTHONOPTIMIZE`: optimized Python is
+rejected because it would disable the verification assertions.
+
 ```sh
 .venv/bin/python tests/ladder_native.py --lane stock \
   --library /absolute/path/to/stock/libc2pa_c.so

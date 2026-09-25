@@ -4004,7 +4004,7 @@ class Builder(ManagedResource):
         finally:
             if manifest_bytes_ptr:
                 try:
-                    _lib.c2pa_manifest_bytes_free(manifest_bytes_ptr)
+                    ManagedResource._free_native_ptr(manifest_bytes_ptr)
                 except Exception:
                     logger.error("Failed to release native manifest bytes memory")
             # Native code borrows both handles. Free our builder, not the signer.
