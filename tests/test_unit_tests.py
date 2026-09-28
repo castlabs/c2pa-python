@@ -11,7 +11,9 @@
 # specific language governing permissions and limitations under
 # each license.
 
+import asyncio
 import gc
+import hashlib
 import inspect
 import os
 import io
@@ -64,7 +66,7 @@ ALTERNATIVE_INGREDIENT_TEST_FILE = os.path.join(FIXTURES_DIR, "cloud.jpg")
 
 def load_test_settings_json():
     """
-    Load default (legacy) trust configuration test settings from a
+    Load purpose-tagged trust configuration test settings from a
     JSON config file and return its content as JSON-compatible dict.
     The return value is used to load settings (thread_local) in tests.
 
@@ -3508,7 +3510,7 @@ class TestBuilderWithSigner(unittest.TestCase):
         # Test adding another ingredient
         ingredient_json = '{"test": "ingredient2"}'
         with open(self.testPath2, 'rb') as f:
-            builder.add_ingredient(ingredient_json, "image/png", f)
+            builder.add_ingredient(ingredient_json, "image/jpeg", f)
 
         builder.close()
 
@@ -3528,7 +3530,7 @@ class TestBuilderWithSigner(unittest.TestCase):
         # Test adding another ingredient with a JSON string
         ingredient_json = '{"test": "ingredient2"}'
         with open(self.testPath2, 'rb') as f:
-            builder.add_ingredient(ingredient_json, "image/png", f)
+            builder.add_ingredient(ingredient_json, "image/jpeg", f)
 
         builder.close()
 
@@ -3557,7 +3559,7 @@ class TestBuilderWithSigner(unittest.TestCase):
 
         ingredient_json = '{"test": "ingredient2"}'
         with open(self.testPath2, 'rb') as f:
-            builder.add_ingredient(ingredient_json, "image/png", f)
+            builder.add_ingredient(ingredient_json, "image/jpeg", f)
 
         builder.close()
 
@@ -3615,9 +3617,16 @@ class TestBuilderWithSigner(unittest.TestCase):
 
         ingredient_json = '{"test": "ingredient2"}'
         with open(self.testPath2, 'rb') as f:
-            builder.add_ingredient(ingredient_json, "image/png", f)
+            builder.add_ingredient(ingredient_json, "image/jpeg", f)
 
         builder.close()
+
+    def test_builder_add_ingredient_rejects_mismatched_format(self):
+        # Unlike Reader autodetection, ingredient parsing requires the real MIME.
+        with Builder(self.manifestDefinition) as builder:
+            with open(self.testPath2, "rb") as source:
+                with self.assertRaisesRegex(Error, "invalid header"):
+                    builder.add_ingredient({}, "image/png", source)
 
     def test_builder_sign_with_ingredient(self):
         builder = Builder.from_json(self.manifestDefinition)
@@ -6634,6 +6643,56 @@ class TestSettings(TestContextAPIs):
         self.assertIs(result, settings)
         settings.close()
 
+    def test_typed_trust_fixture_preserves_legacy_memberships(self):
+        trust = load_test_settings_json()["trust"]
+        self.assertEqual(set(trust), {"anchors", "trust_config"})
+        self.assertEqual(
+            {entry["trust_kind"] for entry in trust["anchors"]},
+            {"manifest", "tsa"},
+        )
+        self.assertEqual(len(trust["anchors"]), 2)
+        # Digests pin the original nine-certificate bundle and EKU policy.
+        for entry in trust["anchors"]:
+            self.assertEqual(set(entry), {"trust_kind", "trust_uri", "trust_anchors"})
+            self.assertEqual(
+                hashlib.sha256(entry["trust_anchors"].encode()).hexdigest(),
+                "f3de5e4ea3213319eedc5e3890f0ff615bf0e754323ffd20dcca8a3f1c5ab921",
+            )
+        self.assertEqual(
+            hashlib.sha256(trust["trust_config"].encode()).hexdigest(),
+            "174983a609d76784c4ef5e2621740bf32fb615f88412d94f4fc26670365a9b81",
+        )
+
+    def test_settings_typed_trust_purposes_do_not_authorize_other_roles(self):
+        trust = load_test_settings_json()["trust"]
+        for kind in ("manifest", "cawg", "tsa"):
+            with self.subTest(kind=kind):
+                entry = dict(trust["anchors"][0], trust_kind=kind)
+                config = {"trust": {"anchors": [entry], "trust_config": trust["trust_config"]}}
+                with Settings() as settings:
+                    self.assertIs(settings.update(config), settings)
+                    with Context(settings) as ctx, Reader(DEFAULT_TEST_FILE, context=ctx) as reader:
+                        self.assertEqual(
+                            reader.get_validation_state(),
+                            "Trusted" if kind == "manifest" else "Valid",
+                        )
+
+    def test_settings_trust_updates_are_additive_and_removal_needs_fresh_context(self):
+        config = load_test_settings_json()
+        with Settings.from_dict(config) as settings, Context(settings) as original:
+            # Neither an empty update nor a changed entry with the same URI
+            # replaces the previously authorized certificates.
+            settings.update({"trust": {"anchors": []}})
+            entries = [dict(entry, trust_anchors="") for entry in config["trust"]["anchors"]]
+            settings.update(json.dumps({"trust": {"anchors": entries}}))
+            with Context(settings) as updated:
+                with Settings.from_dict({"trust": {"anchors": []}}) as fresh:
+                    with Context(fresh) as removed:
+                        for ctx, expected in ((original, "Trusted"), (updated, "Trusted"), (removed, "Valid")):
+                            with self.subTest(expected=expected, context=ctx):
+                                with Reader(DEFAULT_TEST_FILE, context=ctx) as reader:
+                                    self.assertEqual(reader.get_validation_state(), expected)
+
     def test_settings_is_valid_after_close(self):
         settings = Settings()
         settings.close()
@@ -7087,6 +7146,47 @@ class TestDynamicAssertions(TestContextAPIs):
                 builder.sign(signer, "image/jpeg", source, io.BytesIO())
 
         self.assertIs(raised.exception, failure)
+
+    def test_base_exceptions_from_callbacks_are_reraised_during_builder_signing(self):
+        # KeyboardInterrupt/SystemExit/CancelledError must not escape into
+        # ctypes (where they are ignored); the original object is re-raised.
+        with open(os.path.join(FIXTURES_DIR, "es256_certs.pem"), "rb") as f:
+            certs = f.read()
+        for make in (lambda: KeyboardInterrupt("stop"), lambda: SystemExit(3),
+                     lambda: asyncio.CancelledError("cancelled")):
+            for which in ("dynamic", "claim"):
+                failure = make()
+                with self.subTest(error=type(failure).__name__, callback=which):
+                    def fail(*_):
+                        raise failure
+                    if which == "claim":
+                        signer = Signer.from_callback(fail, SigningAlg.ES256, certs, None)
+                    else:
+                        signer = self._make_signer()
+                        signer.add_dynamic_assertion(
+                            fail, label="com.example.interrupt", reserve_size=64)
+                    self.addCleanup(signer.close)
+                    builder = Builder(self.test_manifest)
+                    with open(DEFAULT_TEST_FILE, "rb") as source:
+                        with self.assertRaises(type(failure)) as raised:
+                            builder.sign(signer, "image/jpeg", source, io.BytesIO())
+                    self.assertIs(raised.exception, failure)
+
+    def test_ordinary_claim_signer_exception_is_still_reported_as_c2pa_error(self):
+        # Pre-existing Builder behavior for Exception subclasses is unchanged.
+        with open(os.path.join(FIXTURES_DIR, "es256_certs.pem"), "rb") as f:
+            certs = f.read()
+
+        def fail(_):
+            raise RuntimeError("remote signer unavailable")
+        signer = Signer.from_callback(fail, SigningAlg.ES256, certs, None)
+        self.addCleanup(signer.close)
+        builder = Builder(self.test_manifest)
+        with open(DEFAULT_TEST_FILE, "rb") as source:
+            with self.assertRaises(Error) as raised:
+                builder.sign(signer, "image/jpeg", source, io.BytesIO())
+        self.assertNotIsInstance(raised.exception, RuntimeError)
+        self.assertIsInstance(signer._callback_cb._error_state.exception, RuntimeError)
 
     def test_closed_and_uninitialized_resources(self):
         signer = self._make_signer()
@@ -7819,6 +7919,23 @@ class TestLiveVideoVsiSession(TestContextAPIs):
             self.assertIsNone(session.active_manifest_id)
             self.assertEqual(session.next_sequence_number, 1)
 
+    def test_callback_base_exceptions_keep_identity(self):
+        context = self._make_context()
+        self.addCleanup(context.close)
+        private_key, kid, created_at, _ = self._callback_session_material()
+        for failure in (KeyboardInterrupt("stop"), SystemExit(3),
+                        asyncio.CancelledError("cancelled")):
+            with self.subTest(error=type(failure).__name__):
+                def callback(*_):
+                    raise failure
+                with self._make_callback_session(
+                    context, callback, private_key, kid, created_at,
+                ) as session:
+                    with self.assertRaises(type(failure)) as raised:
+                        session.sign_init_segment(self.init_segment)
+                    self.assertIs(raised.exception, failure)
+                    self.assertIsNone(session.active_manifest_id)
+
     def test_callback_recovery_does_not_sign_and_resumes(self):
         context = self._make_context()
         self.addCleanup(context.close)
@@ -8082,6 +8199,36 @@ class TestLiveVideoVsiSession(TestContextAPIs):
             with self.assertRaises(CallbackFailure) as raised:
                 session.sign_init_segment(self.init_segment)
         self.assertIs(raised.exception, failure)
+
+    def test_dynamic_assertion_and_claim_base_exceptions_during_init_signing(self):
+        with open(os.path.join(FIXTURES_DIR, "es256_certs.pem"), "rb") as f:
+            certs = f.read()
+        with open(os.path.join(FIXTURES_DIR, "es256_private.key"), "rb") as f:
+            key = f.read()
+        for which in ("dynamic", "claim"):
+            for failure in (KeyboardInterrupt("stop"), SystemExit(3),
+                            asyncio.CancelledError("cancelled")):
+                with self.subTest(callback=which, error=type(failure).__name__):
+                    def fail(*_):
+                        raise failure
+                    if which == "claim":
+                        signer = Signer.from_callback(fail, SigningAlg.ES256, certs, None)
+                    else:
+                        signer = Signer.from_info(C2paSignerInfo(b"es256", certs, key, None))
+                        signer.add_dynamic_assertion(
+                            fail, label="com.example.live-interrupt", reserve_size=64)
+                    settings = Settings()
+                    settings.set("verify.verify_trust", "false")
+                    try:
+                        context = Context(settings=settings, signer=signer)
+                    finally:
+                        settings.close()
+                    self.addCleanup(context.close)
+                    with self._make_session(context) as session:
+                        context.close()
+                        with self.assertRaises(type(failure)) as raised:
+                            session.sign_init_segment(self.init_segment)
+                    self.assertIs(raised.exception, failure)
 
 
 class TestReaderWithContext(TestContextAPIs):

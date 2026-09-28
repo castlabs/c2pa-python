@@ -72,6 +72,7 @@ def test_trusted_vsi_workflows_isolate_paired_abi_from_dev5():
     assert "  prepare:\n    if: ${{ !inputs.trusted_vsi_only }}" in dedicated
     assert dedicated.count(f"ref: {release.RUST_COMMIT}") == 3
     assert 'C2PA_TRUSTED_VSI_ABI_REQUIRED: "1"' in paired
+    assert 'C2PA_TRUSTED_VSI_FUNCTIONAL_REQUIRED: "1"' in paired
     assert "python -m pytest -q tests/test_trusted_vsi_api.py -ra" in paired
     assert "-k " not in paired
     assert "ubuntu-24.04" in paired and "windows-2022" in paired
@@ -79,8 +80,12 @@ def test_trusted_vsi_workflows_isolate_paired_abi_from_dev5():
     assert "PYTHONPATH: ${{ github.workspace }}/python-source/src" in paired
     assert "python setup.py egg_info" in paired
     assert "cargo +1.88.0 build --locked" in paired
+    # Paired native is pinned to a reviewed full SHA, never a moving branch.
     assert re.search(r"^\s+ref: [0-9a-f]{40}$", paired, re.MULTILINE)
     assert "ref: feat/" not in paired
+    assert "FUNCTIONAL_BUILD_VERSION: 0.37.9.dev0" in paired
+    assert "scripts/build_trusted_vsi_functional.py" in paired
+    assert "scripts/qualify_trusted_vsi_functional.py" in paired
     for forbidden in ("download_artifacts.py", "castlabs_release.py",
                       "upload-artifact@", "bdist_wheel", "contents: write",
                       "id-token: write", "continue-on-error", "gh release"):

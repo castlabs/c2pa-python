@@ -149,10 +149,22 @@ _TRUSTED_VSI_COMPOSED_MEDIA_FUNCTIONS = (
     'c2pa_live_video_trusted_vsi_session_finalize_media_emsg',
 )
 _TRUSTED_VSI_RECOVERY_FUNCTIONS = (
-    'c2pa_live_video_trusted_vsi_session_recover',
+    'c2pa_live_video_trusted_vsi_session_export_state',
+    'c2pa_live_video_trusted_vsi_session_import_state',
 )
 _TRUSTED_VSI_STATUS_FUNCTIONS = (
     'c2pa_live_video_trusted_vsi_session_status_v1',
+)
+_TRUSTED_VSI_PREFLIGHT_FUNCTIONS = (
+    'c2pa_live_video_trusted_vsi_session_preflight',
+    'c2pa_live_video_trusted_vsi_validate_input',
+    'c2pa_live_video_trusted_vsi_hash_template',
+)
+_TRUSTED_VSI_FUNCTIONS = (
+    _TRUSTED_VSI_CAPABILITIES_FUNCTIONS + _TRUSTED_VSI_CREATE_FUNCTIONS
+    + _TRUSTED_VSI_SPLIT_INIT_FUNCTIONS + _TRUSTED_VSI_EXPERT_SIG_STRUCTURE_FUNCTIONS
+    + _TRUSTED_VSI_COMPOSED_MEDIA_FUNCTIONS + _TRUSTED_VSI_RECOVERY_FUNCTIONS
+    + _TRUSTED_VSI_STATUS_FUNCTIONS + _TRUSTED_VSI_PREFLIGHT_FUNCTIONS
 )
 
 _TRUSTED_VSI_CAP_SPLIT_INIT = 1 << 0
@@ -161,7 +173,7 @@ _TRUSTED_VSI_CAP_COMPOSED_MEDIA = 1 << 2
 _TRUSTED_VSI_CAP_RECOVERY = 1 << 3
 _TRUSTED_VSI_CAP_SIGNING_CONTEXT_V1 = 1 << 4
 _TRUSTED_VSI_CAP_FULL_UINT32_SEQUENCE = 1 << 5
-_TRUSTED_VSI_PYTHON_API_ENABLED = False
+_TRUSTED_VSI_REQUIRED_CAPABILITIES = 63
 
 # Castlabs dynamic-assertion extension. Keep this optional so the package can
 # still be imported with standard upstream native libraries.
@@ -282,6 +294,8 @@ _TRUSTED_VSI_STATUS_AVAILABLE = all(
     hasattr(_lib, name) for name in _TRUSTED_VSI_STATUS_FUNCTIONS
 )
 _TRUSTED_VSI_CAPABILITIES = 0
+_TRUSTED_VSI_ABI_AVAILABLE = all(hasattr(_lib, name) for name in _TRUSTED_VSI_FUNCTIONS)
+_TRUSTED_VSI_VERSION_MATCHES = False
 _DYNAMIC_ASSERTIONS_AVAILABLE = all(
     hasattr(_lib, name) for name in _DYNAMIC_ASSERTION_FUNCTIONS
 )
@@ -1375,23 +1389,24 @@ if _LIVE_VIDEO_VSI_MFHD_PROBE_AVAILABLE:
         ctypes.c_int
     )
 
-# Provisional declarations for the separately versioned trusted-processor ABI.
-# Calls remain unavailable from this Python scaffold; keeping setup conditional
-# ensures older native libraries are never asked for these optional symbols.
-if _TRUSTED_VSI_CAPABILITIES_FUNCTION_AVAILABLE:
+# Only bind the functional ABI when its complete distinguishing symbol set is
+# present. The old scaffold reused names with incompatible argument layouts.
+if _TRUSTED_VSI_ABI_AVAILABLE:
     _setup_function(
         _lib.c2pa_live_video_trusted_vsi_capabilities,
         [],
         ctypes.c_uint64,
     )
-    if _TRUSTED_VSI_PYTHON_API_ENABLED:
+    native_version_ptr = _lib.c2pa_version()
+    if native_version_ptr:
         try:
-            _TRUSTED_VSI_CAPABILITIES = int(
-                _lib.c2pa_live_video_trusted_vsi_capabilities()
+            _TRUSTED_VSI_VERSION_MATCHES = (
+                b'c2pa-rs/0.91.0-dev' in ctypes.string_at(native_version_ptr).split()
             )
-        except Exception:  # pragma: no cover - defensive import compatibility
-            _TRUSTED_VSI_CAPABILITIES = 0
-if _TRUSTED_VSI_CREATE_AVAILABLE:
+        finally:
+            _lib.c2pa_string_free(native_version_ptr)
+    if _TRUSTED_VSI_VERSION_MATCHES:
+        _TRUSTED_VSI_CAPABILITIES = int(_lib.c2pa_live_video_trusted_vsi_capabilities())
     _setup_function(
         _lib.c2pa_live_video_trusted_vsi_session_create_callback_v1,
         [ctypes.POINTER(C2paContext),
@@ -1404,11 +1419,12 @@ if _TRUSTED_VSI_CREATE_AVAILABLE:
          ctypes.c_uint64,
          ctypes.c_char_p,
          ctypes.c_uint64,
+         ctypes.c_char_p,
          ctypes.c_void_p,
          TrustedVsiSignCallbackV1],
         ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
     )
-if _TRUSTED_VSI_SPLIT_INIT_AVAILABLE:
+if _TRUSTED_VSI_ABI_AVAILABLE:
     _setup_function(
         _lib.c2pa_live_video_trusted_vsi_session_reserve_init_uuid,
         [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
@@ -1434,22 +1450,21 @@ if _TRUSTED_VSI_SPLIT_INIT_AVAILABLE:
         [ctypes.POINTER(C2paLiveVideoTrustedVsiSession)],
         ctypes.c_int,
     )
-if _TRUSTED_VSI_EXPERT_SIG_STRUCTURE_AVAILABLE:
+if _TRUSTED_VSI_ABI_AVAILABLE:
     _setup_function(
         _lib.c2pa_live_video_trusted_vsi_session_sign_sig_structure,
         [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
          ctypes.POINTER(ctypes.c_ubyte),
          ctypes.c_size_t,
-         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
-         ctypes.POINTER(ctypes.c_uint32),
-         ctypes.POINTER(ctypes.c_uint32),
-         ctypes.POINTER(ctypes.c_bool)],
+         ctypes.c_uint32,
+         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
         ctypes.c_int64,
     )
-if _TRUSTED_VSI_COMPOSED_MEDIA_AVAILABLE:
+if _TRUSTED_VSI_ABI_AVAILABLE:
     _setup_function(
         _lib.c2pa_live_video_trusted_vsi_session_reserve_media_emsg,
         [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
+         ctypes.c_uint32,
          ctypes.c_int64,
          ctypes.c_uint32,
          ctypes.c_uint32,
@@ -1465,22 +1480,43 @@ if _TRUSTED_VSI_COMPOSED_MEDIA_AVAILABLE:
          ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
         ctypes.c_int64,
     )
-if _TRUSTED_VSI_RECOVERY_AVAILABLE:
+if _TRUSTED_VSI_ABI_AVAILABLE:
     _setup_function(
-        _lib.c2pa_live_video_trusted_vsi_session_recover,
+        _lib.c2pa_live_video_trusted_vsi_session_export_state,
         [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
-         ctypes.POINTER(ctypes.c_ubyte),
-         ctypes.c_size_t,
+         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
+        ctypes.c_int64,
+    )
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_import_state,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
          ctypes.POINTER(ctypes.c_ubyte),
          ctypes.c_size_t],
         ctypes.c_int,
     )
-if _TRUSTED_VSI_STATUS_AVAILABLE:
+if _TRUSTED_VSI_ABI_AVAILABLE:
     _setup_function(
         _lib.c2pa_live_video_trusted_vsi_session_status_v1,
         [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
          ctypes.POINTER(C2paLiveVideoTrustedVsiStatusV1)],
         ctypes.c_int,
+    )
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_preflight,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession), ctypes.c_uint32,
+         ctypes.POINTER(ctypes.c_ubyte), ctypes.c_size_t, ctypes.c_uint32,
+         ctypes.c_int64, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_char_p],
+        ctypes.c_int,
+    )
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_validate_input,
+        [ctypes.c_uint32, ctypes.c_int, ctypes.POINTER(ctypes.c_ubyte), ctypes.c_size_t],
+        ctypes.c_int,
+    )
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_hash_template,
+        [ctypes.c_uint32, ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
+        ctypes.c_int64,
     )
 
 
@@ -1745,6 +1781,35 @@ def _raise_typed_c2pa_error(error_str: str) -> None:
             raise C2paError.WrongPointerType(error_str)
     # If no recognized error type, raise base C2paError
     raise C2paError(error_str)
+
+
+def _claim_signer_error_state(callback_cb):
+    """Return the thread-local error slot pinned on a claim-signer callback."""
+    return getattr(callback_cb, '_error_state', None)
+
+
+def _reraise_callback_errors(states, interrupt_states=()):
+    """Re-raise the first stored callback exception with its identity intact.
+
+    ``states`` re-raise any stored exception. ``interrupt_states`` (claim signers
+    on pre-existing Builder/complete-buffer paths, whose ordinary exceptions stay
+    reported as C2paError) only re-raise non-``Exception`` BaseExceptions such as
+    KeyboardInterrupt, SystemExit and asyncio.CancelledError.
+    """
+    for state in states:
+        error = getattr(state, 'exception', None)
+        if error is not None:
+            raise error
+    for state in interrupt_states:
+        error = getattr(state, 'exception', None)
+        if error is not None and not isinstance(error, Exception):
+            raise error
+
+
+def _clear_callback_errors(states):
+    for state in states:
+        if state is not None:
+            state.exception = None
 
 
 def _check_ffi_operation_result(
@@ -2018,8 +2083,13 @@ class Settings(ManagedResource):
         self, data: Union[str, dict],
     ) -> 'Settings':
         """Update current configuration from a JSON string or dict.
-        If the updated string overwrite an existing settings value,
-        the last setting value set for that property wins.
+
+        Scalar properties use the last value set. With native SDK 0.91,
+        trust.anchors entries are merged and deduplicated, not replaced:
+        an empty list does not remove existing anchors. Use purpose-tagged
+        entries (trust_kind: manifest, cawg, or tsa). To remove or replace
+        trust, create fresh Settings and a new Context with the complete
+        intended configuration; existing contexts keep their configuration.
 
         Args:
             data: A JSON string or dict with configuration to merge.
@@ -2248,51 +2318,26 @@ class VsiSigningContextV1:
 
 
 @dataclass(frozen=True)
-class TrustedVsiSignResult:
-    """Fixed-format signature and signer-assigned uint32 sequence metadata.
-
-    ``sequence_max`` is an optional inclusive ceiling, not an event ID.
-    """
-
-    signature: bytes
-    sequence_number: int
-    sequence_max: Optional[int] = None
-
-    def __post_init__(self):
-        if not isinstance(self.signature, bytes):
-            raise TypeError("signature must be bytes")
-        if len(self.signature) != 64:
-            raise ValueError("signature must be exactly 64 bytes")
-        for name, value in (("sequence_number", self.sequence_number),
-                            ("sequence_max", self.sequence_max)):
-            if name == "sequence_max" and value is None:
-                continue
-            if type(value) is not int:
-                raise TypeError(f"{name} must be an integer")
-            if not 0 <= value <= 2**32 - 1:
-                raise ValueError(f"{name} must be a uint32")
-        if (self.sequence_max is not None
-                and self.sequence_max < self.sequence_number):
-            raise ValueError("sequence_max must not be below sequence_number")
-
-
-@dataclass(frozen=True)
-class TrustedVsiInitUuidReservation:
-    """Opaque complete placeholder UUID box returned by init reservation."""
-
-    placeholder_uuid_box: bytes
-    manifest_id: str
-
-
-@dataclass(frozen=True)
 class TrustedVsiMediaEmsgReservation:
-    """Complete placeholder EMSG box and its pinned media facts."""
+    """Complete placeholder EMSG box and its pinned media facts.
+
+    ``signing_context`` is the V1 context the finalize callback will receive
+    (supplied sequence, allocated event ID, terminal ``exhaust_after_sign``).
+    """
 
     placeholder_emsg_box: bytes
     signing_context: VsiSigningContextV1
     signing_time_unix_seconds: int
     timescale: int
     event_duration: int
+
+    @property
+    def sequence_number(self) -> int:
+        return self.signing_context.sequence_number
+
+    @property
+    def event_id(self) -> int:
+        return self.signing_context.event_id
 
 
 @dataclass(frozen=True)
@@ -2310,9 +2355,9 @@ class TrustedVsiStatus:
 
 def _has_trusted_vsi_capability(bit: int, symbols_available: bool = True) -> bool:
     return (
-        _TRUSTED_VSI_PYTHON_API_ENABLED
-        and _TRUSTED_VSI_CAPABILITIES_FUNCTION_AVAILABLE
-        and _TRUSTED_VSI_CREATE_AVAILABLE
+        _TRUSTED_VSI_ABI_AVAILABLE
+        and _TRUSTED_VSI_VERSION_MATCHES
+        and _TRUSTED_VSI_CAPABILITIES == _TRUSTED_VSI_REQUIRED_CAPABILITIES
         and symbols_available
         and bool(_TRUSTED_VSI_CAPABILITIES & bit)
     )
@@ -2356,7 +2401,10 @@ def has_live_video_trusted_vsi_signing_context_v1() -> bool:
 
 
 def has_live_video_trusted_vsi_full_uint32_exhaustion() -> bool:
-    """Return whether VSI supports signing then exhausting at uint32 max."""
+    """Return whether composed VSI exhausts safely at uint32 max.
+
+    Expert mode has no sequence counter or exhaustion state.
+    """
     return _has_trusted_vsi_capability(_TRUSTED_VSI_CAP_FULL_UINT32_SEQUENCE)
 
 
@@ -2429,165 +2477,322 @@ def has_fragmented_files() -> bool:
     )
 
 
-class TrustedVsiPrehashedSession(ManagedResource):
-    """Managed scaffold for trusted-processor prehashed VSI sessions.
+class TrustedVsiOperation(enum.IntEnum):
+    RESERVE_INIT = 0
+    FINALIZE_INIT = 1
+    COMMIT_INIT = 2
+    EXPERT_SIGN = 3
+    RESERVE_MEDIA = 4
+    FINALIZE_MEDIA = 5
 
-    This unreleased API shape intentionally does not enable trusted signing.
-    Every entry point fails closed before argument inspection, callbacks,
-    native operations, or managed-resource bookkeeping.
+
+class TrustedVsiInputKind(enum.IntEnum):
+    INIT_HASH = 0
+    SIG_STRUCTURE = 1
+    MEDIA_HASH = 2
+
+
+def _require_trusted_vsi():
+    if not has_live_video_trusted_vsi_signing_context_v1():
+        raise C2paError.NotSupported(
+            "Functional trusted VSI requires the complete 0.91.0-dev native ABI "
+            "and capability mask 63; the loaded library is unavailable")
+
+
+def _trusted_vsi_integer(value, name, maximum=2**32 - 1, minimum=0):
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
+def _trusted_vsi_algorithm(algorithm):
+    if isinstance(algorithm, str):
+        try:
+            algorithm = {"es256": C2paSigningAlg.ES256,
+                         "ed25519": C2paSigningAlg.ED25519,
+                         "eddsa": C2paSigningAlg.ED25519}[algorithm.lower().replace("-", "")]
+        except KeyError as error:
+            raise ValueError("algorithm must be ES256 or Ed25519") from error
+    if not isinstance(algorithm, C2paSigningAlg):
+        raise TypeError("algorithm must be a C2paSigningAlg or str")
+    if algorithm not in (C2paSigningAlg.ES256, C2paSigningAlg.ED25519):
+        raise ValueError("algorithm must be ES256 or Ed25519")
+    return algorithm
+
+
+def _trusted_vsi_output(call):
+    output = ctypes.POINTER(ctypes.c_ubyte)()
+    try:
+        length = call(ctypes.byref(output))
+        _check_ffi_operation_result(length, "Trusted VSI operation failed", check=lambda r: r < 0)
+        if not output:
+            if length == 0:
+                return b""
+            raise C2paError("Trusted VSI native output pointer is null")
+        return ctypes.string_at(output, length)
+    finally:
+        if output:
+            ManagedResource._free_native_ptr(output)
+
+
+def validate_trusted_vsi_input(kind: TrustedVsiInputKind,
+                               algorithm: Union[C2paSigningAlg, str], data: bytes) -> None:
+    """Native canonical-input validation without a session or signing callback."""
+    _require_trusted_vsi()
+    kind = TrustedVsiInputKind(_trusted_vsi_integer(kind, "kind", 2))
+    algorithm = _trusted_vsi_algorithm(algorithm)
+    array = LiveVideoVsiSession._segment_array(data, "data")
+    _check_ffi_operation_result(
+        _lib.c2pa_live_video_trusted_vsi_validate_input(kind, algorithm, array, len(data)),
+        "Invalid trusted VSI input", check=lambda r: r != 0)
+
+
+def trusted_vsi_hash_template(kind: TrustedVsiInputKind) -> bytes:
+    """Return the native canonical zero-digest init/media BMFF hash template."""
+    _require_trusted_vsi()
+    kind = TrustedVsiInputKind(_trusted_vsi_integer(kind, "kind", 2))
+    return _trusted_vsi_output(lambda output: _lib.c2pa_live_video_trusted_vsi_hash_template(kind, output))
+
+
+class TrustedVsiSession(ManagedResource):
+    """Mode-pinned trusted-processor session; externally serialize its calls.
+
+    The caller owns Context. Native retains it and Python separately pins all
+    callbacks so closing the caller's Context cannot invalidate the session.
+    Import requires a new session with the same public configuration/options.
     """
 
-    def __init__(
-        self,
-        manifest_json: Union[str, dict],
-        context: 'Context',
-        callback: Callable[[VsiSigningContextV1, bytes], bytes],
-        algorithm: Union[C2paSigningAlg, str],
-        public_cose_key: bytes,
-        kid: bytes,
-        min_sequence_number: int,
-        created_at: str,
-        validity_period_secs: int,
-    ):
-        self._raise_scaffold_unavailable(
-            has_live_video_trusted_vsi_signing_context_v1(),
-            "trusted prehashed VSI session creation",
-        )
+    def __init__(self, context: 'Context', manifest_json: Union[str, dict],
+                 algorithm: Union[C2paSigningAlg, str], public_cose_key: bytes,
+                 kid: bytes, min_sequence_number: int, created_at: str,
+                 validity_period_secs: int,
+                 callback: Callable[[VsiSigningContextV1, bytes], bytes], *,
+                 mode: str, reservation_nonce: str,
+                 signing_time_unix_seconds: int, sequence_max: Optional[int] = None):
+        _require_trusted_vsi()
+        super().__init__()
+        self._init_attrs()
+        if not isinstance(manifest_json, (str, dict)):
+            raise TypeError("manifest_json must be a str or dict")
+        manifest_bytes = _to_utf8_bytes(manifest_json, "manifest_json")
+        if not manifest_bytes or b'\0' in manifest_bytes:
+            raise ValueError("manifest_json must be nonempty and contain no NUL")
+        if not isinstance(context, Context):
+            raise TypeError("context must be a Context")
+        context._ensure_valid_state()
+        if not context.has_signer:
+            raise C2paError("TrustedVsiSession requires a Context with an explicit signer")
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+        algorithm = _trusted_vsi_algorithm(algorithm)
+        public_key_array = LiveVideoVsiSession._segment_array(public_cose_key, "public_cose_key")
+        kid_array = LiveVideoVsiSession._segment_array(kid, "kid")
+        _trusted_vsi_integer(min_sequence_number, "min_sequence_number")
+        _trusted_vsi_integer(validity_period_secs, "validity_period_secs", 2**64 - 1, 1)
+        created_at_bytes = self._text(created_at, "created_at")
+        if not isinstance(mode, str):
+            raise TypeError("mode must be a str")
+        if mode not in ("expert_sig_structure", "signer_composed_emsg"):
+            raise ValueError("mode must be expert_sig_structure or signer_composed_emsg")
+        if not isinstance(reservation_nonce, str):
+            raise TypeError("reservation_nonce must be a str")
+        if len(reservation_nonce) != 32 or any(c not in "0123456789abcdef" for c in reservation_nonce):
+            raise ValueError("reservation_nonce must contain 32 lowercase hex characters")
+        _trusted_vsi_integer(signing_time_unix_seconds, "signing_time_unix_seconds", 2**63 - 1, -(2**63))
+        if sequence_max is not None:
+            _trusted_vsi_integer(sequence_max, "sequence_max", minimum=min_sequence_number)
+        options = json.dumps(dict(mode=mode, reservation_nonce=reservation_nonce,
+                                  signing_time_unix_seconds=signing_time_unix_seconds,
+                                  sequence_max=sequence_max)).encode()
+        error_state = threading.local()
+        error_state.exception = None
+
+        def wrapped_callback(user_data, native_context, tbs, tbs_len, signature, capacity):
+            error_state.exception = None
+            try:
+                if not native_context or not tbs or not tbs_len or not signature or capacity < 64:
+                    raise C2paError("Invalid trusted VSI callback buffers")
+                signing_context = TrustedVsiSession._signing_context(native_context.contents)
+                result = callback(signing_context, ctypes.string_at(tbs, tbs_len))
+                if not isinstance(result, bytes):
+                    raise TypeError("Trusted VSI callback must return bytes")
+                if len(result) != 64:
+                    raise ValueError("Trusted VSI callback must return exactly 64 signature bytes")
+                ctypes.memmove(signature, result, 64)
+                return 64
+            except BaseException as error:
+                error_state.exception = error
+                return -1
+
+        callback_cb = TrustedVsiSignCallbackV1(wrapped_callback)
+        self._context = context
+        self._signer_callback_cb = context._signer_callback_cb
+        self._dynamic_assertion_cbs = list(context._dynamic_assertion_cbs)
+        self._trusted_vsi_callback = (callback_cb, error_state, callback)
+        self._create_and_activate(
+            lambda: _lib.c2pa_live_video_trusted_vsi_session_create_callback_v1(
+                context.execution_context, manifest_bytes, algorithm, public_key_array,
+                len(public_cose_key), kid_array, len(kid), min_sequence_number,
+                created_at_bytes, validity_period_secs, options, None, callback_cb),
+            "Failed to create trusted VSI session")
 
     @classmethod
-    def from_callback(
-        cls,
-        manifest_json: Union[str, dict],
-        context: 'Context',
-        callback: Callable[[VsiSigningContextV1, bytes], bytes],
-        algorithm: Union[C2paSigningAlg, str],
-        public_cose_key: bytes,
-        kid: bytes,
-        min_sequence_number: int,
-        created_at: str,
-        validity_period_secs: int,
-    ) -> 'TrustedVsiPrehashedSession':
-        """Create a trusted session backed by a purpose-bound callback."""
-        cls._raise_scaffold_unavailable(
-            has_live_video_trusted_vsi_signing_context_v1(),
-            "trusted prehashed VSI session creation",
-        )
-
-    def _cleanup_resources(self):
-        # Rejected construction owns nothing, including no PID/lifecycle state.
-        if _TRUSTED_VSI_PYTHON_API_ENABLED:
-            super()._cleanup_resources()
-
-    def close(self) -> None:
-        """Unavailable while the trusted session scaffold is disabled."""
-        self._raise_scaffold_unavailable(False, "trusted VSI close")
-
-    def __enter__(self):
-        self._raise_scaffold_unavailable(False, "trusted VSI context entry")
-
-    @property
-    def is_valid(self) -> bool:
-        self._raise_scaffold_unavailable(False, "trusted VSI validity")
-
-    @classmethod
-    def _wrap_native_handle(cls, handle):
-        cls._raise_scaffold_unavailable(False, "trusted VSI handle wrapping")
+    def from_callback(cls, context, manifest_json, algorithm, public_cose_key, kid,
+                      min_sequence_number, created_at, validity_period_secs, callback, *,
+                      mode, reservation_nonce, signing_time_unix_seconds, sequence_max=None):
+        """Create a session with the same signature and ownership as the constructor."""
+        _require_trusted_vsi()
+        return cls(context, manifest_json, algorithm, public_cose_key, kid,
+                   min_sequence_number, created_at, validity_period_secs, callback, mode=mode,
+                   reservation_nonce=reservation_nonce, signing_time_unix_seconds=signing_time_unix_seconds,
+                   sequence_max=sequence_max)
 
     def _init_attrs(self):
         super()._init_attrs()
+        self._context = None
+        self._signer_callback_cb = None
+        self._dynamic_assertion_cbs = []
         self._trusted_vsi_callback = None
 
     def _release(self):
+        self._context = None
+        self._signer_callback_cb = None
+        self._dynamic_assertion_cbs.clear()
         self._trusted_vsi_callback = None
 
     @staticmethod
-    def _raise_scaffold_unavailable(available: bool, operation: str) -> None:
-        if not _TRUSTED_VSI_PYTHON_API_ENABLED:
-            raise C2paError.NotSupported(
-                f"{operation} is not enabled by this Python API scaffold"
-            )
-        if not available:
-            raise C2paError.NotSupported(
-                f"{operation} is unavailable in the loaded native library"
-            )
-        raise C2paError.NotSupported(f"{operation} is unavailable")
+    def _text(value, name):
+        if not isinstance(value, str):
+            raise TypeError(f"{name} must be a str")
+        if not value or '\0' in value:
+            raise ValueError(f"{name} must be nonempty and contain no NUL")
+        return _to_utf8_bytes(value, name)
 
-    def reserve_init_uuid(
-        self,
-        format: str = "video/mp4",
-    ) -> TrustedVsiInitUuidReservation:
-        """Reserve a complete fixed-size placeholder C2PA UUID box."""
-        self._raise_scaffold_unavailable(
-            has_live_video_trusted_vsi_split_init(),
-            "trusted VSI init UUID reservation",
-        )
+    @staticmethod
+    def _signing_context(native):
+        if native.purpose == 0:
+            if native.has_sequence_number or native.has_event_id or native.exhaust_after_sign:
+                raise C2paError("Invalid signer_binding context")
+            return VsiSigningContextV1("signer_binding")
+        if native.purpose != 1 or not native.has_sequence_number:
+            raise C2paError("Invalid trusted VSI signing context")
+        return VsiSigningContextV1("vsi", native.sequence_number,
+                                   native.event_id if native.has_event_id else None,
+                                   native.exhaust_after_sign)
+
+    def _call(self, function, *args):
+        states = [state for _, state, _ in self._dynamic_assertion_cbs]
+        if self._trusted_vsi_callback is not None:
+            states.append(self._trusted_vsi_callback[1])
+        claim_state = _claim_signer_error_state(self._signer_callback_cb)
+        if claim_state is not None:
+            states.append(claim_state)
+        _clear_callback_errors(states)
+        result = function(self._handle, *args)
+        if result < 0:
+            _reraise_callback_errors(states)
+        _check_ffi_operation_result(result, "Trusted VSI operation failed", check=lambda r: r < 0)
+        return result
+
+    def reserve_init_uuid(self, format: str = "video/mp4") -> bytes:
+        """Return the complete placeholder UUID box; repeat calls return the same
+        frozen reservation. No signing or DynamicAssertion content callbacks run."""
+        self._ensure_valid_state()
+        format_bytes = self._text(format, "format")
+        return _trusted_vsi_output(lambda output: self._call(
+            _lib.c2pa_live_video_trusted_vsi_session_reserve_init_uuid, format_bytes, output))
+
+    def reserved_manifest_id(self) -> str:
+        self._ensure_valid_state()
+        pointer = _lib.c2pa_live_video_trusted_vsi_session_reserved_manifest_id(self._handle)
+        _check_ffi_operation_result(pointer, "No reserved trusted VSI manifest ID")
+        try:
+            return ctypes.string_at(pointer).decode('utf-8')
+        finally:
+            _lib.c2pa_string_free(pointer)
 
     def finalize_init_uuid(self, canonical_hash: bytes) -> bytes:
-        """Finalize the reserved UUID box with a canonical hard binding."""
-        self._raise_scaffold_unavailable(
-            has_live_video_trusted_vsi_split_init(),
-            "trusted VSI init UUID finalization",
-        )
+        self._ensure_valid_state()
+        array = LiveVideoVsiSession._segment_array(canonical_hash, "canonical_hash")
+        return _trusted_vsi_output(lambda output: self._call(
+            _lib.c2pa_live_video_trusted_vsi_session_finalize_init_uuid, array, len(canonical_hash), output))
 
     def commit_init_uuid(self) -> None:
-        """Commit publication of the finalized init UUID box."""
-        self._raise_scaffold_unavailable(
-            has_live_video_trusted_vsi_split_init(),
-            "trusted VSI init publication commit",
-        )
+        """Activate durable coordinator init state, not a public publication ACK."""
+        self._ensure_valid_state()
+        self._call(_lib.c2pa_live_video_trusted_vsi_session_commit_init_uuid)
 
-    def sign_sig_structure(
-        self,
-        sig_structure: bytes,
-    ) -> TrustedVsiSignResult:
-        """Sign exact caller-composed COSE Sig_structure bytes (disabled).
+    def sign_sig_structure(self, sig_structure: bytes, sequence_number: int) -> bytes:
+        """Sign original expert bytes with supplied sequence metadata, never a counter."""
+        self._ensure_valid_state()
+        _trusted_vsi_integer(sequence_number, "sequence_number")
+        array = LiveVideoVsiSession._segment_array(sig_structure, "sig_structure")
+        return _trusted_vsi_output(lambda output: self._call(
+            _lib.c2pa_live_video_trusted_vsi_session_sign_sig_structure,
+            array, len(sig_structure), sequence_number, output))
 
-        The caller owns EMSG construction, event IDs, and payload semantics.
-        The future signer owns sequence allocation and signs without rebuilding
-        these bytes. No CBOR/COSE validator is implemented by this scaffold.
-        """
-        self._raise_scaffold_unavailable(
-            has_live_video_trusted_vsi_expert_sig_structure(),
-            "trusted VSI expert Sig_structure signing",
-        )
-
-    def reserve_media_emsg_at(
-        self,
-        signing_time_unix_seconds: int,
-        timescale: int,
-        event_duration: int,
-    ) -> TrustedVsiMediaEmsgReservation:
-        """Reserve a complete fixed-size placeholder VSI EMSG box."""
-        self._raise_scaffold_unavailable(
-            has_live_video_trusted_vsi_composed_emsg(),
-            "trusted VSI media EMSG reservation",
-        )
+    def reserve_media_emsg_at(self, sequence_number: int, signing_time_unix_seconds: int,
+                              timescale: int, event_duration: int) -> TrustedVsiMediaEmsgReservation:
+        self._ensure_valid_state()
+        _trusted_vsi_integer(sequence_number, "sequence_number")
+        _trusted_vsi_integer(signing_time_unix_seconds, "signing_time_unix_seconds", 2**63 - 1, -(2**63))
+        _trusted_vsi_integer(timescale, "timescale", minimum=1)
+        _trusted_vsi_integer(event_duration, "event_duration", minimum=1)
+        context = C2paLiveVideoTrustedVsiSigningContextV1()
+        data = _trusted_vsi_output(lambda output: self._call(
+            _lib.c2pa_live_video_trusted_vsi_session_reserve_media_emsg, sequence_number,
+            signing_time_unix_seconds, timescale, event_duration, output, ctypes.byref(context)))
+        return TrustedVsiMediaEmsgReservation(data, self._signing_context(context),
+                                               signing_time_unix_seconds, timescale, event_duration)
 
     def finalize_media_emsg(self, canonical_hash: bytes) -> bytes:
-        """Finalize the reserved EMSG with a canonical BMFF hard binding."""
-        self._raise_scaffold_unavailable(
-            has_live_video_trusted_vsi_composed_emsg(),
-            "trusted VSI media EMSG finalization",
-        )
+        self._ensure_valid_state()
+        array = LiveVideoVsiSession._segment_array(canonical_hash, "canonical_hash")
+        return _trusted_vsi_output(lambda output: self._call(
+            _lib.c2pa_live_video_trusted_vsi_session_finalize_media_emsg, array, len(canonical_hash), output))
 
-    def recover(
-        self,
-        signed_init_uuid: bytes,
-        previous_emsg: Optional[bytes] = None,
-    ) -> None:
-        """Restore trusted session state from published complete boxes."""
-        self._raise_scaffold_unavailable(
-            has_live_video_trusted_vsi_recovery(),
-            "trusted prehashed VSI recovery",
-        )
+    def export_state(self) -> bytes:
+        """Export exact versioned public state, including pending reservations."""
+        self._ensure_valid_state()
+        return _trusted_vsi_output(lambda output: self._call(
+            _lib.c2pa_live_video_trusted_vsi_session_export_state, output))
+
+    def import_state(self, state: bytes) -> None:
+        """Import into a new session with matching config, options, and claim signer."""
+        self._ensure_valid_state()
+        array = LiveVideoVsiSession._segment_array(state, "state")
+        self._call(_lib.c2pa_live_video_trusted_vsi_session_import_state, array, len(state))
+
+    def preflight(self, operation: TrustedVsiOperation, data: bytes = b"", *,
+                  sequence_number: int = 0, iat: int = 0, timescale: int = 0,
+                  event_duration: int = 0, format: str = "video/mp4") -> None:
+        """Validate state and input without mutation, reservation, or callbacks."""
+        self._ensure_valid_state()
+        operation = TrustedVsiOperation(_trusted_vsi_integer(operation, "operation", 5))
+        if not isinstance(data, bytes):
+            raise TypeError("data must be bytes")
+        array = LiveVideoVsiSession._segment_array(data, "data") if data else None
+        _trusted_vsi_integer(sequence_number, "sequence_number")
+        _trusted_vsi_integer(iat, "iat", 2**63 - 1, -(2**63))
+        _trusted_vsi_integer(timescale, "timescale")
+        _trusted_vsi_integer(event_duration, "event_duration")
+        self._call(_lib.c2pa_live_video_trusted_vsi_session_preflight, operation,
+                   array, len(data), sequence_number, iat, timescale, event_duration,
+                   self._text(format, "format"))
 
     def status(self) -> TrustedVsiStatus:
-        """Return the trusted session's public transaction state."""
-        available = (
-            has_live_video_trusted_vsi_signing_context_v1()
-            and _TRUSTED_VSI_STATUS_AVAILABLE
-        )
-        self._raise_scaffold_unavailable(available, "trusted VSI status")
+        self._ensure_valid_state()
+        native = C2paLiveVideoTrustedVsiStatusV1()
+        self._call(_lib.c2pa_live_video_trusted_vsi_session_status_v1, ctypes.byref(native))
+        reasons = {1: "sequence_max", 2: "event_id_max", 3: "legacy_sentinel"}
+        if native.has_exhaustion_reason and native.exhaustion_reason not in reasons:
+            raise C2paError("Unknown trusted VSI exhaustion reason")
+        return TrustedVsiStatus(native.init_uuid_committed, native.init_uuid_pending,
+            native.media_emsg_pending, native.next_sequence_number if native.has_next_sequence_number else None,
+            native.next_event_id if native.has_next_event_id else None, native.exhausted,
+            reasons[native.exhaustion_reason] if native.has_exhaustion_reason else None)
 
 
 class LiveVideoVsiSession(ManagedResource):
@@ -2849,7 +3054,7 @@ class LiveVideoVsiSession(ManagedResource):
                         "VSI callback must return exactly 64 signature bytes")
                 ctypes.memmove(signature, result, len(result))
                 return len(result)
-            except Exception as error:
+            except BaseException as error:
                 error_state.exception = error
                 logger.error(
                     "Error in live-video VSI %s callback: %s",
@@ -2928,22 +3133,16 @@ class LiveVideoVsiSession(ManagedResource):
         return (ctypes.c_ubyte * len(segment)).from_buffer_copy(segment)
 
     def _copy_signed_output(self, ffi_call, error_message: str) -> bytes:
+        states = [state for _, state, _ in self._dynamic_assertion_cbs]
         if self._vsi_callback is not None:
-            self._vsi_callback[1].exception = None
-        for _, error_state, _ in self._dynamic_assertion_cbs:
-            error_state.exception = None
+            states.insert(0, self._vsi_callback[1])
+        claim_state = _claim_signer_error_state(self._signer_callback_cb)
+        _clear_callback_errors(states + [claim_state])
         output = ctypes.POINTER(ctypes.c_ubyte)()
         length = ffi_call(ctypes.byref(output))
         if length < 0:
-            if self._vsi_callback is not None:
-                callback_error = getattr(
-                    self._vsi_callback[1], 'exception', None)
-                if callback_error is not None:
-                    raise callback_error
-            for _, error_state, _ in self._dynamic_assertion_cbs:
-                callback_error = getattr(error_state, 'exception', None)
-                if callback_error is not None:
-                    raise callback_error
+            _reraise_callback_errors(
+                states, [claim_state] if claim_state is not None else [])
         _check_ffi_operation_result(
             length, error_message, check=lambda result: result < 0)
 
@@ -4534,6 +4733,11 @@ class Signer(ManagedResource):
                 )
             )
 
+        # Retained on the ctypes callback itself so Context consumption and
+        # session borrowing preserve the original Python exception state.
+        callback_error_state = threading.local()
+        callback_error_state.exception = None
+
         # Create a wrapper callback that handles errors and memory management
         def wrapped_callback(
                 context,
@@ -4541,6 +4745,7 @@ class Signer(ManagedResource):
                 data_len,
                 signed_bytes_ptr,
                 signed_len):
+            callback_error_state.exception = None
             # Returns -1 on error as it is what the native code expects.
             # The reason is that otherwise we ping-pong errors
             # between native code and Python code,
@@ -4585,7 +4790,11 @@ class Signer(ManagedResource):
 
                 # Native code expects the signed len to be returned, we oblige
                 return actual_len
-            except Exception as e:
+            except BaseException as e:
+                # Store every original exception (including KeyboardInterrupt,
+                # SystemExit and CancelledError) so callers can re-raise it;
+                # an exception escaping into ctypes would be discarded.
+                callback_error_state.exception = e
                 logger.error(
                     cls._ERROR_MESSAGES['callback_error'].format(
                         str(e)))
@@ -4607,6 +4816,7 @@ class Signer(ManagedResource):
 
         # Create the callback object using the callback function
         callback_cb = SignerCallback(wrapped_callback)
+        callback_cb._error_state = callback_error_state
 
         # Create the signer with the wrapped callback
         signer_ptr = _lib.c2pa_signer_create(
@@ -4788,7 +4998,9 @@ class Signer(ManagedResource):
                 if result_size:
                     ctypes.memmove(out_data, result, result_size)
                 return result_size
-            except Exception as error:
+            except BaseException as error:
+                # See Signer.from_callback: never let an exception escape into
+                # ctypes, where it is ignored and the original is lost.
                 error_state.exception = error
                 logger.error(
                     "Error in dynamic assertion callback for '%s': %s",
@@ -5333,8 +5545,11 @@ class Builder(ManagedResource):
             if signer is not None
             else self._dynamic_assertion_cbs
         )
-        for _, error_state, _ in dynamic_assertion_cbs:
-            error_state.exception = None
+        claim_state = _claim_signer_error_state(
+            signer._callback_cb if signer is not None
+            else self._signer_callback_cb)
+        da_states = [state for _, state, _ in dynamic_assertion_cbs]
+        _clear_callback_errors(da_states + [claim_state])
 
         # allow_autodetect=False, so this never returns None (raises instead).
         format_arg = _format_ffi_arg(
@@ -5368,10 +5583,8 @@ class Builder(ManagedResource):
             raise C2paError(f"Error during signing: {e}") from e
 
         if result < 0:
-            for _, error_state, _ in dynamic_assertion_cbs:
-                callback_error = getattr(error_state, 'exception', None)
-                if callback_error is not None:
-                    raise callback_error
+            _reraise_callback_errors(
+                da_states, [claim_state] if claim_state is not None else [])
 
         _check_ffi_operation_result(
             result,
@@ -5579,8 +5792,9 @@ class Builder(ManagedResource):
                 "asset_path must identify an existing regular file")
 
         dynamic_assertion_cbs = list(signer._dynamic_assertion_cbs)
-        for _, error_state, _ in dynamic_assertion_cbs:
-            error_state.exception = None
+        claim_state = _claim_signer_error_state(signer._callback_cb)
+        da_states = [state for _, state, _ in dynamic_assertion_cbs]
+        _clear_callback_errors(da_states + [claim_state])
 
         manifest_bytes_ptr = ctypes.POINTER(ctypes.c_ubyte)()
         try:
@@ -5598,10 +5812,8 @@ class Builder(ManagedResource):
                     f"Error during fragmented signing: {error}") from error
 
             if result < 0:
-                for _, error_state, _ in dynamic_assertion_cbs:
-                    callback_error = getattr(error_state, 'exception', None)
-                    if callback_error is not None:
-                        raise callback_error
+                _reraise_callback_errors(
+                    da_states, [claim_state] if claim_state is not None else [])
 
             _check_ffi_operation_result(
                 result,
@@ -5879,10 +6091,12 @@ __all__ = [
     'Builder',
     'Signer',
     'LiveVideoVsiSession',
-    'TrustedVsiPrehashedSession',
+    'TrustedVsiSession',
     'VsiSigningContextV1',
-    'TrustedVsiSignResult',
-    'TrustedVsiInitUuidReservation',
+    'TrustedVsiOperation',
+    'TrustedVsiInputKind',
+    'validate_trusted_vsi_input',
+    'trusted_vsi_hash_template',
     'TrustedVsiMediaEmsgReservation',
     'TrustedVsiStatus',
     'has_dynamic_assertions',

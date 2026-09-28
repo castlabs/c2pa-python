@@ -1,20 +1,26 @@
 # Release notes
 
-## Unreleased: disabled trusted-processor VSI API
+## Unreleased: functional trusted-processor VSI API
 
-- Replaces the unshipped expert EMSG scaffold with
-  `TrustedVsiPrehashedSession.sign_sig_structure(sig_structure)` and
-  `has_live_video_trusted_vsi_expert_sig_structure()`. No old aliases remain.
-- Adds frozen `TrustedVsiSignResult`: a 64-byte fixed-format signature, uint32
-  sequence number, and optional inclusive uint32 maximum not below that number.
-- Mirrors the paired native signature/sequence output ABI. Split-init,
-  signer-composed EMSG, status, recovery, and V1 callback-context targets remain.
-- All trusted capabilities remain false. Import does not invoke the native
-  trusted capability function; construction and operations reject before
-  argument inspection, callbacks, native calls, or managed-resource bookkeeping.
-- Adds isolated Linux/Windows paired-source API tests. This is not functional
-  signing, CBOR/COSE validation, or dev5 artifact qualification. The immutable
-  dev5 release, source pins, version, and publication identity are unchanged.
+- Replaces the unshipped counter/result scaffold with
+  `TrustedVsiSession.sign_sig_structure(sig_structure, sequence_number)
+  -> bytes`. Expert mode signs supplied sequence metadata without allocating a
+  sequence or keeping a media journal. `TrustedVsiSignResult` is removed.
+- Renames the unshipped `TrustedVsiPrehashedSession` to `TrustedVsiSession`
+  with the native contract's argument order (`context` first, `callback` after
+  `validity_period_secs`); `reserve_init_uuid()` returns the UUID box bytes and
+  `TrustedVsiInitUuidReservation` is removed. No aliases.
+- Adds mode-pinned init/composed reserve/finalize, side-effect-free preflight,
+  canonical input validation/hash templates, and explicit state export/import.
+  The old unshipped `recover(init_uuid, previous_emsg)` is removed without alias.
+- Pins claim/VSI/DA callbacks across context consumption, explicit close and
+  state import; preserves original callback exceptions and native errors.
+- Capability probes require the exact functional symbol set, native version,
+  and complete capability mask. Older native libraries fail closed.
+- Adds non-publishing Linux/Windows source and installed-wheel qualification.
+  Functional artifacts use a separate staged development version (default
+  `0.37.9.dev0`). Immutable dev5 release facts, pins and artifact names remain
+  unchanged. Functional native qualification is required, never an optional skip.
 
 ## Version 0.37.8.dev5
 
