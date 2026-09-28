@@ -4,6 +4,8 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from packaging.utils import canonicalize_name, parse_sdist_filename
+from packaging.version import Version
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,16 +43,21 @@ def test_staged_sdist_uses_new_version_without_touching_dev5_checkout(tmp_path):
     assert not (stage / "src/c2pa/libs").exists()
     subprocess.run([sys.executable, "setup.py", "-q", "sdist", "--dist-dir", str(tmp_path / "dist")],
                    cwd=stage, check=True, capture_output=True)
+    # setuptools < 69 names sdists "c2pa-python-<v>", newer "c2pa_python-<v>";
+    # compare canonicalized name/version instead of one spelling.
     (sdist,) = (tmp_path / "dist").iterdir()
-    assert sdist.name == "c2pa_python-0.37.9.dev0.tar.gz"
+    name, version = parse_sdist_filename(sdist.name)
+    assert canonicalize_name(name) == "c2pa-python"
+    assert version == Version("0.37.9.dev0")
+    root = sdist.name[:-len(".tar.gz")]
     with tarfile.open(sdist) as archive:
         names = archive.getnames()
-        info = archive.extractfile("c2pa_python-0.37.9.dev0/PKG-INFO").read().decode()
-    assert "Version: 0.37.9.dev0" in info
+        info = archive.extractfile(f"{root}/PKG-INFO").read().decode()
+    assert "Version: 0.37.9.dev0" in info.splitlines()
     for member in ("scripts/build_trusted_vsi_functional.py",
                    "scripts/qualify_trusted_vsi_functional.py",
                    "docs/trusted-vsi-python-contract.md", "src/c2pa/c2pa.py"):
-        assert f"c2pa_python-0.37.9.dev0/{member}" in names
+        assert f"{root}/{member}" in names
     assert not any(name.endswith((".so", ".dll", ".dylib")) for name in names)
     after = {name: (ROOT / name).read_bytes() for name in before}
     assert after == before

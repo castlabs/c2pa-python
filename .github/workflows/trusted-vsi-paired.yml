@@ -79,7 +79,11 @@ jobs:
         timeout-minutes: 20
         shell: bash
         working-directory: python-source
-        run: python -m pytest -q --ignore=tests/test_unit_tests_threaded.py -o faulthandler_timeout=120
+        # The release smoke is required here (no module-level skip): it exercises
+        # dev5 capabilities against the paired functional native library.
+        env:
+          CASTLABS_RELEASE_SMOKE_REQUIRED: "1"
+        run: python -m pytest -q -ra --ignore=tests/test_unit_tests_threaded.py -o faulthandler_timeout=120
       - name: Threaded regressions
         timeout-minutes: 15
         shell: bash
