@@ -59,6 +59,7 @@ classDiagram
         +sign(signer, format, source, dest) bytes
         +sign(format, source, dest) bytes
         +sign_file(source_path, dest_path, signer) bytes
+        +sign_ladder(signer, sources, dests) bytes
         +close()
     }
 
@@ -132,3 +133,7 @@ classDiagram
     C2paDigitalSourceType --> Builder : set_intent
     C2paError --> C2paError_Subtypes : subclasses
 ```
+
+[`Builder.sign_ladder`](ladder-signing.md) requires an explicit signer and a native
+library with ladder support. An attempted native call closes the builder, not the signer;
+preflight errors leave the builder usable.

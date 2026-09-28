@@ -116,7 +116,7 @@ jobs:
           python3 -c "from c2pa import C2paError; print('C2paError imported successfully')"
 
       - name: Run tests
-        run: python3 ./tests/test_unit_tests.py
+        run: python3 -m pytest tests/test_unit_tests.py tests/test_sign_ladder.py
 
   tests-windows:
     name: Unit tests for developer setup (Windows)
@@ -202,7 +202,7 @@ jobs:
           python -c "from c2pa import C2paError; print('C2paError imported successfully')"
 
       - name: Run tests
-        run: python .\tests\test_unit_tests.py
+        run: python -m pytest .\tests\test_unit_tests.py .\tests\test_sign_ladder.py
 
   build-linux-wheel:
     name: Build Linux wheel
@@ -287,7 +287,7 @@ jobs:
       - name: Run tests with pytest (venv)
         run: |
           source venv/bin/activate
-          venv/bin/pytest tests/test_unit_tests.py -v
+          venv/bin/pytest tests/test_unit_tests.py tests/test_sign_ladder.py -v
 
   build-windows-wheel:
     name: Build Windows wheel
@@ -379,7 +379,7 @@ jobs:
       - name: Run tests with pytest (venv)
         run: |
           .\venv\Scripts\activate
-          .\venv\Scripts\pytest .\tests\test_unit_tests.py -v
+          .\venv\Scripts\pytest .\tests\test_unit_tests.py .\tests\test_sign_ladder.py -v
 
   build-macos-wheel:
     name: Build macOS wheels
@@ -468,7 +468,7 @@ jobs:
       - name: Run tests with pytest (venv)
         run: |
           source venv/bin/activate
-          venv/bin/pytest tests/test_unit_tests.py -v
+          venv/bin/pytest tests/test_unit_tests.py tests/test_sign_ladder.py -v
 
   sdist:
     runs-on: ubuntu-latest

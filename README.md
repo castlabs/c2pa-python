@@ -21,6 +21,7 @@ If you want to view the documentation in GitHub, see:
 - [Supported formats](https://github.com/contentauth/c2pa-rs/blob/main/docs/supported-formats.md)
 - [Configuring the SDK using `Context` and `Settings`](docs/context-settings.md)
 - [Using Builder intents](docs/intents.md) to ensure spec-compliant manifests
+- [Signing single-file fragmented MP4 ladders](docs/ladder-signing.md)
 - Using [working stores and archives](docs/working-stores.md)
 - Selectively constructing manifests by [filtering actions and ingredients](docs/selective-manifests.md)
 - [Diagram of public classes in the Python library and their relationships](docs/class-diagram.md)
