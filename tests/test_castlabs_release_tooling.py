@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -26,6 +27,25 @@ SPEC = importlib.util.spec_from_file_location("castlabs_release", SCRIPT_PATH)
 release = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(release)
+
+
+def _posix_bash() -> str:
+    """Return a POSIX bash for workflow shell snippets.
+
+    On Windows a bare ``bash`` resolves to ``System32\\bash.exe`` (the WSL
+    launcher, unusable without a distribution). GitHub's ``shell: bash`` uses
+    Git for Windows' bash, so use the same one; fail rather than skip if absent.
+    """
+    if os.name != "nt":
+        return "bash"
+    git = shutil.which("git")
+    assert git, "Git for Windows is required to run workflow shell helpers"
+    # git.exe may live in <Git>\\cmd, <Git>\\bin or <Git>\\mingw64\\bin.
+    for root in Path(git).resolve().parents:
+        for candidate in (root / "bin" / "bash.exe", root / "usr" / "bin" / "bash.exe"):
+            if candidate.is_file() and "system32" not in str(candidate).lower():
+                return str(candidate)
+    raise AssertionError(f"Git for Windows bash not found near {git}")
 
 
 def test_prerelease_version_is_consistent():
@@ -319,7 +339,7 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
         release_workflow[shell_helpers_start:shell_helpers_end]
     )
     subprocess.run(
-        ["bash"],
+        [_posix_bash()],
         cwd=tmp_path,
         input=(
             "set -euo pipefail\n"
