@@ -1,9 +1,11 @@
-"""Focused binding tests; all ladder FFI calls and handle frees are mocked."""
+"""Focused binding tests and an optional-capability, offline native smoke."""
 
 import ctypes
 import gc
+import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -14,8 +16,20 @@ import pytest
 import c2pa.c2pa as binding
 
 
+_NATIVE_SIGNATURE = ctypes.CFUNCTYPE(
+    ctypes.c_int64,
+    ctypes.POINTER(binding.C2paBuilder),
+    ctypes.POINTER(binding.C2paSigner),
+    ctypes.POINTER(ctypes.c_char_p),
+    ctypes.POINTER(ctypes.c_char_p),
+    ctypes.c_size_t,
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
+)
+
+
 @pytest.fixture
 def ladder(monkeypatch):
+    # Mock retains call arguments; gc.collect() below is not a lifetime proof.
     native = SimpleNamespace(
         c2pa_builder_sign_ladder=Mock(),
         c2pa_free=Mock(return_value=0),
@@ -63,7 +77,7 @@ def assert_closed(builder, signer, native, manifest=None):
     assert native.c2pa_free.call_args_list == calls
 
 
-def test_order_utf8_lifetimes_and_binary_copy(ladder):
+def test_order_utf8_marshalling_and_binary_copy(ladder):
     builder, signer, native = ladder
     manifest = manifest_result(native)
     sign = native.c2pa_builder_sign_ladder.side_effect
@@ -83,6 +97,40 @@ def test_order_utf8_lifetimes_and_binary_copy(ladder):
     assert builder.sign_ladder(
         signer, [Path("z.mp4"), "\u00e9.mp4"],
         ["out-z.mp4", Path("out-e.mp4")]) == b"A\0B\xff"
+    assert_closed(builder, signer, native, manifest)
+
+
+@pytest.mark.parametrize("result", [4, -1])
+def test_typed_callback_marshalling_and_cleanup(ladder, monkeypatch, result):
+    builder, signer, native = ladder
+    manifest = (ctypes.c_ubyte * 4)(65, 0, 66, 255)
+    calls = []
+
+    @_NATIVE_SIGNATURE
+    def sign(builder_ptr, signer_ptr, sources, dests, count, output):
+        gc.collect()
+        calls.append((ctypes.addressof(builder_ptr.contents),
+                      ctypes.addressof(signer_ptr.contents),
+                      [sources[i] for i in range(count)],
+                      [dests[i] for i in range(count)], count))
+        output[0] = ctypes.cast(manifest, ctypes.POINTER(ctypes.c_ubyte))
+        return result
+
+    native.c2pa_builder_sign_ladder.side_effect = sign
+    expected = (ctypes.addressof(builder._handle.contents),
+                ctypes.addressof(signer._handle.contents),
+                [b"z.mp4", "\u00e9.mp4".encode()],
+                [b"out-z.mp4", "out-\u00e9.mp4".encode()], 2)
+    sources = [Path("z.mp4"), "\u00e9.mp4"]
+    dests = ["out-z.mp4", Path("out-\u00e9.mp4")]
+    if result < 0:
+        monkeypatch.setattr(binding, "_read_native_error", lambda: "Io: sign failed")
+        with pytest.raises(binding.C2paError.Io, match="sign failed"):
+            builder.sign_ladder(signer, sources, dests)
+    else:
+        assert builder.sign_ladder(signer, sources, dests) == b"A\0B\xff"
+    # Assert outside the ctypes callback, which would swallow assertion errors.
+    assert calls == [expected]
     assert_closed(builder, signer, native, manifest)
 
 
@@ -231,3 +279,55 @@ def test_native_harness_refuses_optimized_python(mode):
     assert result.returncode != 0
     assert "requires assertions" in result.stderr
     assert "rerun without -O/-OO or PYTHONOPTIMIZE" in result.stderr
+
+
+def test_real_native_ladder_signs_and_validates(tmp_path):
+    fixtures = Path(__file__).parent / "fixtures"
+    fixture = fixtures / "single-file-fragmented" / "single_file_fragments.mp4"
+    original = fixture.read_bytes()  # Missing committed test data is never a skip.
+    if not binding._HAS_SIGN_LADDER:
+        if os.environ.get("C2PA_REQUIRE_SIGN_LADDER") == "1":
+            pytest.fail("C2PA_REQUIRE_SIGN_LADDER=1 but the loaded native library "
+                        "lacks c2pa_builder_sign_ladder")
+        pytest.skip("native library lacks c2pa_builder_sign_ladder")
+
+    export = binding._lib.c2pa_builder_sign_ladder
+    assert export.restype is _NATIVE_SIGNATURE._restype_
+    assert tuple(export.argtypes) == _NATIVE_SIGNATURE._argtypes_
+
+    # Two copies exercise the ordered multi-file API, not different encodes.
+    sources = [tmp_path / f"copy-{i}.mp4" for i in range(2)]
+    dests = [tmp_path / f"signed-{i}.mp4" for i in range(2)]
+    for source in sources:
+        shutil.copy2(fixture, source)
+    definition = {
+        "claim_generator_info": [{"name": "ladder-binding-test"}],
+        "assertions": [{"label": "c2pa.actions", "data": {"actions": [{
+            "action": "c2pa.created",
+            "digitalSourceType": "http://cv.iptc.org/newscodes/digitalsourcetype/digitalCreation",
+        }]}}],
+    }
+    info = binding.C2paSignerInfo(
+        alg=b"es256", sign_cert=(fixtures / "es256_certs.pem").read_bytes(),
+        private_key=(fixtures / "es256_private.key").read_bytes(), ta_url=None)
+    with binding.Signer.from_info(info) as signer:
+        with binding.Builder(definition) as builder:
+            with pytest.raises(binding.C2paError, match="1 to 256"):
+                builder.sign_ladder(signer, [], [])
+            builder._ensure_valid_state()
+            manifest = builder.sign_ladder(signer, sources, dests)
+            assert manifest
+            assert builder._lifecycle_state == binding.LifecycleState.CLOSED
+            assert builder._handle is None
+        signer._ensure_valid_state()
+
+    manifests = []
+    for dest in dests:
+        assert manifest in dest.read_bytes(), "returned manifest not embedded byte-for-byte"
+        with binding.Reader(dest) as reader:
+            assert reader.get_validation_state() == "Valid", reader.json()
+            report = json.loads(reader.json())
+            manifests.append(report["manifests"][report["active_manifest"]])
+    assert manifests[0] == manifests[1]
+    assert [source.read_bytes() for source in sources] == [original, original]
+    assert fixture.read_bytes() == original

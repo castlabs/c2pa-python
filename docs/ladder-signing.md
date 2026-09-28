@@ -30,13 +30,31 @@ binding addition.
 
 ## Verification
 
-Use a local virtual environment for dependencies. The focused mock tests run
-against an otherwise supported native library:
+Use a local virtual environment for dependencies. The existing CI commands run
+`tests/test_unit_tests.py tests/test_sign_ladder.py`. The focused ladder file
+includes mock tests, typed `CFUNCTYPE` marshalling/cleanup tests, and a real-native
+smoke using the committed tiny fixture and existing offline test key/certificates
+(no TSA). Fixture provenance is in
+`tests/fixtures/single-file-fragmented/README.md`.
 
 ```sh
 PYTHONPATH=src C2PA_LIBRARY_NAME=/absolute/path/to/stock/libc2pa_c.so \
   .venv/bin/python -m pytest -q tests/test_sign_ladder.py
+PYTHONPATH=src C2PA_LIBRARY_NAME=/absolute/path/to/candidate/libc2pa_c.so \
+  C2PA_REQUIRE_SIGN_LADDER=1 .venv/bin/python -m pytest -q tests/test_sign_ladder.py
 ```
+
+Only the native smoke skips when the loaded library lacks the optional symbol.
+`C2PA_REQUIRE_SIGN_LADDER=1` makes that absence fail instead; it is a test-only
+capability requirement, not a loader override or a change to the binding API.
+When the symbol is present, the smoke always executes, regardless of the flag.
+It checks the production export's six argument types and return type before signing.
+Missing committed fixture data fails even on stock. The smoke signs two copies
+of the same fixture (not different resolution encodes), checks that the returned
+manifest is embedded byte-for-byte in both outputs, compares their active
+manifests, requires Reader state `Valid`, and checks inputs remain unchanged.
+It also checks empty-list Python preflight preserves the builder and native
+signing closes it. It does not replace the broader isolated harness below.
 
 Run both real-native lanes explicitly. The harness copies this package and the
 specified library into a temporary directory and launches a fresh Python process.
