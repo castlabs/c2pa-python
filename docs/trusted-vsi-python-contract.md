@@ -1,7 +1,7 @@
 # Trusted VSI Python Contract
 
 Status: implemented and qualified locally (Linux) against the functional native
-library built from `castlabs/c2pa-rs@1d605b5a2033d5812742e302db3e5f9af347f68d`
+library built from `castlabs/c2pa-rs@3569fb860babe52db778f82e3fe80e8371fe2a08`
 (`feat/trusted-vsi-functional`; debug `libc2pa_c.so` SHA-256
 `6c7ccf4258132df1…`, capability mask 63), following `c2pa-rs`
 `docs/trusted-vsi-native-contract.md` (SHA-256
@@ -197,5 +197,5 @@ and native library come from that venv with the expected version.
 Paired tests require the full native library and FAIL under
 `C2PA_TRUSTED_VSI_ABI_REQUIRED=1` (all Linux/Windows qualification jobs); they
 skip only in ad-hoc local runs. `.github/workflows/trusted-vsi-paired.yml`
-checks out the reviewed native commit `1d605b5a2033d5812742e302db3e5f9af347f68d`
+checks out the reviewed native commit `3569fb860babe52db778f82e3fe80e8371fe2a08`
 by full SHA; update that pin (not a branch name) for later native revisions.

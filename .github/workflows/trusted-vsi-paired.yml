@@ -48,7 +48,7 @@ jobs:
           repository: castlabs/c2pa-rs
           # Reviewed functional trusted VSI native (feat/trusted-vsi-functional).
           # Qualification-only pairing; never the immutable dev5 release input.
-          ref: 1d605b5a2033d5812742e302db3e5f9af347f68d
+          ref: 3569fb860babe52db778f82e3fe80e8371fe2a08
           path: paired-rust
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
