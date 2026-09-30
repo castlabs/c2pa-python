@@ -17,6 +17,7 @@ import ctypes
 import enum
 import json
 import logging
+import re
 import sys
 import os
 import warnings
@@ -421,9 +422,11 @@ class ManagedResource:
         self._handle = new_handle
 
     # Errors set by native lib, hinting at the cause of the error
-    # These errors here means the pointer got somehow rejected by the lib,
-    # so it is still ours to deal with.
+    # The rejected handle may be this resource or another argument.
     _PRE_CONSUME_ERROR_TAGS = ("UntrackedPointer:", "WrongPointerType:")
+    _ADDRESSLESS_REJECTION_TAGS = ("PointerInUse:", "WrongWrapperKind:")
+    _REJECTED_HANDLE_RE = re.compile(
+        r"(?:UntrackedPointer|WrongPointerType):\s*(0x[0-9a-fA-F]+)\b")
 
     def _invoke_consume(self, ffi_call, error_message):
         """Run an FFI call that consumes this handle, returning its raw result.
@@ -454,7 +457,20 @@ class ManagedResource:
             self._release_handle()
             raise C2paError(error_message.format(e)) from e
 
-    def _raise_consume_failure(self, error_message):
+    def _handle_value(self):
+        """Read the handle value without dereferencing native memory."""
+        try:
+            handle = self._handle
+            if not handle:
+                return None
+            if isinstance(handle, int):
+                return handle
+            return ctypes.c_void_p.from_buffer(handle).value
+        except Exception:
+            # An unfamiliar representation cannot establish ownership.
+            return None
+
+    def _raise_consume_failure(self, error_message, *, consumes_first=False):
         """Raise the error from an FFI handler consuming call.
 
         The native error is read before any free so a free's own
@@ -469,22 +485,49 @@ class ManagedResource:
         with another one and, because that substitute carries a pre-consume
         tag, invert the retain/consume decision made below.
 
+        Validate-first calls retain the resource on any registry rejection.
+        Consume-first calls retain it only when the rejected address matches
+        its handle. A different known address means it was consumed; an absent
+        address or unreadable handle value needs a guarded free and close.
+        Address-less registry rejections are safe to clean up with the newer
+        opaque registry and are not emitted by stock 0.91.0.
+
         Args:
             error_message: Format string with one placeholder, used when the
                 native layer offers no error of its own.
+            consumes_first: Whether native takes this handle before validating
+                its other arguments.
 
         Raises:
             C2paError: Always; typed by the native error when there is one.
         """
         error = _read_native_error()
         if error:
-            if any(tag in error
-                   for tag in ManagedResource._PRE_CONSUME_ERROR_TAGS):
+            # Stock wraps registry errors in Other; tags quoted inside another
+            # error's payload are not evidence of handle rejection.
+            rejection = error.removeprefix("Other: ")
+            rejected = rejection.startswith(
+                self._PRE_CONSUME_ERROR_TAGS + self._ADDRESSLESS_REJECTION_TAGS)
+            if rejected and not consumes_first:
                 logger.warning(
-                    "%s: native call rejected the handle before taking "
+                    "%s: native call rejected an argument before taking "
                     "ownership (%s); handle retained",
                     type(self).__name__,
                     error)
+                _raise_typed_c2pa_error(error)
+
+            if rejected:
+                match = self._REJECTED_HANDLE_RE.match(rejection)
+                managed = self._handle_value()
+                if match and managed is not None:
+                    if int(match.group(1), 16) == managed:
+                        logger.warning(
+                            "%s: native call rejected the managed handle "
+                            "(%s); handle retained", type(self).__name__, error)
+                        _raise_typed_c2pa_error(error)
+                    self._teardown(free_handle=False)
+                else:
+                    self._release_handle()
                 _raise_typed_c2pa_error(error)
 
             # A non-tag error means the native side took ownership then failed,
@@ -498,7 +541,7 @@ class ManagedResource:
         self._release_handle()
         raise C2paError(error_message.format("Unknown error"))
 
-    def _consume_and_swap(self, ffi_call, error_message):
+    def _consume_and_swap(self, ffi_call, error_message, *, consumes_first=False):
         """Run an FFI call that consumes this handle and returns a replacement.
         On success the native lib consumed the handle and returned a new one,
         which we swap in. A null return is a failure.
@@ -507,9 +550,10 @@ class ManagedResource:
         if new_ptr:
             self._swap_handle(new_ptr)
             return
-        self._raise_consume_failure(error_message)
+        self._raise_consume_failure(error_message, consumes_first=consumes_first)
 
-    def _consume_no_replacement(self, ffi_call, error_message):
+    def _consume_no_replacement(self, ffi_call, error_message, *,
+                                consumes_first=False):
         """Run an FFI call that consumes this handle on success, when the native
         call returns a status code (0 = success) rather than a replacement
         handle. A non-zero status is a failure routed to
@@ -519,9 +563,9 @@ class ManagedResource:
         if result == 0:
             self._teardown(free_handle=False)
             return
-        self._raise_consume_failure(error_message)
+        self._raise_consume_failure(error_message, consumes_first=consumes_first)
 
-    def _consume_into(self, ffi_call, error_message):
+    def _consume_into(self, ffi_call, error_message, *, consumes_first=False):
         """Run an FFI call that consumes this handle and returns a *different*
         object's pointer. On success this handle is consumed (mark, don't free)
         and the new pointer is returned for the caller to own. A null return is
@@ -531,7 +575,7 @@ class ManagedResource:
         if result:
             self._teardown(free_handle=False)
             return result
-        self._raise_consume_failure(error_message)
+        self._raise_consume_failure(error_message, consumes_first=consumes_first)
 
     @classmethod
     def _wrap_native_handle(cls, handle):
@@ -657,40 +701,13 @@ class C2paSigner(ctypes.Structure):
 
 
 class C2paStream(ctypes.Structure):
-    """A C2paStream is a Rust Read/Write/Seek stream that can be created in C.
+    """Opaque native stream handle.
 
-    This class represents a low-level stream interface that bridges Python
-    and Rust/C code. It implements the Rust Read/Write/Seek traits in C,
-    allowing for efficient data transfer between Python and the C2PA library
-    without unnecessary copying.
-
-    The stream is used for various operations including:
-    - Reading manifest data from files
-    - Writing signed content to files
-    - Handling binary resources
-    - Managing ingredient data
-
-    The structure contains function pointers that implement stream operations:
-    - reader: Function to read data from the stream
-    - seeker: Function to change the stream position
-    - writer: Function to write data to the stream
-    - flusher: Function to flush any buffered data
-
-    This is a critical component for performance as it allows direct memory
-    access between Python and the C2PA library without intermediate copies.
+    Python only passes this pointer back to native and never reads its fields.
+    This works with both stock 0.91.0's C-layout stream and newer opaque handles.
+    Stream retains the callbacks separately for their required lifetime.
     """
-    _fields_ = [
-        # Opaque context pointer for the stream
-        ("context", ctypes.POINTER(StreamContext)),
-        # Function to read data from the stream
-        ("reader", ReadCallback),
-        # Function to change stream position
-        ("seeker", SeekCallback),
-        # Function to write data to the stream
-        ("writer", WriteCallback),
-        # Function to flush buffered data
-        ("flusher", FlushCallback),
-    ]
+    _fields_ = []
 
 
 def _read_native_error() -> Optional[str]:
@@ -1725,7 +1742,7 @@ class Context(ManagedResource, ContextProvider):
 
                 context_ptr = nb._consume_into(
                     lambda h: _lib.c2pa_context_builder_build(h),
-                    "Failed to build Context: {}")
+                    "Failed to build Context: {}", consumes_first=True)
 
             self._activate(context_ptr)
 
@@ -2644,7 +2661,7 @@ class Reader(ManagedResource):
                             len(manifest_data),
                         )
                     ),
-                    Reader._ERROR_MESSAGES['reader_error'])
+                    Reader._ERROR_MESSAGES['reader_error'], consumes_first=True)
             else:
                 # Consume reader with stream
                 self._consume_and_swap(
@@ -2652,7 +2669,7 @@ class Reader(ManagedResource):
                         handle, format_arg,
                         self._own_stream._stream,
                     ),
-                    Reader._ERROR_MESSAGES['reader_error'])
+                    Reader._ERROR_MESSAGES['reader_error'], consumes_first=True)
         except Exception:
             self._close_streams()
             raise
@@ -2761,7 +2778,7 @@ class Reader(ManagedResource):
                     main_obj._stream,
                     frag_obj._stream,
                 ),
-                Reader._ERROR_MESSAGES['fragment_error'])
+                Reader._ERROR_MESSAGES['fragment_error'], consumes_first=True)
 
         # Invalidate caches: processing a new BMFF fragment updates the native
         # reader's state, which can change the manifest data it returns.
@@ -3412,7 +3429,7 @@ class Builder(ManagedResource):
         self._consume_and_swap(
             lambda handle: _lib.c2pa_builder_with_definition(
                 handle, json_str),
-            Builder._ERROR_MESSAGES['builder_error'])
+            Builder._ERROR_MESSAGES['builder_error'], consumes_first=True)
 
     def _init_attrs(self):
         super()._init_attrs()
@@ -3699,7 +3716,7 @@ class Builder(ManagedResource):
             self._consume_and_swap(
                 lambda handle: _lib.c2pa_builder_with_archive(
                     handle, stream_obj._stream),
-                Builder._ERROR_MESSAGES['archive_load_error'])
+                Builder._ERROR_MESSAGES['archive_load_error'], consumes_first=True)
 
         return self
 
