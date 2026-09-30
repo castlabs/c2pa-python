@@ -78,3 +78,36 @@ OpenSSL crypto without importing the live-video VSI runtime. Release context:
 in the stable schema-2 release lock. See
 [the stable release contract and runbook](release/STABLE-FMP4.md) for the exact
 approval gate, artifacts, mandatory real-native tests and publication safeguards.
+
+### ABR ladder signing (`Builder.sign_ladder`)
+
+`Builder.sign_ladder(signer, sources, dests) -> bytes` signs a ladder of
+*single-file* fragmented MP4s -- one file per rendition -- into **one**
+manifest: one Merkle tree per rendition in the shared `c2pa.hash.bmff.v3`
+assertion, the identical manifest embedded in every output. It wraps the
+`c2pa_builder_sign_ladder` C API from castlabs/c2pa-rs#9.
+
+That native symbol is **optional**: the binding imports against any stable
+library, records whether the symbol is present in `c2pa.c2pa._HAS_SIGN_LADDER`,
+and `sign_ladder` raises `C2paError.NotSupported` when it is absent. The
+`0.31.0+stardustproof.5` library does not carry it; a release built from a
+native source that includes castlabs/c2pa-rs#9 does. The builder is borrowed
+by the call and stays usable afterwards; release it with `close()` as usual.
+
+Outputs must not exist yet -- the native writer creates each one and never
+overwrites, and a destination that already existed is refused before anything
+is written and is never touched. If the native call fails it removes what is
+then at the output paths it reserved -- by path and best effort, so under the
+stable-path assumption that is exactly its own outputs, and a failed removal is
+not reported. A Python-side failure while copying the returned manifest
+happens *after* native signing has succeeded, so the signed outputs are then in
+place. Do not infer from an exception that no output exists; discard only the
+leftovers at the destinations you passed, never a pre-existing file such as a
+source or a link to one. Sources that already carry a C2PA manifest are
+refused.
+
+`tests/test_builder_sign_ladder.py` covers the binding against a stand-in for
+the native function on any library, and signs a real two-rendition ladder when
+the loaded library has the symbol. Set `C2PA_REQUIRE_SIGN_LADDER=1` in a lane
+whose library is supposed to carry it, so its absence fails instead of
+skipping.
