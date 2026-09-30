@@ -5855,7 +5855,13 @@ class Builder(ManagedResource):
             # closes after an attempted sign; Signer remains caller-owned.
             self.close()
             if manifest_bytes_ptr:
-                ManagedResource._free_native_ptr(manifest_bytes_ptr)
+                # A cleanup failure must not replace the original callback or
+                # native exception (or a successful result).
+                try:
+                    ManagedResource._free_native_ptr(manifest_bytes_ptr)
+                except Exception:
+                    logger.error(
+                        "Failed to release native manifest bytes memory")
                 manifest_bytes_ptr = ctypes.POINTER(ctypes.c_ubyte)()
 
     def sign_ladder(
@@ -5928,19 +5934,33 @@ class Builder(ManagedResource):
         dest_array = (ctypes.c_char_p * count)(*encoded_paths[1])
         manifest_bytes_ptr = ctypes.POINTER(ctypes.c_ubyte)()
 
+        # Pin the explicit signer's callbacks for the borrowed native call and
+        # drop error state left by an earlier operation, as sign_fragmented does.
+        dynamic_assertion_cbs = list(signer._dynamic_assertion_cbs)
+        claim_state = _claim_signer_error_state(signer._callback_cb)
+        da_states = [state for _, state, _ in dynamic_assertion_cbs]
+        _clear_callback_errors(da_states + [claim_state])
+
         try:
-            result = _lib.c2pa_builder_sign_ladder(
-                self._handle, signer._handle, source_array, dest_array,
-                count, ctypes.byref(manifest_bytes_ptr))
+            try:
+                result = _lib.c2pa_builder_sign_ladder(
+                    self._handle, signer._handle, source_array, dest_array,
+                    count, ctypes.byref(manifest_bytes_ptr))
+            except Exception as e:
+                raise C2paError(f"Error during ladder signing: {e}") from e
+            if result < 0:
+                # Dynamic-assertion exceptions keep their identity; claim-signer
+                # callbacks only propagate interrupts (KeyboardInterrupt, ...).
+                _reraise_callback_errors(
+                    da_states, [claim_state] if claim_state is not None else [])
             _check_ffi_operation_result(
                 result, "Error during ladder signing", check=lambda r: r < 0)
             if result <= 0 or not manifest_bytes_ptr:
                 raise C2paError("Ladder signing returned no manifest bytes")
-            return ctypes.string_at(manifest_bytes_ptr, result)
-        except C2paError:
-            raise
-        except Exception as e:
-            raise C2paError(f"Error during ladder signing: {e}") from e
+            try:
+                return ctypes.string_at(manifest_bytes_ptr, result)
+            except Exception as e:
+                raise C2paError(f"Error during ladder signing: {e}") from e
         finally:
             if manifest_bytes_ptr:
                 try:

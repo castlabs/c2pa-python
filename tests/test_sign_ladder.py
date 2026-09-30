@@ -1,5 +1,6 @@
 """Focused binding tests and an optional-capability, offline native smoke."""
 
+import asyncio
 import ctypes
 import gc
 import json
@@ -8,9 +9,11 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import cbor2
 import pytest
 
 import c2pa.c2pa as binding
@@ -331,3 +334,229 @@ def test_real_native_ladder_signs_and_validates(tmp_path):
     assert manifests[0] == manifests[1]
     assert [source.read_bytes() for source in sources] == [original, original]
     assert fixture.read_bytes() == original
+
+
+class _DynamicAssertionFailure(RuntimeError):
+    pass
+
+
+def _callback_state():
+    state = threading.local()
+    state.exception = None
+    return state
+
+
+_BASE_EXCEPTIONS = [
+    pytest.param(lambda: _DynamicAssertionFailure("assertion failed"), id="RuntimeError"),
+    pytest.param(lambda: KeyboardInterrupt("operator interrupt"), id="KeyboardInterrupt"),
+    pytest.param(lambda: SystemExit(3), id="SystemExit"),
+    pytest.param(lambda: asyncio.CancelledError("worker cancelled"), id="CancelledError"),
+]
+
+
+@pytest.mark.parametrize("make_error", _BASE_EXCEPTIONS)
+def test_dynamic_assertion_error_keeps_identity_and_cleans_up(ladder, monkeypatch, make_error):
+    builder, signer, native = ladder
+    error = make_error()
+    state = _callback_state()
+    pinned = object()
+    signer._dynamic_assertion_cbs.append((pinned, state, pinned))
+    manifest = manifest_result(native, result=-1)
+    sign = native.c2pa_builder_sign_ladder.side_effect
+
+    def failing(*args):
+        state.exception = error
+        return sign(*args)
+
+    native.c2pa_builder_sign_ladder.side_effect = failing
+    monkeypatch.setattr(binding, "_read_native_error", lambda: "Other: callback failed")
+    with pytest.raises(BaseException) as caught:
+        builder.sign_ladder(signer, ["a"], ["b"])
+    assert caught.value is error
+    assert_closed(builder, signer, native, manifest)
+
+
+@pytest.mark.parametrize("make_error,propagates", [
+    (lambda: _DynamicAssertionFailure("claim callback failed"), False),
+    (lambda: KeyboardInterrupt("operator interrupt"), True),
+    (lambda: SystemExit(3), True),
+    (lambda: asyncio.CancelledError("worker cancelled"), True),
+])
+def test_claim_signer_interrupts_propagate_ordinary_errors_stay_typed(
+        ladder, monkeypatch, make_error, propagates):
+    builder, signer, native = ladder
+    error = make_error()
+    state = _callback_state()
+    signer._callback_cb = SimpleNamespace(_error_state=state)
+
+    def failing(*_args):
+        state.exception = error
+        return -1
+
+    native.c2pa_builder_sign_ladder.side_effect = failing
+    monkeypatch.setattr(binding, "_read_native_error", lambda: "Signature: claim signer failed")
+    if propagates:
+        with pytest.raises(BaseException) as caught:
+            builder.sign_ladder(signer, ["a"], ["b"])
+        assert caught.value is error
+    else:
+        with pytest.raises(binding.C2paError.Signature, match="claim signer failed"):
+            builder.sign_ladder(signer, ["a"], ["b"])
+    assert_closed(builder, signer, native)
+
+
+def test_stale_callback_errors_are_cleared_before_native_call(ladder, monkeypatch):
+    builder, signer, native = ladder
+    da_state = _callback_state()
+    claim_state = _callback_state()
+    da_state.exception = _DynamicAssertionFailure("stale assertion failure")
+    claim_state.exception = KeyboardInterrupt("stale interrupt")
+    signer._dynamic_assertion_cbs.append((object(), da_state, object()))
+    signer._callback_cb = SimpleNamespace(_error_state=claim_state)
+    seen = []
+
+    def failing(*_args):
+        seen.append((da_state.exception, claim_state.exception))
+        return -1
+
+    native.c2pa_builder_sign_ladder.side_effect = failing
+    monkeypatch.setattr(binding, "_read_native_error", lambda: "Io: never entered callbacks")
+    with pytest.raises(binding.C2paError.Io, match="never entered callbacks"):
+        builder.sign_ladder(signer, ["a"], ["b"])
+    assert seen == [(None, None)]
+    assert_closed(builder, signer, native)
+
+
+def test_callback_error_survives_manifest_free_failure(ladder, caplog, monkeypatch):
+    builder, signer, native = ladder
+    error = _DynamicAssertionFailure("assertion failed")
+    state = _callback_state()
+    signer._dynamic_assertion_cbs.append((object(), state, object()))
+    manifest = manifest_result(native, result=-1)
+    sign = native.c2pa_builder_sign_ladder.side_effect
+
+    def failing(*args):
+        state.exception = error
+        return sign(*args)
+
+    def free(pointer):
+        if ctypes.addressof(pointer.contents) == ctypes.addressof(manifest):
+            raise RuntimeError("free failed")
+        return 0
+
+    native.c2pa_builder_sign_ladder.side_effect = failing
+    native.c2pa_free.side_effect = free
+    with pytest.raises(_DynamicAssertionFailure) as caught:
+        builder.sign_ladder(signer, ["a"], ["b"])
+    assert caught.value is error
+    assert "Failed to release native manifest bytes memory" in caplog.text
+    assert_closed(builder, signer, native, manifest)
+
+
+def _exact_size_cbor(size, label):
+    for pad in range(size):
+        encoded = cbor2.dumps({"note": label, "pad": "x" * pad})
+        if len(encoded) == size:
+            return encoded
+        if len(encoded) > size:
+            break
+    raise AssertionError(f"cannot encode exactly {size} bytes")
+
+
+def _require_real_ladder_with_dynamic_assertions():
+    if not binding._HAS_SIGN_LADDER:
+        if os.environ.get("C2PA_REQUIRE_SIGN_LADDER") == "1":
+            pytest.fail("C2PA_REQUIRE_SIGN_LADDER=1 but the loaded native library "
+                        "lacks c2pa_builder_sign_ladder")
+        pytest.skip("native library lacks c2pa_builder_sign_ladder")
+    if not binding.has_dynamic_assertions():
+        if os.environ.get("C2PA_REQUIRE_SIGN_LADDER") == "1":
+            pytest.fail("C2PA_REQUIRE_SIGN_LADDER=1 requires dynamic assertions")
+        pytest.skip("native library lacks dynamic assertions")
+
+
+def _ladder_inputs(tmp_path, count=2):
+    fixture = (Path(__file__).parent / "fixtures" / "single-file-fragmented"
+               / "single_file_fragments.mp4")
+    sources = [tmp_path / f"copy-{i}.mp4" for i in range(count)]
+    dests = [tmp_path / f"signed-{i}.mp4" for i in range(count)]
+    for source in sources:
+        shutil.copy2(fixture, source)
+    return sources, dests
+
+
+def _real_signer():
+    fixtures = Path(__file__).parent / "fixtures"
+    return binding.Signer.from_info(binding.C2paSignerInfo(
+        alg=b"es256", sign_cert=(fixtures / "es256_certs.pem").read_bytes(),
+        private_key=(fixtures / "es256_private.key").read_bytes(), ta_url=None))
+
+
+_LADDER_DEFINITION = {
+    "claim_generator_info": [{"name": "ladder-binding-test"}],
+    "assertions": [{"label": "c2pa.actions", "data": {"actions": [{
+        "action": "c2pa.created",
+        "digitalSourceType": "http://cv.iptc.org/newscodes/digitalsourcetype/digitalCreation",
+    }]}}],
+}
+
+
+def test_real_native_ladder_includes_exact_size_dynamic_assertion(tmp_path):
+    _require_real_ladder_with_dynamic_assertions()
+    sources, dests = _ladder_inputs(tmp_path)
+    label = "com.example.ladder"
+    reserve = 96
+    content = _exact_size_cbor(reserve, "ladder dynamic assertion")
+    calls = []
+
+    def callback(callback_label, reserve_size, partial_claim):
+        calls.append((callback_label, reserve_size, partial_claim))
+        return content
+
+    with _real_signer() as signer:
+        signer.add_dynamic_assertion(callback, label=label, reserve_size=reserve)
+        del callback
+        gc.collect()  # Registration, not the local name, must pin the callback.
+        with binding.Builder(_LADDER_DEFINITION) as builder:
+            manifest = builder.sign_ladder(signer, sources, dests)
+        signer._ensure_valid_state()
+
+    assert len(calls) == 1, "one shared manifest invokes the assertion once"
+    callback_label, reserve_size, partial_claim = calls[0]
+    assert (callback_label, reserve_size) == (label, reserve)
+    urls = [entry["url"] for entry in partial_claim]
+    # The dynamic assertion endorses the rendition hard binding it is signed with.
+    assert any("c2pa.hash.bmff" in url for url in urls), urls
+    assert all({"url", "alg", "hash"} <= set(entry) for entry in partial_claim)
+
+    manifests = []
+    for dest in dests:
+        assert manifest in dest.read_bytes()
+        with binding.Reader(dest) as reader:
+            assert reader.get_validation_state() == "Valid", reader.json()
+            report = json.loads(reader.json())
+            active = report["manifests"][report["active_manifest"]]
+            manifests.append(active)
+            dynamic = [a for a in active["assertions"] if a["label"] == label]
+            assert [a["data"] for a in dynamic] == [cbor2.loads(content)]
+    assert manifests[0] == manifests[1]
+
+
+@pytest.mark.parametrize("make_error", _BASE_EXCEPTIONS)
+def test_real_native_ladder_reraises_dynamic_assertion_exception(tmp_path, make_error):
+    _require_real_ladder_with_dynamic_assertions()
+    sources, dests = _ladder_inputs(tmp_path, count=1)
+    error = make_error()
+
+    def callback(*_args):
+        raise error
+
+    with _real_signer() as signer:
+        signer.add_dynamic_assertion(callback, label="com.example.ladder", reserve_size=64)
+        builder = binding.Builder(_LADDER_DEFINITION)
+        with pytest.raises(BaseException) as caught:
+            builder.sign_ladder(signer, sources, dests)
+        assert caught.value is error
+        assert builder._lifecycle_state == binding.LifecycleState.CLOSED
+        signer._ensure_valid_state()
+        assert signer._dynamic_assertion_cbs[0][1].exception is error

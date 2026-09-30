@@ -535,6 +535,61 @@ class TestFragmentedFiles(FragmentedTestCase):
         self.assertFalse(builder.is_valid)
         self.assertTrue(signer.is_valid)
 
+    def test_output_free_failure_does_not_replace_callback_exception(self):
+        class CallbackFailure(RuntimeError):
+            pass
+
+        failure = CallbackFailure("fragmented dynamic assertion failed")
+        signer = self._make_signer()
+        self.addCleanup(signer.close)
+        state = type("State", (), {"exception": None})()
+        signer._dynamic_assertion_cbs.append((object(), state, object()))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            init_path, _ = self._prepare_input(root)
+            builder = Builder(_manifest_definition())
+            builder_handle = builder._handle
+            output_buffer = (ctypes.c_ubyte * 4)(1, 2, 3, 4)
+            output_address = ctypes.addressof(output_buffer)
+            real_call = c2pa_module._lib.c2pa_builder_sign_fragmented
+            real_free = ManagedResource._free_native_ptr
+
+            def failed_call(*args):
+                output = ctypes.cast(
+                    args[-1],
+                    ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
+                )
+                output[0] = ctypes.cast(
+                    output_buffer, ctypes.POINTER(ctypes.c_ubyte))
+                state.exception = failure
+                return -1
+
+            def failing_free(pointer):
+                if ctypes.cast(pointer, ctypes.c_void_p).value == output_address:
+                    raise RuntimeError("free failed")
+                return real_free(pointer)
+
+            c2pa_module._lib.c2pa_builder_sign_fragmented = failed_call
+            ManagedResource._free_native_ptr = staticmethod(failing_free)
+            try:
+                with self.assertLogs("c2pa", level="ERROR") as logs:
+                    with self.assertRaises(CallbackFailure) as raised:
+                        builder.sign_fragmented(
+                            signer, init_path, "segment-*.m4s",
+                            root / "output")
+            finally:
+                c2pa_module._lib.c2pa_builder_sign_fragmented = real_call
+                ManagedResource._free_native_ptr = real_free
+
+        self.assertIs(raised.exception, failure)
+        self.assertTrue(any(
+            "Failed to release native manifest bytes memory" in line
+            for line in logs.output))
+        self.assertIsNone(builder._handle)
+        self.assertFalse(builder.is_valid)
+        self.assertTrue(signer.is_valid)
+        del builder_handle
+
 
 if __name__ == "__main__":
     unittest.main()

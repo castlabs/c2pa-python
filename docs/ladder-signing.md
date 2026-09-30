@@ -23,6 +23,13 @@ attempted native call closes the builder on success or failure; the signer remai
 usable. Preflight errors leave the builder usable. Paths must be UTF-8 strings
 or `Path` objects and cannot contain NUL characters.
 
+Dynamic assertions registered on the signer run once for the shared manifest.
+Callback errors follow the other Builder signing paths: an exception raised by a
+dynamic-assertion callback is re-raised unchanged; a claim-signer callback
+propagates only interrupts such as `KeyboardInterrupt`, `SystemExit` and
+`asyncio.CancelledError`, while its ordinary exceptions are reported as
+`C2paError`. Error state left by a previous operation is cleared before signing.
+
 The native export `c2pa_builder_sign_ladder` is optional. A library without it
 still imports and supports ordinary signing. Calling `sign_ladder` on that library
 raises `C2paError.NotSupported`. No native release pin changes are needed for this
