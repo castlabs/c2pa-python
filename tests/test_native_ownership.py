@@ -31,6 +31,14 @@ def _untracked_stream():
     return ctypes.cast(buffer, ctypes.POINTER(binding.C2paStream)), buffer
 
 
+@pytest.fixture(autouse=True)
+def _clear_native_error_slot():
+    # These tests plant or provoke registry errors; the slot is sticky and
+    # thread-local, so a stale tag must not follow later tests around.
+    yield
+    binding._lib.c2pa_error_set_last(b"Other: cleared by test teardown")
+
+
 @pytest.fixture
 def reader():
     with open(FIXTURES / "dashinit.mp4", "rb") as init:

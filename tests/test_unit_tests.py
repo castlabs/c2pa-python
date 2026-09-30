@@ -9757,7 +9757,8 @@ class TestManagedResourceLifecycle(unittest.TestCase):
             c2pa_module._lib.c2pa_builder_from_json = real_json
 
     def test_context_build_null_return_frees_builder(self):
-        # Set a pre-consume tag in the error slot to mock a pointer rejection.
+        # Build is consume-first. A registry tag without a parseable address is
+        # ambiguous there, so the builder is released by the guarded free.
         settings = Settings()
         c2pa_module._lib.c2pa_error_set_last(
             b"UntrackedPointer: mocked pre-consume rejection")

@@ -13,7 +13,6 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-import cbor2
 import pytest
 
 import c2pa.c2pa as binding
@@ -453,7 +452,20 @@ def test_callback_error_survives_manifest_free_failure(ladder, caplog, monkeypat
     assert_closed(builder, signer, native, manifest)
 
 
+def _cbor2():
+    # Only the real-native DynamicAssertion test needs cbor2; build.yml's
+    # installed-wheel jobs run this file without test-only dependencies.
+    try:
+        import cbor2
+    except ImportError:
+        if os.environ.get("C2PA_REQUIRE_SIGN_LADDER") == "1":
+            pytest.fail("C2PA_REQUIRE_SIGN_LADDER=1 requires cbor2")
+        pytest.skip("cbor2 is not installed")
+    return cbor2
+
+
 def _exact_size_cbor(size, label):
+    cbor2 = _cbor2()
     for pad in range(size):
         encoded = cbor2.dumps({"note": label, "pad": "x" * pad})
         if len(encoded) == size:
@@ -538,7 +550,7 @@ def test_real_native_ladder_includes_exact_size_dynamic_assertion(tmp_path):
             active = report["manifests"][report["active_manifest"]]
             manifests.append(active)
             dynamic = [a for a in active["assertions"] if a["label"] == label]
-            assert [a["data"] for a in dynamic] == [cbor2.loads(content)]
+            assert [a["data"] for a in dynamic] == [_cbor2().loads(content)]
     assert manifests[0] == manifests[1]
 
 

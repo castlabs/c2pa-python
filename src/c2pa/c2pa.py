@@ -306,6 +306,8 @@ def _trusted_vsi_version_matches(native_version: bytes) -> bool:
     """Return whether c2pa_version() names exactly the paired c2pa-rs build."""
     expected = b"c2pa-rs/" + _TRUSTED_VSI_NATIVE_VERSION.encode("ascii")
     return expected in native_version.split()
+
+
 _DYNAMIC_ASSERTIONS_AVAILABLE = all(
     hasattr(_lib, name) for name in _DYNAMIC_ASSERTION_FUNCTIONS
 )
@@ -618,7 +620,14 @@ class ManagedResource:
         handle = self._handle
         if not handle:
             return None
-        return ctypes.c_void_p.from_buffer(handle).value
+        if isinstance(handle, int):
+            return handle
+        try:
+            return ctypes.c_void_p.from_buffer(handle).value
+        except (TypeError, ValueError):
+            # Unknown handle representation: callers treat None as "not this
+            # handle", which routes consume-first triage to the guarded free.
+            return None
 
     def _raise_consume_failure(self, error_message, *, consumes_first=False):
         """Raise the error from an FFI handler consuming call.
