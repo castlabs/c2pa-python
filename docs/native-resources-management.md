@@ -419,20 +419,20 @@ The call is passed as a lambda because the helper supplies the handle and, on su
 
 The return value alone cannot establish ownership. All three consume helpers accept the keyword-only `consumes_first=False`. Validate-first `c2pa_context_builder_set_signer` retains the signer on any registry rejection. These six calls instead take ownership of the managed handle before validating later arguments and use `consumes_first=True`: `c2pa_context_builder_build`, `c2pa_reader_with_stream`, `c2pa_reader_with_manifest_data_and_stream`, `c2pa_reader_with_fragment`, `c2pa_builder_with_definition`, and `c2pa_builder_with_archive`.
 
-Registry rejections are `UntrackedPointer:`, `WrongPointerType:`, `PointerInUse:`, or `WrongWrapperKind:`. The last two are addressless and exist only in newer opaque registries. Failure triage is:
+Registry rejections start with `UntrackedPointer:`, `WrongPointerType:`, `PointerInUse:`, or `WrongWrapperKind:`, optionally wrapped in stock native's `Other: ` prefix. Tags quoted inside another error's payload do not establish ownership. The last two tags are addressless and exist only in newer opaque registries. Failure triage is:
 
 | Native error / call order | Ownership decision | What the helper does |
 | --- | --- | --- |
 | Any registry rejection, validate-first | Managed handle not taken | Retains the handle and `ACTIVE` state; raises the typed native error. |
 | Addressed rejection, consume-first, rejected value equals managed value | Managed handle not taken | Retains the handle and `ACTIVE` state; raises the typed native error. |
 | Addressed rejection, consume-first, known rejected value differs from managed value | Managed handle consumed before another argument was rejected | `_teardown(free_handle=False)`; closes without freeing, raises the typed native error. |
-| Registry rejection, consume-first, missing rejected address or unreadable managed value (`None`) | Cannot establish ownership | `_release_handle()` guarded free and close, then raises the saved typed native error. |
+| Registry rejection, consume-first, missing rejected address or unreadable managed value (`None`) | Cannot establish ownership | Requests native release through `_release_handle()` and closes the Python resource; raises the saved typed native error. |
 | Any non-registry native error | Native took and dropped the value | Closes without freeing; raises the typed native error. |
 | No native error | Unknown | Guarded free and close; raises the caller's message with `"Unknown error"`. |
 
 `_handle_value()` reads the Python handle representation without dereferencing native memory: integers are used directly, otherwise `ctypes.c_void_p.from_buffer(handle).value` reads the stored pointer value. It avoids `ctypes.cast` and its reference cycle; an unreadable representation returns `None`.
 
-Triage saves the native error before cleanup can overwrite it. It trusts the failing path to have set its own error: the thread-local slot is sticky and is not cleared before the call. Reading an error copies the message out and frees the copy, but leaves the slot set until the next error overwrites it.
+Triage saves the native error before cleanup can overwrite it, preserving the exception raised by the wrapper, not restoring the slot itself. A defensive free can leave its own error in the sticky thread-local slot. The wrapper does not clear the slot before the call and trusts each failing native path to set its own error. Reading an error copies the message out and frees the copy, but leaves the slot set until the next error overwrites it.
 
 Three consume helpers share this triage; they differ only in what the FFI call returns on success:
 
@@ -452,7 +452,7 @@ An unnecessary free can overwrite the native error slot. On stock 0.91.0 it can 
 
 `_release_handle()` is the fallback for a missing native error, an exception other than `ctypes.ArgumentError` from `_invoke_consume`, or a consume-first registry rejection without a comparable address. `ctypes.ArgumentError` retains the handle and propagates unchanged because native was not called. For native failures the original error is saved before any guarded free, so cleanup cannot replace the reported failure.
 
-The addressless `PointerInUse:` / `WrongWrapperKind:` fallback is safe with the newer opaque registry: it frees a releasable entry or rejects cleanup without targeting a different allocation. These errors do not exist on stock 0.91.0. Stock emitted addressed-rejection paths provide a comparable managed value, so the guarded-free rejection fallback is unreachable there; this is not a claim that arbitrary stale raw-address frees are safe.
+The addressless `PointerInUse:` / `WrongWrapperKind:` fallback is safe with the newer opaque registry: release removes a tracked entry or rejects an already untracked handle without targeting a different allocation. Removal is not necessarily immediate destruction. Outstanding checkout guards retain the entry, so actual cleanup waits until the last guard is dropped. These errors do not exist on stock 0.91.0. Stock emitted addressed-rejection paths provide a comparable managed value, so the guarded-free rejection fallback is unreachable there; this is not a claim that arbitrary stale raw-address frees are safe.
 
 None of this is protected by a lock on the Python side: `ManagedResource` has no thread-safety mechanism of its own, and the retained-vs-consumed guarantee comes entirely from the native pointer registry and its thread-local error slot. As noted under [Which double-free risks this layer guards](#double-free-risk-mitigations), sharing one instance across threads without external synchronization is the caller's responsibility. This is a different hazard from [Fork safety](#fork-safety), which concerns a forked child process, not a thread within the same process.
 

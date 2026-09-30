@@ -9878,6 +9878,7 @@ class TestManagedResourceLifecycle(unittest.TestCase):
                     lambda h: None, "build failed: {}", consumes_first=True)
         self.assertIn(error, str(caught.exception))
         self.assertNotIn("cleanup error", str(caught.exception))
+        self.assertEqual(state[0], "Other: UntrackedPointer: cleanup error")
         self.assertEqual(res._lifecycle_state, LifecycleState.CLOSED)
         res.close()
         self.assertEqual(self.freed, [handle])
@@ -9896,6 +9897,16 @@ class TestManagedResourceLifecycle(unittest.TestCase):
                 res._handle = handle
                 self.assertEqual(res._handle_value(), expected)
         res._handle = None
+
+    def test_handle_value_reads_non_null_native_pointer(self):
+        self._use_real_frees()
+        with open(os.path.join(FIXTURES_DIR, "dashinit.mp4"), "rb") as init:
+            with Reader("video/mp4", init) as reader:
+                self.assertTrue(reader._handle)
+                # Cast reads the pointer value, not the native object's memory.
+                expected = ctypes.cast(reader._handle, ctypes.c_void_p).value
+                self.assertEqual(reader._handle_value(), expected)
+                self.assertTrue(reader.json())
 
     def test_consume_first_addressless_rejection_preserves_error(self):
         for tag in ("UntrackedPointer", "WrongPointerType", "PointerInUse", "WrongWrapperKind"):
@@ -9916,6 +9927,7 @@ class TestManagedResourceLifecycle(unittest.TestCase):
                         res._consume_no_replacement(
                             lambda h: -1, "set failed: {}", consumes_first=True)
                 self.assertIn(error, str(caught.exception))
+                self.assertEqual(state[0], "Other: UntrackedPointer: cleanup error")
                 self.assertEqual(res._lifecycle_state, LifecycleState.CLOSED)
                 res.close()
                 self.assertEqual(self.freed, [0xCAFE])
