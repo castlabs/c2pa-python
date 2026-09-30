@@ -1,21 +1,23 @@
 # Trusted VSI Python Contract
 
-Status: implemented and qualified locally (Linux) against the functional native
-library built from `castlabs/c2pa-rs@3569fb860babe52db778f82e3fe80e8371fe2a08`
-(`feat/trusted-vsi-functional`; debug `libc2pa_c.so` SHA-256
-`6c7ccf4258132df1…`, capability mask 63), following `c2pa-rs`
-`docs/trusted-vsi-native-contract.md` (SHA-256
-`74ba08dfdf9aa6256f8ba38cdeed1930e4cbee827a5d67c1bc1f9313a41bf0bf`). Since
-`37dc25fe…` the native contract added only the Rust-only `trusted_vsi_compute_hash`
-and the version-2 state record; the C ABI and Python API are unchanged. Windows
-remains to be qualified in CI. Local qualification-only artifacts built from that
-library with `scripts/build_trusted_vsi_functional.py` (never published):
-`c2pa_python-0.37.9.dev0-py3-none-linux_x86_64.whl` SHA-256
-`e80e1d78a6de0adb0136063a82aadb1a2d950b6977298aefd4e1ed6a31d85e63`, sdist
-`7f471855a22d40c556d2a92b336f11e60c7d28174a994d066a6c055d516114bf`;
-installed-wheel qualification 100 passed. This is unreleased API; immutable dev5 release inputs and
-artifacts are unchanged. The class is `TrustedVsiSession`, and
-`reserve_init_uuid()` returns `bytes` (see below).
+Status: implemented and qualified against the consolidated functional native
+library built from `castlabs/c2pa-rs@5c186c07ac9b432d3b8f1336ecb6ee09518408de`
+(`feat/trusted-vsi-functional`, native `0.92.0-dev`, Rust 1.96.0; debug
+`libc2pa_c.so` SHA-256 `dc79e81a084fc7b25e12423539b137f24d69693da46cb0166cb04538bd5589f9`,
+capability mask 63), following `c2pa-rs` `docs/trusted-vsi-native-contract.md`.
+The Python source integrates single-file ladder signing (`Builder.sign_ladder`)
+and carries the unreleased identity `0.37.13.dev0`. Qualification of source
+`941c2ad5b57d23f31dbabf9fbef4776878cf630c`: local Linux focused 179 passed,
+real-native ladder harness passed, non-threaded 714 passed, threaded 54 passed,
+installed-wheel 179 passed; hosted Linux/Windows paired run
+`castlabs/c2pa-python` Actions 36671268428 passed on both. Local qualification-only artifacts
+(never published): `c2pa_python-0.37.13.dev0-py3-none-linux_x86_64.whl` SHA-256
+`8731d135ce2c1db61b061e1f2c76272a55b9f7e7e2e2ea8769b10b5fd4a8707f`, sdist
+`e846e5688d07bcf5959885c0c1728afde4ec89bbb7cf2b80a665956056b8b5ab`. The earlier
+`0.37.9.dev0` artifacts paired with native `3569fb86` are historical evidence
+only. This is unreleased API; immutable dev5 release inputs and artifacts are
+unchanged. The class is `TrustedVsiSession`, and `reserve_init_uuid()` returns
+`bytes` (see below).
 
 ## Availability
 
