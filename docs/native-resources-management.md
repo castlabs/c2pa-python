@@ -458,6 +458,9 @@ None of this is protected by a lock on the Python side: `ManagedResource` has no
 
 Registry rejection describes the rejected argument, not necessarily the managed handle. Correct helper configuration therefore depends on the native call's ownership order, not just an error prefix. A native implementation with a different ownership contract could leak or free the wrong allocation; the fallback is not a general compatibility guarantee.
 
+The remaining real-native concurrency and sticky-error checks are tracked in
+[the roadmap](roadmap.md#native-resource-ownership-follow-ups).
+
 ### Adopting the handle before giving it away
 
 `Reader._init_from_context` and `Builder._init_from_context` both create a native object, immediately activate it, and only then make the consuming call. `_create_and_activate()` handles the create-then-activate half: it calls the FFI constructor, validates the result with `_check_ffi_operation_result`, and `_activate()`s it, freeing the pointer if either step fails so a rejected creation leaks nothing. Reduced to its shape:
