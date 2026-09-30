@@ -10564,6 +10564,7 @@ class TestManagedResourceObjects(TestContextAPIs):
 
         with open(init_path, "rb") as init:
             reader = Reader("video/mp4", init)
+        leaked = ctypes.c_void_p(reader._handle_value())
 
         real_call = c2pa_module._lib.c2pa_reader_with_fragment
         c2pa_module._lib.c2pa_reader_with_fragment = (
@@ -10580,10 +10581,13 @@ class TestManagedResourceObjects(TestContextAPIs):
             c2pa_module._lib.c2pa_error_set_last(
                 b"Other: cleared by test teardown")
 
-        # The stale tag wins, so the handle is kept. Safe here (the mock
-        # consumed nothing), and the reader is still usable.
-        self.assertIsNotNone(reader._handle)
-        self.assertEqual(reader._lifecycle_state, LifecycleState.ACTIVE)
+        # The stale tag wins. with_fragment consumes the reader before
+        # validating its other arguments, and the stale tag names a different
+        # handle, so the reader is classified as consumed and closed without a
+        # free. The mock consumed nothing, so release the id the test leaked.
+        self.assertIsNone(reader._handle)
+        self.assertEqual(reader._lifecycle_state, LifecycleState.CLOSED)
+        self.assertEqual(c2pa_module._lib.c2pa_free(leaked), 0)
         reader.close()
 
     # Backfilling a pointer minted by a direct FFI call. Builder.from_archive
