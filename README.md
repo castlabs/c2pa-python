@@ -85,7 +85,7 @@ make build-from-source C2PA_RS_PATH=$C2PA_RS_PATH EXTRA_BUILD_ARGS="--debug"
 When running the tests against an unreleased source build whose SDK version differs from `c2pa-native-version.txt`, explicitly provide the expected source version:
 
 ```sh
-C2PA_SOURCE_BUILD_VERSION=0.91.0-dev python3 tests/test_unit_tests.py
+C2PA_SOURCE_BUILD_VERSION=0.92.0-dev python3 tests/test_unit_tests.py
 ```
 
 The version test validates the loaded library against this value. When the variable is unset, it continues to validate downloaded release artifacts against `c2pa-native-version.txt`.
@@ -133,7 +133,7 @@ To test a locally built paired native without reinstalling the Python package:
 ```sh
 PYTHONPATH="$PWD/src" \
 C2PA_LIBRARY_NAME=/absolute/path/to/paired-c2pa-rs/target/debug/libc2pa_c.so \
-C2PA_SOURCE_BUILD_VERSION=0.91.0-dev \
+C2PA_SOURCE_BUILD_VERSION=0.92.0-dev \
 C2PA_TRUSTED_VSI_ABI_REQUIRED=1 \
 python -m pytest -q tests/test_trusted_vsi_api.py -ra
 ```

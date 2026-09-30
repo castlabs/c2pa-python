@@ -21,7 +21,7 @@ artifacts are unchanged. The class is `TrustedVsiSession`, and
 
 All `has_live_video_trusted_vsi_*()` probes return `True` only when the loaded
 library exports every symbol in the contract's C ABI, reports native version
-`0.91.0-dev`, and `c2pa_live_video_trusted_vsi_capabilities() == 63`. Missing
+`0.92.0-dev`, and `c2pa_live_video_trusted_vsi_capabilities() == 63`. Missing
 symbols, a scaffold/older/partial library, or any other mask disables every
 probe. Old scaffold symbol layouts are never bound. When unavailable, the
 constructor, `from_callback`, `validate_trusted_vsi_input` and
@@ -186,7 +186,7 @@ CBOR, BMFF or validation results.
 NON-PUBLISHING wheel and sdist in a temporary staging copy with
 `FUNCTIONAL_BUILD_VERSION` (default `0.37.9.dev0`; rejects `0.37.8.*`, dev5 and
 release versions). The checkout's `0.37.8.dev5` metadata is not modified.
-`C2PA_SOURCE_BUILD_VERSION=0.91.0-dev` identifies the native library only.
+`C2PA_SOURCE_BUILD_VERSION=0.92.0-dev` identifies the native library only.
 
 `scripts/qualify_trusted_vsi_functional.py --wheel <whl> --venv <new-dir>
 --version 0.37.9.dev0` installs the wheel into an isolated venv, strips

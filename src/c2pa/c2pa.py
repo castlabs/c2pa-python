@@ -296,6 +296,15 @@ _TRUSTED_VSI_STATUS_AVAILABLE = all(
 _TRUSTED_VSI_CAPABILITIES = 0
 _TRUSTED_VSI_ABI_AVAILABLE = all(hasattr(_lib, name) for name in _TRUSTED_VSI_FUNCTIONS)
 _TRUSTED_VSI_VERSION_MATCHES = False
+# Exact paired native version for the functional trusted-VSI ABI. Qualification
+# pins the native commit separately; this is deliberately not a range.
+_TRUSTED_VSI_NATIVE_VERSION = "0.92.0-dev"
+
+
+def _trusted_vsi_version_matches(native_version: bytes) -> bool:
+    """Return whether c2pa_version() names exactly the paired c2pa-rs build."""
+    expected = b"c2pa-rs/" + _TRUSTED_VSI_NATIVE_VERSION.encode("ascii")
+    return expected in native_version.split()
 _DYNAMIC_ASSERTIONS_AVAILABLE = all(
     hasattr(_lib, name) for name in _DYNAMIC_ASSERTION_FUNCTIONS
 )
@@ -1400,9 +1409,8 @@ if _TRUSTED_VSI_ABI_AVAILABLE:
     native_version_ptr = _lib.c2pa_version()
     if native_version_ptr:
         try:
-            _TRUSTED_VSI_VERSION_MATCHES = (
-                b'c2pa-rs/0.91.0-dev' in ctypes.string_at(native_version_ptr).split()
-            )
+            _TRUSTED_VSI_VERSION_MATCHES = _trusted_vsi_version_matches(
+                ctypes.string_at(native_version_ptr))
         finally:
             _lib.c2pa_string_free(native_version_ptr)
     if _TRUSTED_VSI_VERSION_MATCHES:
@@ -2510,7 +2518,7 @@ class TrustedVsiInputKind(enum.IntEnum):
 def _require_trusted_vsi():
     if not has_live_video_trusted_vsi_signing_context_v1():
         raise C2paError.NotSupported(
-            "Functional trusted VSI requires the complete 0.91.0-dev native ABI "
+            f"Functional trusted VSI requires the complete {_TRUSTED_VSI_NATIVE_VERSION} native ABI "
             "and capability mask 63; the loaded library is unavailable")
 
 

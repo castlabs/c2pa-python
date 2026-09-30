@@ -90,6 +90,26 @@ def test_missing_symbols_or_wrong_native_version_fail_closed(monkeypatch, missin
     assert not any(probe() for probe in PROBES)
 
 
+def test_paired_native_version_is_exact_consolidated_release_line():
+    # Changing this pin requires re-pairing qualification with a reviewed native SHA.
+    assert bindings._TRUSTED_VSI_NATIVE_VERSION == "0.92.0-dev"
+
+
+@pytest.mark.parametrize("native_version, expected", [
+    (b"c2pa-c-ffi/0.92.0-dev c2pa-rs/0.92.0-dev", True),
+    (b"c2pa-rs/0.92.0-dev", True),
+    (b"c2pa-c-ffi/0.91.0-dev c2pa-rs/0.91.0-dev", False),
+    (b"c2pa-c-ffi/0.92.0 c2pa-rs/0.92.0", False),
+    (b"c2pa-c-ffi/0.92.0-dev c2pa-rs/0.92.0-dev.1", False),
+    (b"c2pa-c-ffi/0.92.0-dev c2pa-rs/0.93.0-dev", False),
+    (b"c2pa-c-ffi/0.92.0-dev", False),
+    (b"xc2pa-rs/0.92.0-dev", False),
+    (b"", False),
+])
+def test_native_version_gate_accepts_only_exact_paired_token(native_version, expected):
+    assert bindings._trusted_vsi_version_matches(native_version) is expected
+
+
 @pytest.mark.parametrize("factory", [c2pa.TrustedVsiSession, c2pa.TrustedVsiSession.from_callback])
 def test_disabled_constructor_gates_before_arguments_callbacks_or_bookkeeping(monkeypatch, factory):
     monkeypatch.setattr(bindings, "_TRUSTED_VSI_CAPABILITIES", 0)
@@ -488,8 +508,9 @@ def paired_native():
     problems = []
     if missing:
         problems.append("missing symbols: " + ", ".join(missing))
-    if c2pa.sdk_version() != "0.91.0-dev":
-        problems.append(f"native version {c2pa.sdk_version()!r} != '0.91.0-dev'")
+    expected = bindings._TRUSTED_VSI_NATIVE_VERSION
+    if c2pa.sdk_version() != expected:
+        problems.append(f"native version {c2pa.sdk_version()!r} != {expected!r}")
     if not missing:
         mask = int(bindings._lib.c2pa_live_video_trusted_vsi_capabilities())
         if mask != 63:

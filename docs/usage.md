@@ -27,7 +27,7 @@ All of `Builder`, `Reader`, `Signer`, `Context`, and `Settings` support context 
 ## Trusted-processor VSI (unreleased functional API)
 
 `TrustedVsiSession` is separate from complete-buffer
-`LiveVideoVsiSession`. It requires the complete functional 0.91.0-dev native ABI
+`LiveVideoVsiSession`. It requires the complete functional 0.92.0-dev native ABI
 and capability mask 63. Older libraries import normally but do not advertise
 trusted functionality; construction fails before inspecting arguments or
 invoking callbacks. These changes are not in immutable dev5 artifacts.
