@@ -32,6 +32,7 @@ classDiagram
     class Reader {
         +get_supported_mime_types() list~str~$
         +try_create(format_or_path, stream, manifest_data, context) Reader | None$
+        +from_fragmented_files(asset_path, fragments, context) Reader$
         +json() str
         +detailed_json() str
         +get_active_manifest() dict | None
@@ -59,6 +60,8 @@ classDiagram
         +sign(signer, format, source, dest) bytes
         +sign(format, source, dest) bytes
         +sign_file(source_path, dest_path, signer) bytes
+        +sign_fragmented(signer, asset_path, fragments_glob, output_dir) bytes
+        +sign_ladder(signer, sources, dests) bytes
         +close()
     }
 
@@ -80,6 +83,23 @@ classDiagram
         +restore(signed_init, previous_media, format)
         +next_sequence_number int
         +active_manifest_id str | None
+        +close()
+    }
+
+    class TrustedVsiSession {
+        +TrustedVsiSession(context, manifest_json, algorithm, public_cose_key, kid, ..., callback, mode, ...)
+        +from_callback(context, manifest_json, algorithm, public_cose_key, kid, ...) TrustedVsiSession$
+        +reserve_init_uuid(format) bytes
+        +reserved_manifest_id() str
+        +finalize_init_uuid(canonical_hash) bytes
+        +commit_init_uuid()
+        +sign_sig_structure(sig_structure, sequence_number) bytes
+        +reserve_media_emsg_at(sequence_number, signing_time_unix_seconds, ...) bytes
+        +finalize_media_emsg(canonical_hash) bytes
+        +export_state() bytes
+        +import_state(state)
+        +preflight(operation, data) 
+        +status() TrustedVsiStatus
         +close()
     }
 
@@ -142,6 +162,8 @@ classDiagram
     Signer --> Context : optional, consumed
     Context --> LiveVideoVsiSession : borrowed with signer
     LiveVideoVsiSession --> Callable : pins optional clock
+    Context --> TrustedVsiSession : retained with signer
+    TrustedVsiSession --> Callable : pins signing callback
     C2paSignerInfo --> Signer : creates via from_info
     C2paSigningAlg --> C2paSignerInfo : alg field
     C2paSigningAlg --> Signer : from_callback alg
@@ -152,3 +174,7 @@ classDiagram
     C2paDigitalSourceType --> Builder : set_intent
     C2paError --> C2paError_Subtypes : subclasses
 ```
+
+[`Builder.sign_ladder`](ladder-signing.md) requires an explicit signer and a native
+library with ladder support. An attempted native call closes the builder, not the signer;
+preflight errors leave the builder usable.
