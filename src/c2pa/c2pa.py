@@ -917,40 +917,15 @@ class C2paSigner(ctypes.Structure):
 
 
 class C2paStream(ctypes.Structure):
-    """A C2paStream is a Rust Read/Write/Seek stream that can be created in C.
+    """Opaque handle to a native Rust Read/Write/Seek stream.
 
-    This class represents a low-level stream interface that bridges Python
-    and Rust/C code. It implements the Rust Read/Write/Seek traits in C,
-    allowing for efficient data transfer between Python and the C2PA library
-    without unnecessary copying.
-
-    The stream is used for various operations including:
-    - Reading manifest data from files
-    - Writing signed content to files
-    - Handling binary resources
-    - Managing ingredient data
-
-    The structure contains function pointers that implement stream operations:
-    - reader: Function to read data from the stream
-    - seeker: Function to change the stream position
-    - writer: Function to write data to the stream
-    - flusher: Function to flush any buffered data
-
-    This is a critical component for performance as it allows direct memory
-    access between Python and the C2PA library without intermediate copies.
+    Created by ``c2pa_create_stream`` from Python read/seek/write/flush
+    callbacks and released with ``c2pa_release_stream``. The native header
+    declares it opaque: the returned value is a registry id, not the address
+    of a readable structure, so Python must only pass it back to native calls
+    and never dereference it or assume a field layout.
     """
-    _fields_ = [
-        # Opaque context pointer for the stream
-        ("context", ctypes.POINTER(StreamContext)),
-        # Function to read data from the stream
-        ("reader", ReadCallback),
-        # Function to change stream position
-        ("seeker", SeekCallback),
-        # Function to write data to the stream
-        ("writer", WriteCallback),
-        # Function to flush buffered data
-        ("flusher", FlushCallback),
-    ]
+    _fields_ = []
 
 
 def _read_native_error() -> Optional[str]:
