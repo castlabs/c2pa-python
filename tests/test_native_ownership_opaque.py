@@ -9,6 +9,7 @@ test_native_ownership.py.
 
 import ctypes
 import io
+import os
 from pathlib import Path
 
 import pytest
@@ -18,14 +19,29 @@ from c2pa import Builder, C2paError, Context, Reader
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
-pytestmark = pytest.mark.skipif(
-    not binding.has_live_video_trusted_vsi_signing_context_v1(),
-    reason="requires the paired opaque-registry native",
-)
+def _qualification_required():
+    return "1" in (os.environ.get("C2PA_TRUSTED_VSI_ABI_REQUIRED"),
+                   os.environ.get("C2PA_TRUSTED_VSI_FUNCTIONAL_REQUIRED"))
 
 
 @pytest.fixture(autouse=True)
-def _clear_native_error_slot():
+def _require_opaque_registry():
+    """Fail (never skip) under paired qualification if not the opaque native."""
+    problem = None
+    if not binding.has_live_video_trusted_vsi_signing_context_v1():
+        problem = "paired trusted-VSI native unavailable"
+    else:
+        with open(FIXTURES / "dashinit.mp4", "rb") as init:
+            probe = Reader("video/mp4", init)
+        try:
+            if probe._handle_value() & 1 != 1:
+                problem = "object handles are not odd opaque registry ids"
+        finally:
+            probe.close()
+    if problem:
+        if _qualification_required():
+            pytest.fail("opaque-registry ownership checks: " + problem)
+        pytest.skip(problem)
     yield
     binding._lib.c2pa_error_set_last(b"Other: cleared by test teardown")
 

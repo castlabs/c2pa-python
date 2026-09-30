@@ -196,8 +196,8 @@ whose `pyproject.toml` version differs from the lock.
 `scripts/qualify_trusted_vsi_functional.py --wheel <whl> --venv <new-dir>
 --version 0.37.13.dev0` installs the wheel into an isolated venv, strips
 `PYTHONPATH`/`C2PA_LIBRARY_NAME`, and runs `test_trusted_vsi_api.py`,
-`test_fragmented_files.py`, `test_sign_ladder.py` and
-`test_native_ownership.py` with `C2PA_TRUSTED_VSI_ABI_REQUIRED=1`,
+`test_fragmented_files.py`, `test_sign_ladder.py`,
+`test_native_ownership.py` and `test_native_ownership_opaque.py` with `C2PA_TRUSTED_VSI_ABI_REQUIRED=1`,
 `C2PA_REQUIRE_SIGN_LADDER=1` and `C2PA_REQUIRE_FRAGMENTED_FILES=1`; the paired
 fixture asserts the imported package and native library come from that venv
 with the expected version, and missing ladder or fragmented capabilities fail
@@ -208,5 +208,6 @@ Paired tests require the full native library and FAIL under
 skip only in ad-hoc local runs. `.github/workflows/trusted-vsi-paired.yml`
 builds the native with Rust 1.96.0 from the reviewed consolidated commit
 `203dc08db2bc9548a739bf209e6b510a546d70db` (ContentAuth main `69907b5a` merged;
-previously `5c186c07`)
+previously `5c186c07`). The status block at the top records the `5c186c07` qualification;
+qualification of the `203dc08d` pairing is recorded once its paired run passes
 by full SHA; update that pin (not a branch name) for later native revisions.
