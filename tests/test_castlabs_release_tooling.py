@@ -49,11 +49,19 @@ def _posix_bash() -> str:
 
 
 def test_prerelease_version_is_consistent():
-    assert release.project_version(ROOT) == "0.37.8.dev5"
+    # The immutable dev5 release identity stays frozen in the tooling and lock.
+    assert release.RELEASE_VERSION == "0.37.8.dev5"
+    assert release.load_lock()["package"]["version"] == "0.37.8.dev5"
+    # This checkout is the unreleased consolidated functional source. Its
+    # identity is consistent and deliberately differs from dev5, so
+    # validate-sources refuses to release it under the dev5 lock.
+    source = release.project_version(ROOT)
+    assert source == "0.37.13.dev0"
+    assert source != release.RELEASE_VERSION
     first_line = (
         (ROOT / "src" / "c2pa" / "c2pa.py").read_text(encoding="utf-8").splitlines()[13]
     )
-    assert first_line == "# Version: 0.37.8.dev5"
+    assert first_line == f"# Version: {source}"
 
 
 def test_release_lock_and_schemas_are_valid_json():
@@ -93,17 +101,24 @@ def test_trusted_vsi_workflows_isolate_paired_abi_from_dev5():
     assert dedicated.count(f"ref: {release.RUST_COMMIT}") == 3
     assert 'C2PA_TRUSTED_VSI_ABI_REQUIRED: "1"' in paired
     assert 'C2PA_TRUSTED_VSI_FUNCTIONAL_REQUIRED: "1"' in paired
-    assert "python -m pytest -q tests/test_trusted_vsi_api.py -ra" in paired
+    focused = ("python -m pytest -q tests/test_trusted_vsi_api.py\n"
+               "          tests/test_fragmented_files.py tests/test_sign_ladder.py\n"
+               "          tests/test_native_ownership.py -ra")
+    assert focused in paired
     assert "-k " not in paired
     assert "ubuntu-24.04" in paired and "windows-2022" in paired
     assert "C2PA_LIBRARY_NAME: ${{ github.workspace }}/paired-rust/target/debug/" in paired
     assert "PYTHONPATH: ${{ github.workspace }}/python-source/src" in paired
     assert "python setup.py egg_info" in paired
-    assert "cargo +1.88.0 build --locked" in paired
+    assert "cargo +1.96.0 build --locked" in paired
     # Paired native is pinned to a reviewed full SHA, never a moving branch.
     assert re.search(r"^\s+ref: [0-9a-f]{40}$", paired, re.MULTILINE)
     assert "ref: feat/" not in paired
-    assert "FUNCTIONAL_BUILD_VERSION: 0.37.9.dev0" in paired
+    assert "FUNCTIONAL_BUILD_VERSION: 0.37.13.dev0" in paired
+    assert "C2PA_SOURCE_BUILD_VERSION: 0.92.0-dev" in paired
+    assert 'C2PA_REQUIRE_SIGN_LADDER: "1"' in paired
+    assert 'C2PA_REQUIRE_FRAGMENTED_FILES: "1"' in paired
+    assert "tests/ladder_native.py --lane candidate" in paired
     assert "scripts/build_trusted_vsi_functional.py" in paired
     assert "scripts/qualify_trusted_vsi_functional.py" in paired
     for forbidden in ("download_artifacts.py", "castlabs_release.py",

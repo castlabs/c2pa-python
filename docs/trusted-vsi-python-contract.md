@@ -184,18 +184,26 @@ CBOR, BMFF or validation results.
 `scripts/build_trusted_vsi_functional.py --library <exact-native-library> --out
 <empty-dir>` first requires all probes true against that library, then builds a
 NON-PUBLISHING wheel and sdist in a temporary staging copy with
-`FUNCTIONAL_BUILD_VERSION` (default `0.37.9.dev0`; rejects `0.37.8.*`, dev5 and
-release versions). The checkout's `0.37.8.dev5` metadata is not modified.
-`C2PA_SOURCE_BUILD_VERSION=0.92.0-dev` identifies the native library only.
+`FUNCTIONAL_BUILD_VERSION` (default: the checkout's source identity
+`0.37.13.dev0`; rejects `0.37.8.*`, dev5, release versions and anything older
+than the source identity, including the historical `0.37.9.dev0`).
+`C2PA_SOURCE_BUILD_VERSION=0.92.0-dev` identifies the native library only. The
+immutable dev5 release lock and tooling are unchanged and refuse this source,
+whose `pyproject.toml` version differs from the lock.
 
 `scripts/qualify_trusted_vsi_functional.py --wheel <whl> --venv <new-dir>
---version 0.37.9.dev0` installs the wheel into an isolated venv, strips
-`PYTHONPATH`/`C2PA_LIBRARY_NAME`, and runs this test file with
-`C2PA_TRUSTED_VSI_ABI_REQUIRED=1`; the paired fixture asserts the imported package
-and native library come from that venv with the expected version.
+--version 0.37.13.dev0` installs the wheel into an isolated venv, strips
+`PYTHONPATH`/`C2PA_LIBRARY_NAME`, and runs `test_trusted_vsi_api.py`,
+`test_fragmented_files.py`, `test_sign_ladder.py` and
+`test_native_ownership.py` with `C2PA_TRUSTED_VSI_ABI_REQUIRED=1`,
+`C2PA_REQUIRE_SIGN_LADDER=1` and `C2PA_REQUIRE_FRAGMENTED_FILES=1`; the paired
+fixture asserts the imported package and native library come from that venv
+with the expected version, and missing ladder or fragmented capabilities fail
+rather than skip.
 
 Paired tests require the full native library and FAIL under
 `C2PA_TRUSTED_VSI_ABI_REQUIRED=1` (all Linux/Windows qualification jobs); they
 skip only in ad-hoc local runs. `.github/workflows/trusted-vsi-paired.yml`
-checks out the reviewed native commit `3569fb860babe52db778f82e3fe80e8371fe2a08`
+builds the native with Rust 1.96.0 from the reviewed consolidated commit
+`5c186c07ac9b432d3b8f1336ecb6ee09518408de`
 by full SHA; update that pin (not a branch name) for later native revisions.

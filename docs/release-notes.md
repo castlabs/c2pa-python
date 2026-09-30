@@ -18,9 +18,17 @@
 - Capability probes require the exact functional symbol set, native version,
   and complete capability mask. Older native libraries fail closed.
 - Adds non-publishing Linux/Windows source and installed-wheel qualification.
-  Functional artifacts use a separate staged development version (default
-  `0.37.9.dev0`). Immutable dev5 release facts, pins and artifact names remain
-  unchanged. Functional native qualification is required, never an optional skip.
+  Functional artifacts use the unreleased source identity `0.37.13.dev0`
+  (historically staged as `0.37.9.dev0` against native `3569fb86`). Immutable
+  dev5 release facts, pins and artifact names remain unchanged. Functional
+  native qualification is required, never an optional skip.
+- Pairs with the consolidated native `0.92.0-dev`
+  (`castlabs/c2pa-rs@5c186c07`, Rust 1.96.0) and integrates single-file ladder
+  signing (`Builder.sign_ladder`). Ladder signing now propagates
+  DynamicAssertion and claim-signer interrupt exceptions like the other Builder
+  paths. Consume-first FFI calls (Reader/Builder `with_*`) no longer treat a
+  registry rejection of another argument as proof the managed handle was
+  retained.
 
 ## Version 0.37.8.dev5
 

@@ -24,11 +24,21 @@ from packaging.version import Version
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def functional_version(value: str) -> str:
+def source_version(root: Path = ROOT) -> str:
+    """Return the checkout's unreleased functional source identity."""
+    return toml.load(root / "pyproject.toml")["project"]["version"]
+
+
+def functional_version(value: str, root: Path = ROOT) -> str:
     version = Version(value)
     if (not version.is_devrelease or version <= Version("0.37.8.dev5")
             or version.release == (0, 37, 8)):
         raise ValueError("functional version must be a newer development series than 0.37.8")
+    minimum = Version(source_version(root))
+    if version < minimum:
+        raise ValueError(
+            f"functional version {version} must not be older than the source "
+            f"identity {minimum}")
     return str(version)
 
 
@@ -45,7 +55,7 @@ STAGED_FILES = ("pyproject.toml", "setup.py", "MANIFEST.in", "README.md", "LICEN
 
 def stage_source(stage: Path, version: str, root: Path = ROOT) -> None:
     """Copy the checkout into ``stage`` and apply ``version`` there only."""
-    version = functional_version(version)
+    version = functional_version(version, root)
     for directory in STAGED_DIRECTORIES:
         if (root / directory).is_dir():
             shutil.copytree(root / directory, stage / directory, ignore=shutil.ignore_patterns(
@@ -67,7 +77,7 @@ def stage_source(stage: Path, version: str, root: Path = ROOT) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--library", type=Path, required=True)
-    parser.add_argument("--version", default=os.environ.get("FUNCTIONAL_BUILD_VERSION", "0.37.9.dev0"))
+    parser.add_argument("--version", default=os.environ.get("FUNCTIONAL_BUILD_VERSION") or source_version())
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     version = functional_version(args.version)

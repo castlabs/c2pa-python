@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import gc
 import json
+import os
 import tempfile
 import unittest
 import weakref
@@ -223,6 +224,16 @@ class TestFragmentedCapability(FragmentedTestCase):
             builder.close()
             signer.close()
             context.close()
+
+
+class TestFragmentedCapabilityRequired(unittest.TestCase):
+    def test_required_fragmented_capability_is_present(self):
+        if os.environ.get("C2PA_REQUIRE_FRAGMENTED_FILES") != "1":
+            self.skipTest("C2PA_REQUIRE_FRAGMENTED_FILES is not set")
+        self.assertTrue(
+            has_fragmented_files(),
+            "C2PA_REQUIRE_FRAGMENTED_FILES=1 but the loaded native library "
+            "lacks the fragmented BMFF file APIs")
 
 
 @unittest.skipUnless(
