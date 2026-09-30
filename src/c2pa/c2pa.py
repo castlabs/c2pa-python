@@ -473,8 +473,8 @@ class ManagedResource:
     def _raise_consume_failure(self, error_message, *, consumes_first=False):
         """Raise the error from an FFI handler consuming call.
 
-        The native error is read before any free so a free's own
-        pointer-tracking error cannot overwrite it: the native error slot is
+        The native error is copied before any free so the raised exception
+        preserves it even if cleanup changes the native error slot. The slot is
         sticky and thread-local and the SDK does not clear it before the call,
         so this trusts that the failing native path set its own error.
 
@@ -490,7 +490,8 @@ class ManagedResource:
         its handle. A different known address means it was consumed; an absent
         address or unreadable handle value needs a guarded free and close.
         Address-less registry rejections are safe to clean up with the newer
-        opaque registry and are not emitted by stock 0.91.0.
+        opaque registry and are not emitted by stock 0.91.0. Release removes
+        the registry entry; outstanding guards can defer the actual drop.
 
         Args:
             error_message: Format string with one placeholder, used when the
@@ -531,9 +532,9 @@ class ManagedResource:
                 _raise_typed_c2pa_error(error)
 
             # A non-tag error means the native side took ownership then failed,
-            # dropping the value itself: mark consumed, do not free (a free here
-            # would be a guarded no-op that dirties the error slot and races a
-            # recycled address in other threads).
+            # dropping the value itself: mark consumed, do not free. An extra
+            # free can dirty the error slot and, on stock native, race a reused
+            # address in another thread.
             self._teardown(free_handle=False)
             _raise_typed_c2pa_error(error)
 
