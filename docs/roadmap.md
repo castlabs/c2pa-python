@@ -19,8 +19,9 @@ Remaining work is separate from this integration:
   error slot after cleanup. Do not generalize the opaque-ID guarantee to stock
   native, whose raw allocation addresses can be reused.
 - Stock c2pa-rs 0.91.0 Windows x64 ownership, unit/ladder and threaded suites
-  passed in mstattma/c2pa-python Actions run 36775608167. Stock Windows ARM64
-  was not qualified; evaluate it separately if that target becomes supported.
+  passed in [mstattma/c2pa-python Actions run 36775608167](https://github.com/mstattma/c2pa-python/actions/runs/36775608167).
+  Stock Windows ARM64 was outside this ownership patch's qualification scope;
+  evaluate that ownership lane separately from legacy Windows ARM64 wheel jobs.
 
 Qualify each new merged Python head against the pinned consolidated native
 `203dc08d` before updating the functional branch. These follow-ups do not
