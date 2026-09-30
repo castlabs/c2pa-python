@@ -103,7 +103,7 @@ def test_trusted_vsi_workflows_isolate_paired_abi_from_dev5():
     assert 'C2PA_TRUSTED_VSI_FUNCTIONAL_REQUIRED: "1"' in paired
     focused = ("python -m pytest -q tests/test_trusted_vsi_api.py\n"
                "          tests/test_fragmented_files.py tests/test_sign_ladder.py\n"
-               "          tests/test_native_ownership.py -ra")
+               "          tests/test_native_ownership.py tests/test_native_ownership_opaque.py -ra")
     assert focused in paired
     assert "-k " not in paired
     assert "ubuntu-24.04" in paired and "windows-2022" in paired

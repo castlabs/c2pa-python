@@ -88,5 +88,6 @@ def test_functional_installed_qualification_removes_source_overrides():
     for required in ('C2PA_REQUIRE_SIGN_LADDER="1"', 'C2PA_REQUIRE_FRAGMENTED_FILES="1"'):
         assert required in source
     for name in ("test_trusted_vsi_api.py", "test_fragmented_files.py",
-                 "test_sign_ladder.py", "test_native_ownership.py"):
+                 "test_sign_ladder.py", "test_native_ownership.py",
+                 "test_native_ownership_opaque.py"):
         assert f'"{name}"' in source

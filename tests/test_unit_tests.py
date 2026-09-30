@@ -23,6 +23,7 @@ import lzma
 import json
 import re
 import unittest
+from unittest.mock import patch
 import ctypes
 import warnings
 from cryptography.hazmat.primitives import hashes, serialization
@@ -9822,6 +9823,142 @@ class TestManagedResourceLifecycle(unittest.TestCase):
         self.assertIsNone(res._handle)
         self.assertEqual(res._lifecycle_state, LifecycleState.CLOSED)
 
+    def test_consume_first_integer_handle_rejection_retains_own_handle(self):
+        for tag in ("UntrackedPointer", "WrongPointerType"):
+            with self.subTest(tag=tag):
+                res = self._FakeHandleResource()
+                res._activate(0xCAFE)
+                self.freed.clear()
+                error = f"Other: {tag}: 0xcafe"
+                with patch.object(c2pa_module, "_read_native_error", return_value=error):
+                    with self.assertRaises(Error) as caught:
+                        res._consume_and_swap(
+                            lambda h: None, "swap failed: {}", consumes_first=True)
+                self.assertIn(error, str(caught.exception))
+                self.assertEqual(res._handle_value(), 0xCAFE)
+                self.assertTrue(res.is_valid)
+                self.assertEqual(self.freed, [])
+                res.close()
+                res.close()
+                self.assertEqual(self.freed, [0xCAFE])
+
+    def test_consume_first_integer_handle_rejection_closes_other_handle(self):
+        for tag in ("UntrackedPointer", "WrongPointerType"):
+            with self.subTest(tag=tag):
+                res = self._FakeHandleResource()
+                res._activate(0xCAFE)
+                self.freed.clear()
+                error = f"Other: {tag}: 0xbeef"
+                with patch.object(c2pa_module, "_read_native_error", return_value=error):
+                    with self.assertRaises(Error) as caught:
+                        res._consume_and_swap(
+                            lambda h: None, "swap failed: {}", consumes_first=True)
+                self.assertIn(error, str(caught.exception))
+                self.assertIsNone(res._handle)
+                self.assertEqual(res._lifecycle_state, LifecycleState.CLOSED)
+                res.close()
+                self.assertEqual(self.freed, [])
+
+    def test_consume_first_unreadable_handle_uses_guarded_free(self):
+        res = self._FakeHandleResource()
+        handle = object()
+        res._activate(handle)
+        error = "Other: WrongPointerType: 0xbeef"
+        state = [error]
+
+        def free(pointer):
+            self.freed.append(pointer)
+            state[0] = "Other: UntrackedPointer: cleanup error"
+
+        with patch.object(c2pa_module, "_read_native_error", side_effect=lambda: state[0]), \
+                patch.object(ManagedResource, "_free_native_ptr", side_effect=free):
+            self.assertIsNone(res._handle_value())
+            with self.assertRaises(Error) as caught:
+                res._consume_into(
+                    lambda h: None, "build failed: {}", consumes_first=True)
+        self.assertIn(error, str(caught.exception))
+        self.assertNotIn("cleanup error", str(caught.exception))
+        self.assertEqual(res._lifecycle_state, LifecycleState.CLOSED)
+        res.close()
+        self.assertEqual(self.freed, [handle])
+
+    def test_handle_value_accepts_pointer_integer_and_unreadable_handles(self):
+        class Unreadable:
+            def __bool__(self):
+                raise ValueError("unreadable handle")
+
+        res = self._FakeHandleResource()
+        for handle, expected in [(0xCAFE, 0xCAFE),
+                                 (ctypes.c_void_p(0xCAFE), 0xCAFE),
+                                 (ctypes.POINTER(c2pa_module.C2paReader)(), None),
+                                 (None, None), (object(), None), (Unreadable(), None)]:
+            with self.subTest(handle=type(handle).__name__):
+                res._handle = handle
+                self.assertEqual(res._handle_value(), expected)
+        res._handle = None
+
+    def test_consume_first_addressless_rejection_preserves_error(self):
+        for tag in ("UntrackedPointer", "WrongPointerType", "PointerInUse", "WrongWrapperKind"):
+            with self.subTest(tag=tag):
+                res = self._FakeHandleResource()
+                res._activate(0xCAFE)
+                self.freed.clear()
+                error = f"Other: {tag}: rejection without an address"
+                state = [error]
+
+                def free(pointer):
+                    self.freed.append(pointer)
+                    state[0] = "Other: UntrackedPointer: cleanup error"
+
+                with patch.object(c2pa_module, "_read_native_error", side_effect=lambda: state[0]), \
+                        patch.object(ManagedResource, "_free_native_ptr", side_effect=free):
+                    with self.assertRaises(Error) as caught:
+                        res._consume_no_replacement(
+                            lambda h: -1, "set failed: {}", consumes_first=True)
+                self.assertIn(error, str(caught.exception))
+                self.assertEqual(res._lifecycle_state, LifecycleState.CLOSED)
+                res.close()
+                self.assertEqual(self.freed, [0xCAFE])
+
+    def test_validate_first_registry_rejections_retain_handle(self):
+        for error in ("Other: UntrackedPointer: 0xcafe",
+                      "Other: WrongPointerType: 0xbeef",
+                      "Other: PointerInUse: exclusive use",
+                      "Other: WrongWrapperKind: shared wrapper"):
+            with self.subTest(error=error):
+                res = self._FakeHandleResource()
+                res._activate(0xCAFE)
+                self.freed.clear()
+                with patch.object(c2pa_module, "_read_native_error", return_value=error):
+                    with self.assertRaises(Error):
+                        res._consume_no_replacement(lambda h: -1, "set failed: {}")
+                self.assertTrue(res.is_valid)
+                self.assertEqual(self.freed, [])
+                res.close()
+                self.assertEqual(self.freed, [0xCAFE])
+
+    def test_stream_layout_is_opaque(self):
+        self.assertEqual(c2pa_module.C2paStream._fields_, [])
+
+    def test_payload_registry_tags_do_not_establish_ownership(self):
+        for consumes_first in (False, True):
+            for tag in ("UntrackedPointer", "WrongPointerType", "PointerInUse", "WrongWrapperKind"):
+                for prefix in ("Json", "Other"):
+                    with self.subTest(consumes_first=consumes_first, tag=tag, prefix=prefix):
+                        res = self._FakeHandleResource()
+                        res._activate(0xCAFE)
+                        self.freed.clear()
+                        error = f'{prefix}: invalid input "{tag}: 0xcafe"'
+                        with patch.object(c2pa_module, "_read_native_error", return_value=error):
+                            with self.assertRaises(Error) as caught:
+                                res._consume_into(
+                                    lambda h: None, "build failed: {}",
+                                    consumes_first=consumes_first)
+                        self.assertIn(error, str(caught.exception))
+                        self.assertEqual(res._lifecycle_state, LifecycleState.CLOSED)
+                        res.close()
+                        self.assertEqual(self.freed, [])
+
 
 class TestManagedResourceObjects(TestContextAPIs):
     """Tests native resource handling management when managed manually.
@@ -9968,14 +10105,12 @@ class TestManagedResourceObjects(TestContextAPIs):
         context = Context()
         self.addCleanup(context.close)
         builder = Builder(self.test_manifest, context=context)
-        original_handle = builder._handle
         original_stamp = builder._owner_pid
 
         result = builder.with_archive(self._make_archive())
 
         self.assertIs(result, builder, "with_archive should return self")
-        self.assertNotEqual(builder._handle, original_handle,
-                            "the native handle was not replaced")
+        self.assertTrue(builder._handle)
         self.assertEqual(builder._lifecycle_state, LifecycleState.ACTIVE)
         # The replacement came from this process, the stamp still applies.
         self.assertEqual(builder._owner_pid, original_stamp)
@@ -9991,15 +10126,13 @@ class TestManagedResourceObjects(TestContextAPIs):
         with open(init_path, "rb") as init:
             reader = Reader("video/mp4", init, context=context)
         self.addCleanup(reader.close)
-        original_handle = reader._handle
 
         # The Reader consumed the first handle, so the init stream is reopened.
         with open(init_path, "rb") as init, open(fragment_path, "rb") as frag:
             result = reader.with_fragment("video/mp4", init, frag)
 
         self.assertIs(result, reader, "with_fragment should return self")
-        self.assertNotEqual(reader._handle, original_handle,
-                            "the native handle was not replaced")
+        self.assertTrue(reader._handle)
         self.assertEqual(reader._lifecycle_state, LifecycleState.ACTIVE)
         self.assertEqual(reader._owner_pid, os.getpid())
 
@@ -10565,7 +10698,7 @@ class TestManagedResourceObjects(TestContextAPIs):
 
         with open(init_path, "rb") as init:
             reader = Reader("video/mp4", init)
-        leaked = ctypes.c_void_p(reader._handle_value())
+        retained_handle = reader._handle
 
         real_call = c2pa_module._lib.c2pa_reader_with_fragment
         c2pa_module._lib.c2pa_reader_with_fragment = (
@@ -10582,13 +10715,12 @@ class TestManagedResourceObjects(TestContextAPIs):
             c2pa_module._lib.c2pa_error_set_last(
                 b"Other: cleared by test teardown")
 
-        # The stale tag wins. with_fragment consumes the reader before
-        # validating its other arguments, and the stale tag names a different
-        # handle, so the reader is classified as consumed and closed without a
-        # free. The mock consumed nothing, so release the id the test leaked.
+        # The stale tag names another handle, so consume-first triage closes
+        # the reader without a free. The mock consumed nothing: the test must
+        # release the still-live handle that this unsupported failure leaked.
         self.assertIsNone(reader._handle)
         self.assertEqual(reader._lifecycle_state, LifecycleState.CLOSED)
-        self.assertEqual(c2pa_module._lib.c2pa_free(leaked), 0)
+        self.assertEqual(c2pa_module._lib.c2pa_free(retained_handle), 0)
         reader.close()
 
     # Backfilling a pointer minted by a direct FFI call. Builder.from_archive

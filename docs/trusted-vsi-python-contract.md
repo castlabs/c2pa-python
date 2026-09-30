@@ -207,5 +207,6 @@ Paired tests require the full native library and FAIL under
 `C2PA_TRUSTED_VSI_ABI_REQUIRED=1` (all Linux/Windows qualification jobs); they
 skip only in ad-hoc local runs. `.github/workflows/trusted-vsi-paired.yml`
 builds the native with Rust 1.96.0 from the reviewed consolidated commit
-`5c186c07ac9b432d3b8f1336ecb6ee09518408de`
+`203dc08db2bc9548a739bf209e6b510a546d70db` (ContentAuth main `69907b5a` merged;
+previously `5c186c07`)
 by full SHA; update that pin (not a branch name) for later native revisions.

@@ -15,6 +15,7 @@ INSTALLED_TESTS = (
     "test_fragmented_files.py",
     "test_sign_ladder.py",
     "test_native_ownership.py",
+    "test_native_ownership_opaque.py",
 )
 
 

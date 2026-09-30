@@ -576,15 +576,12 @@ class ManagedResource:
 
         self._handle = new_handle
 
-    # Registry rejections set by the native lib. They are raised before the
-    # native call takes ownership of the handle they name, but consume-first
-    # calls may raise them for a *different* argument after taking this handle.
-    # UntrackedPointer/WrongPointerType name the rejected handle; the others
-    # carry no address.
+    # Errors set by native lib, hinting at the cause of the error
+    # The rejected handle may be this resource or another argument.
     _PRE_CONSUME_ERROR_TAGS = ("UntrackedPointer:", "WrongPointerType:")
     _ADDRESSLESS_REJECTION_TAGS = ("PointerInUse:", "WrongWrapperKind:")
     _REJECTED_HANDLE_RE = re.compile(
-        r"(?:UntrackedPointer|WrongPointerType): 0x([0-9a-fA-F]+)")
+        r"(?:UntrackedPointer|WrongPointerType):\s*(0x[0-9a-fA-F]+)\b")
 
     def _invoke_consume(self, ffi_call, error_message):
         """Run an FFI call that consumes this handle, returning its raw result.
@@ -616,17 +613,16 @@ class ManagedResource:
             raise C2paError(error_message.format(e)) from e
 
     def _handle_value(self):
-        """Return this handle's integer value without a ctypes.cast cycle."""
-        handle = self._handle
-        if not handle:
-            return None
-        if isinstance(handle, int):
-            return handle
+        """Read the handle value without dereferencing native memory."""
         try:
+            handle = self._handle
+            if not handle:
+                return None
+            if isinstance(handle, int):
+                return handle
             return ctypes.c_void_p.from_buffer(handle).value
-        except (TypeError, ValueError):
-            # Unknown handle representation: callers treat None as "not this
-            # handle", which routes consume-first triage to the guarded free.
+        except Exception:
+            # An unfamiliar representation cannot establish ownership.
             return None
 
     def _raise_consume_failure(self, error_message, *, consumes_first=False):
@@ -639,65 +635,60 @@ class ManagedResource:
 
         That ordering is required:
         c2pa_free on a handle the registry no longer tracks returns -1 and
-        overwrites the slot with its own "UntrackedPointer: 0x..." message.
-        Freeing first would therefore replace the real failure with another
-        one and could invert the retain/consume decision made below.
+        overwrites the slot with its own "Other: UntrackedPointer: 0x..."
+        message. Freeing first would therefore replace the real failure
+        with another one and, because that substitute carries a pre-consume
+        tag, invert the retain/consume decision made below.
 
-        Ownership triage depends on the call's validation order:
-
-        * ``consumes_first=False`` (e.g. context_builder_set_signer): every
-          other argument is validated before this handle is untracked, so any
-          registry rejection means this handle was retained.
-        * ``consumes_first=True`` (Reader/Builder ``with_*``, context build):
-          native untracks this handle before validating the other arguments.
-          A rejection naming this handle retains it; one naming another
-          handle means this one was already consumed. A rejection without an
-          address (PointerInUse, WrongWrapperKind) is ambiguous: free
-          defensively (a no-op when native already dropped it; handle ids are
-          never reused) and close.
+        Validate-first calls retain the resource on any registry rejection.
+        Consume-first calls retain it only when the rejected address matches
+        its handle. A different known address means it was consumed; an absent
+        address or unreadable handle value needs a guarded free and close.
+        Address-less registry rejections are safe to clean up with the newer
+        opaque registry and are not emitted by stock 0.91.0.
 
         Args:
             error_message: Format string with one placeholder, used when the
                 native layer offers no error of its own.
             consumes_first: Whether native takes this handle before validating
-                other arguments.
+                its other arguments.
 
         Raises:
             C2paError: Always; typed by the native error when there is one.
         """
         error = _read_native_error()
         if error:
-            name = type(self).__name__
-            rejected = any(
-                tag in error
-                for tag in (ManagedResource._PRE_CONSUME_ERROR_TAGS
-                            + ManagedResource._ADDRESSLESS_REJECTION_TAGS))
-            match = ManagedResource._REJECTED_HANDLE_RE.search(error)
-            if not consumes_first and rejected:
+            # Stock wraps registry errors in Other; tags quoted inside another
+            # error's payload are not evidence of handle rejection.
+            rejection = error.removeprefix("Other: ")
+            rejected = rejection.startswith(
+                self._PRE_CONSUME_ERROR_TAGS + self._ADDRESSLESS_REJECTION_TAGS)
+            if rejected and not consumes_first:
                 logger.warning(
                     "%s: native call rejected an argument before taking "
-                    "ownership (%s); handle retained", name, error)
-                _raise_typed_c2pa_error(error)
-            if consumes_first and match:
-                if int(match.group(1), 16) == self._handle_value():
-                    logger.warning(
-                        "%s: native call rejected the handle before taking "
-                        "ownership (%s); handle retained", name, error)
-                    _raise_typed_c2pa_error(error)
-                # Another argument was rejected after native took this handle
-                # and dropped it on the early return.
-                self._teardown(free_handle=False)
-                _raise_typed_c2pa_error(error)
-            if consumes_first and rejected:
-                # No parseable address (PointerInUse, WrongWrapperKind, ...).
-                logger.warning(
-                    "%s: ambiguous registry rejection (%s); releasing the "
-                    "handle defensively", name, error)
-                self._release_handle()
+                    "ownership (%s); handle retained",
+                    type(self).__name__,
+                    error)
                 _raise_typed_c2pa_error(error)
 
-            # A non-registry error means the native side took ownership then
-            # failed, dropping the value itself: mark consumed, do not free.
+            if rejected:
+                match = self._REJECTED_HANDLE_RE.match(rejection)
+                managed = self._handle_value()
+                if match and managed is not None:
+                    if int(match.group(1), 16) == managed:
+                        logger.warning(
+                            "%s: native call rejected the managed handle "
+                            "(%s); handle retained", type(self).__name__, error)
+                        _raise_typed_c2pa_error(error)
+                    self._teardown(free_handle=False)
+                else:
+                    self._release_handle()
+                _raise_typed_c2pa_error(error)
+
+            # A non-tag error means the native side took ownership then failed,
+            # dropping the value itself: mark consumed, do not free (a free here
+            # would be a guarded no-op that dirties the error slot and races a
+            # recycled address in other threads).
             self._teardown(free_handle=False)
             _raise_typed_c2pa_error(error)
 
@@ -714,8 +705,7 @@ class ManagedResource:
         if new_ptr:
             self._swap_handle(new_ptr)
             return
-        self._raise_consume_failure(
-            error_message, consumes_first=consumes_first)
+        self._raise_consume_failure(error_message, consumes_first=consumes_first)
 
     def _consume_no_replacement(self, ffi_call, error_message, *,
                                 consumes_first=False):
@@ -728,8 +718,7 @@ class ManagedResource:
         if result == 0:
             self._teardown(free_handle=False)
             return
-        self._raise_consume_failure(
-            error_message, consumes_first=consumes_first)
+        self._raise_consume_failure(error_message, consumes_first=consumes_first)
 
     def _consume_into(self, ffi_call, error_message, *, consumes_first=False):
         """Run an FFI call that consumes this handle and returns a *different*
@@ -741,8 +730,7 @@ class ManagedResource:
         if result:
             self._teardown(free_handle=False)
             return result
-        self._raise_consume_failure(
-            error_message, consumes_first=consumes_first)
+        self._raise_consume_failure(error_message, consumes_first=consumes_first)
 
     @classmethod
     def _wrap_native_handle(cls, handle):
@@ -926,13 +914,11 @@ class C2paSigner(ctypes.Structure):
 
 
 class C2paStream(ctypes.Structure):
-    """Opaque handle to a native Rust Read/Write/Seek stream.
+    """Opaque native stream handle.
 
-    Created by ``c2pa_create_stream`` from Python read/seek/write/flush
-    callbacks and released with ``c2pa_release_stream``. The native header
-    declares it opaque: the returned value is a registry id, not the address
-    of a readable structure, so Python must only pass it back to native calls
-    and never dereference it or assume a field layout.
+    Python only passes this pointer back to native and never reads its fields.
+    This works with both stock 0.91.0's C-layout stream and newer opaque handles.
+    Stream retains the callbacks separately for their required lifetime.
     """
     _fields_ = []
 
