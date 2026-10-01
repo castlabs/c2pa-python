@@ -71,6 +71,8 @@ def build_native_from_source() -> bool:
     if release_target is not None:
         # Release builds consume only the explicitly built and staged artifact.
         # Never rebuild here with different flags or fall back to downloads.
+        # PEP 517 backends need not add the source root to the import path.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
         from scripts.castlabs_release import load_lock, validate_lock, validate_native
 
         lock = load_lock()

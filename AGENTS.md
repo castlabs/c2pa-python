@@ -3,7 +3,7 @@
 ## Stable fMP4 Release Lane
 
 This worktree's dedicated profile is `stable-fmp4-v1`, release context
-`castlabs-stable-fmp4`, Python `0.31.0+stardustproof.5`, native `0.80.0`.
+`castlabs-stable-fmp4`, unreleased Python `0.31.0+stardustproof.6`, native `0.80.0`.
 Use `.github/workflows/castlabs-stable-fmp4-release.yml`, the explicit lock at
 `release/castlabs-stable-fmp4-inputs.lock.json`, and `scripts/castlabs_release.py`.
 Native defaults (vendored OpenSSL + HTTP + thumbnails) and `file_io` must remain
@@ -11,8 +11,14 @@ enabled. The exact requested/evidenced feature list is `["file_io"]`, with
 `noDefaultFeatures=false`; do not explicitly request HTTP or thumbnails. Actual
 SDK HTTP features are `http_reqwest,http_reqwest_blocking`, while `http` is the
 FFI feature. Do not import VSI runtime changes or substitute `rust_native_crypto`.
-The approved native source is `589174898eca4c2c42289d3251c0619420806f43`, with
-Cargo.lock SHA-256 `fc10bef635df091377d02cfa9f1597462aa016c3db3439d43451a3b93c37edcf`.
+The reviewed/qualified native source is `75f6df217e9bdd11a82e62b42ae550b7d91e9d04`, with
+Cargo.lock SHA-256 `e42129cab9c33fec6f748878d7738ee5dc5ead4537c86512ae654282a68fcc94`.
+The native commit is on Castlabs `fix/stable-single-file-fmp4`. Python `.6`
+is release preparation, not qualified
+release evidence. Preserve all published `.5` assets, tags and release facts.
+Candidate commits and branch pushes require explicit operator authorization.
+Tags, releases and publication require separate approval; preparation must not
+publish. Dirty preparation sources cannot pass `validate-sources`.
 Keep the lock, helper approval constants, and submodule gitlink aligned. Missing
 or changed approvals must still fail closed; negative tests explicitly remove
 approval in test memory only.
@@ -26,6 +32,15 @@ Both platform builds also run all 10 `asset_handlers::bmff_io::tfra_tests` throu
 the strict `cargo-tfra-tests` helper. Wheel Merkle smokes bypass legacy TFRA and
 cannot substitute for this native gate. Previously corrupted assets must be
 regenerated from the unsigned master.
+Both builds also require `cargo-ladder-tests`: exactly 10 SDK ladder tests
+(including identity-guarded cleanup), four fragmented-refusal tests and seven
+FFI ladder/fragmented tests on Linux, six on Windows (the alias test is Unix-only).
+Zero tests, wrong names/counts, failures and ignores
+are fatal. Do not add native VSI tests. Both installed-wheel platform matrices
+run `tests/test_builder_sign_ladder.py` with `C2PA_REQUIRE_SIGN_LADDER=1` and
+`cbor2` on every Python 3.10-3.13, using the clean venv's bindings and native bytes.
+Only a push of exact `castlabs-v0.31.0+stardustproof.6` can publish; branch pushes
+and manual candidates remain nonpublishing. Never create that tag during preparation.
 
 ## Project Overview
 

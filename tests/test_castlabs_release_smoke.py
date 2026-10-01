@@ -53,7 +53,7 @@ def bmff_assertions(manifest: bytes) -> list[dict]:
         assert len(descriptions) == 1
         description = descriptions[0]
         assert len(description) >= 17
-        label = description[17:].split(b"\0", 1)[0] if description[16] & 1 else b""
+        label = description[17:].split(b"\0", 1)[0] if description[16] & 0x02 else b""
         if label.startswith(b"c2pa.hash.bmff"):
             payloads = [child[h:] for typ, _, child, h in children if typ == b"cbor"]
             assert len(payloads) == 1
@@ -133,12 +133,22 @@ def assert_clean(reader: c2pa.Reader) -> dict:
 
 
 def test_stable_installed_wheel_identity():
-    assert version("c2pa-python") == "0.31.0+stardustproof.5"
+    assert version("c2pa-python") == "0.31.0+stardustproof.6"
     assert re.search(r"(?<![\d.])0\.80\.0(?![\d.\w-])", c2pa.sdk_version())
     assert not hasattr(c2pa, "LiveVideoVsiSession")
     assert callable(c2pa.Signer.add_dynamic_assertion)
     assert callable(c2pa.Builder.sign_fragmented)
+    assert callable(c2pa.Builder.sign_ladder) and binding._HAS_SIGN_LADDER
     assert callable(c2pa.Reader.from_fragmented_files)
+    if os.environ.get("CASTLABS_RELEASE_EXPECTED_VERSION"):
+        # Acceptance must exercise the installed wheel's bindings, not src/.
+        package = Path(c2pa.__file__).resolve()
+        assert package.is_relative_to(Path(sys.prefix).resolve())
+        assert Path(binding.__file__).resolve().parent == package.parent
+        assert not os.environ.get("PYTHONPATH")
+        assert not os.environ.get("C2PA_LIBRARY_NAME")
+        assert not os.environ.get("C2PA_LIBRARY_PATH")
+        assert not os.environ.get("LD_LIBRARY_PATH")
     library = Path(binding._lib._name).resolve()
     explicit_library = os.environ.get("C2PA_LIBRARY_NAME")
     if explicit_library:

@@ -4,20 +4,20 @@
   "profileId": "stable-fmp4-v1",
   "package": {
     "name": "c2pa-python",
-    "version": "0.31.0+stardustproof.5"
+    "version": "0.31.0+stardustproof.6"
   },
   "pythonSource": {
     "repository": "castlabs/c2pa-python",
     "url": "https://github.com/castlabs/c2pa-python.git",
     "releaseBranch": "fix/stable-single-file-fmp4",
-    "releaseTag": "castlabs-v0.31.0+stardustproof.5"
+    "releaseTag": "castlabs-v0.31.0+stardustproof.6"
   },
   "rustSource": {
     "repository": "castlabs/c2pa-rs",
     "url": "https://github.com/castlabs/c2pa-rs.git",
-    "commit": "589174898eca4c2c42289d3251c0619420806f43",
+    "commit": "75f6df217e9bdd11a82e62b42ae550b7d91e9d04",
     "version": "0.80.0",
-    "cargoLockSha256": "fc10bef635df091377d02cfa9f1597462aa016c3db3439d43451a3b93c37edcf"
+    "cargoLockSha256": "e42129cab9c33fec6f748878d7738ee5dc5ead4537c86512ae654282a68fcc94"
   },
   "rustToolchain": {
     "channel": "1.88.0",

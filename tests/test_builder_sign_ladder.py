@@ -47,6 +47,7 @@ def _boxes(data: bytes):
         kind = data[offset + 4 : offset + 8]
         header = 8
         if size == 1:
+            assert len(data) - offset >= 16, "truncated extended box header"
             size = int.from_bytes(data[offset + 8 : offset + 16], "big")
             header = 16
         elif size == 0:
@@ -69,6 +70,7 @@ def _embedded_manifest(data: bytes) -> bytes:
             purpose, separator, content = payload[20:].partition(b"\0")
             assert separator, "malformed C2PA uuid box"
             if purpose == b"manifest":
+                assert len(content) >= 8, "missing merkle_offset"
                 merkle_offset = int.from_bytes(content[:8], "big")
                 assert 0 < merkle_offset < len(data), (
                     f"implausible merkle_offset {merkle_offset}"
@@ -101,6 +103,8 @@ def _merkle_maps(manifest: bytes) -> list:
                 # toggle bit 0x02 (Label Present) is set. Bit 0x01 is
                 # Requestable, which c2pa also sets, so testing it would pass
                 # by accident.
+                if child_kind == b"jumd":
+                    assert len(child) >= 17, "truncated JUMBF description"
                 if child_kind == b"jumd" and child[16] & 0x02:
                     labels.append(child[17:].split(b"\0", 1)[0])
             if labels and labels[0].startswith(b"c2pa.hash.bmff"):
@@ -145,8 +149,9 @@ def signer():
         alg=b"es256",
         sign_cert=(FIXTURES / "es256_certs.pem").read_bytes(),
         private_key=(FIXTURES / "es256_private.key").read_bytes(),
-        ta_url=b"http://timestamp.digicert.com",
+        ta_url=b"",
     )
+    info.ta_url = None
     s = Signer.from_info(info)
     yield s
     s.close()
@@ -336,8 +341,15 @@ def test_the_builder_survives_success_and_failure(fake_native, builder, signer):
 
 
 def test_a_real_ladder_signs_and_validates(signer, tmp_path):
+    required = os.environ.get("C2PA_REQUIRE_SIGN_LADDER") == "1"
+    try:
+        import cbor2  # noqa: F401, PLC0415 -- required before any signing
+    except ImportError:
+        if required:
+            pytest.fail("C2PA_REQUIRE_SIGN_LADDER=1 requires cbor2 for real ladder acceptance")
+        pytest.skip("cbor2 is unavailable for real ladder inspection")
     if not binding._HAS_SIGN_LADDER:
-        if os.environ.get("C2PA_REQUIRE_SIGN_LADDER"):
+        if required:
             pytest.fail(
                 "C2PA_REQUIRE_SIGN_LADDER is set but the loaded native library "
                 "has no c2pa_builder_sign_ladder"
@@ -394,3 +406,46 @@ def test_a_real_ladder_signs_and_validates(signer, tmp_path):
         assert failures <= {"signingCredential.untrusted"}, f"{dest.name}: {failures}"
         manifests.append((active, json.dumps(report["manifests"], sort_keys=True)))
     assert manifests[0] == manifests[1], "the renditions do not carry the identical manifest"
+
+
+def test_embedded_manifest_skips_the_eight_byte_merkle_offset():
+    manifest = b"jumbf manifest bytes"
+    payload = C2PA_UUID + bytes(4) + b"manifest\0" + (8).to_bytes(8, "big") + manifest
+    data = (len(payload) + 8).to_bytes(4, "big") + b"uuid" + payload
+    assert _embedded_manifest(data) == manifest
+
+
+@pytest.mark.parametrize("toggle", [0x03, 0x02, 0x01, 0x00])
+def test_merkle_label_uses_label_present_not_requestable(toggle):
+    cbor2 = pytest.importorskip("cbor2")
+
+    def box(kind, payload):
+        return (len(payload) + 8).to_bytes(4, "big") + kind + payload
+
+    maps = [{"uniqueId": 1}, {"uniqueId": 2}]
+    description = bytes(16) + bytes([toggle]) + b"c2pa.hash.bmff.v3\0"
+    manifest = box(b"jumb", box(b"jumd", description) + box(b"cbor", cbor2.dumps({"merkle": maps})))
+    if toggle & 0x02:
+        assert _merkle_maps(manifest) == maps
+    else:
+        with pytest.raises(AssertionError, match="expected one bmff hash assertion, found 0"):
+            _merkle_maps(manifest)
+
+
+@pytest.mark.parametrize("required", ["1", "0"])
+def test_missing_cbor_is_handled_before_real_signing(monkeypatch, tmp_path, required):
+    import builtins
+
+    original = builtins.__import__
+
+    def without_cbor(name, *args, **kwargs):
+        if name == "cbor2":
+            raise ImportError("synthetic missing cbor2")
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_cbor)
+    monkeypatch.setenv("C2PA_REQUIRE_SIGN_LADDER", required)
+    exception = pytest.fail.Exception if required == "1" else pytest.skip.Exception
+    with pytest.raises(exception, match="cbor2"):
+        test_a_real_ladder_signs_and_validates(None, tmp_path)
+    assert list(tmp_path.iterdir()) == []

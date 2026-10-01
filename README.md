@@ -71,13 +71,15 @@ This project is licensed under the Apache License 2.0 and the MIT License. See t
 ## Castlabs Stable fMP4 Hotfix
 
 The dedicated `stable-fmp4-v1` release profile targets
-`c2pa-python==0.31.0+stardustproof.5` and native `0.80.0`, preserving default
+unreleased `c2pa-python==0.31.0+stardustproof.6` and native `0.80.0`, preserving default
 OpenSSL crypto without importing the live-video VSI runtime. Release context:
 `castlabs-stable-fmp4`. The approved native source is
-`589174898eca4c2c42289d3251c0619420806f43`; its exact Cargo.lock digest is pinned
+`75f6df217e9bdd11a82e62b42ae550b7d91e9d04`; its exact Cargo.lock digest is pinned
 in the stable schema-2 release lock. See
 [the stable release contract and runbook](release/STABLE-FMP4.md) for the exact
 approval gate, artifacts, mandatory real-native tests and publication safeguards.
+This is release preparation, not completed platform-wheel qualification. The
+published `.5` release and its immutable tag/assets remain unchanged.
 
 ### ABR ladder signing (`Builder.sign_ladder`)
 
@@ -91,23 +93,29 @@ That native symbol is **optional**: the binding imports against any stable
 library, records whether the symbol is present in `c2pa.c2pa._HAS_SIGN_LADDER`,
 and `sign_ladder` raises `C2paError.NotSupported` when it is absent. The
 `0.31.0+stardustproof.5` library does not carry it; a release built from a
-native source that includes castlabs/c2pa-rs#9 does. The builder is borrowed
+native source that includes castlabs/c2pa-rs#9 does, including the reviewed `.6`
+native pin. The builder is borrowed
 by the call and stays usable afterwards; release it with `close()` as usual.
 
 Outputs must not exist yet -- the native writer creates each one and never
 overwrites, and a destination that already existed is refused before anything
-is written and is never touched. If the native call fails it removes what is
-then at the output paths it reserved -- by path and best effort, so under the
-stable-path assumption that is exactly its own outputs, and a failed removal is
-not reported. A Python-side failure while copying the returned manifest
+is written and is never touched. If the native call fails, cleanup removes a
+reserved output path only when its file identity still matches the reservation.
+Known different-file replacements and paths whose identity cannot be checked are
+preserved; links to the same reserved file may still be removed. Identity checks
+are not locks: a replacement between check and path-based unlink remains possible.
+Cleanup is best effort, and lookup/removal failures are not reported. Keep output
+paths stable in a directory you control throughout the call. A Python-side failure
+while copying the returned manifest
 happens *after* native signing has succeeded, so the signed outputs are then in
 place. Do not infer from an exception that no output exists; discard only the
-leftovers at the destinations you passed, never a pre-existing file such as a
-source or a link to one. Sources that already carry a C2PA manifest are
+leftovers after confirming they belong to your call, never a pre-existing file,
+source, link to a source or someone else's replacement. Sources that already carry a C2PA manifest are
 refused.
 
 `tests/test_builder_sign_ladder.py` covers the binding against a stand-in for
 the native function on any library, and signs a real two-rendition ladder when
 the loaded library has the symbol. Set `C2PA_REQUIRE_SIGN_LADDER=1` in a lane
-whose library is supposed to carry it, so its absence fails instead of
-skipping.
+whose library is supposed to carry it, so its absence or missing `cbor2` fails
+instead of skipping. The `.6` installed-wheel lane requires this on both platforms
+and every supported Python version.

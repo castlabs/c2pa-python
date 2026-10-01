@@ -107,10 +107,10 @@ def test_committed_approval_matches_reviewed_native_pins():
     lock = release.load_lock()
     assert lock["releaseContext"] == "castlabs-stable-fmp4"
     assert lock["profileId"] == "stable-fmp4-v1"
-    assert lock["rustSource"]["commit"] == "589174898eca4c2c42289d3251c0619420806f43"
+    assert lock["rustSource"]["commit"] == "75f6df217e9bdd11a82e62b42ae550b7d91e9d04"
     assert (
         lock["rustSource"]["cargoLockSha256"]
-        == "fc10bef635df091377d02cfa9f1597462aa016c3db3439d43451a3b93c37edcf"
+        == "e42129cab9c33fec6f748878d7738ee5dc5ead4537c86512ae654282a68fcc94"
     )
     release.validate_lock(lock)
     schema = json.loads(
@@ -129,6 +129,10 @@ def test_committed_approval_matches_reviewed_native_pins():
     )
     assert result.returncode == 0
     assert result.stdout.strip() == lock["rustSource"]["commit"]
+    gitlink = subprocess.check_output(
+        ["git", "ls-files", "--stage", "c2pa-rs"], cwd=ROOT, text=True,
+    ).split()
+    assert gitlink == ["160000", lock["rustSource"]["commit"], "0", "c2pa-rs"]
 
 
 @pytest.mark.parametrize("constant", ["RUST_COMMIT", "CARGO_LOCK_SHA256"])
@@ -159,6 +163,7 @@ def test_approved_profile_schemas_and_version(approved):
     "section,key,value",
     [
         ("rustSource", "commit", "d" * 40),
+        ("rustSource", "commit", "589174898eca4c2c42289d3251c0619420806f43"),
         ("rustSource", "commit", None),
         ("rustSource", "cargoLockSha256", "d" * 64),
         ("rustSource", "cargoLockSha256", None),
@@ -168,6 +173,7 @@ def test_approved_profile_schemas_and_version(approved):
         ("nativeBuild", "features", ["rust_native_crypto", "unstable_live_video"]),
         ("pythonSource", "releaseBranch", "feat/live-video-vsi"),
         ("package", "version", "0.31.0+stardustproof.2"),
+        ("package", "version", "0.31.0+stardustproof.5"),
     ],
 )
 def test_profile_drift_is_rejected(approved, section, key, value):
@@ -461,11 +467,15 @@ def test_release_packaging_never_rebuilds_or_falls_back(
     )
     namespace = {
         "os": os,
+        "sys": sys,
+        "Path": Path,
+        "__file__": str(ROOT / "setup.py"),
         "shutil": shutil,
         "ARTIFACTS_DIR": tmp_path / "artifacts",
         "PACKAGE_LIBS_DIR": tmp_path / "libs",
         "get_platform_identifier": lambda: LINUX,
     }
+    monkeypatch.setattr(sys, "path", list(sys.path))
     monkeypatch.setitem(sys.modules, "scripts.castlabs_release", release)
     monkeypatch.setenv("CASTLABS_STABLE_RELEASE_TARGET", LINUX)
     exec(
@@ -780,7 +790,7 @@ def test_workflow_is_dedicated_pinned_all_platform_and_no_skip():
     jobs = workflow["jobs"]
     assert (
         jobs["release"]["if"]
-        == "github.event_name == 'push' && github.ref == 'refs/tags/castlabs-v0.31.0+stardustproof.5'"
+        == "github.event_name == 'push' && github.ref == 'refs/tags/castlabs-v0.31.0+stardustproof.6'"
     )
     assert set(jobs["release"]["needs"]) == {
         "prepare",
@@ -854,7 +864,7 @@ def test_tag_filter_matches_literal_plus_under_actions_pattern_rules():
     patterns = workflow["on"]["push"]["tags"]
     assert len(patterns) == 1
     pattern = patterns[0]
-    assert pattern == r"castlabs-v0.31.0\+stardustproof.5"
+    assert pattern == r"castlabs-v0.31.0\+stardustproof.6"
     assert f"      - '{pattern}'" in text
     matcher = compile_filter(pattern)
     assert matcher.fullmatch(release.RELEASE_TAG)
@@ -864,6 +874,7 @@ def test_tag_filter_matches_literal_plus_under_actions_pattern_rules():
         release.RELEASE_TAG.replace("castlabs-", ""),
         "castlabs-v0.31.0+stardustproof.3",
         "castlabs-v0.31.0+stardustproof.4",
+        "castlabs-v0.31.0+stardustproof.5",
         release.RELEASE_TAG + "-extra",
     ):
         assert not matcher.fullmatch(invalid)
@@ -879,7 +890,7 @@ def test_tag_filter_matches_literal_plus_under_actions_pattern_rules():
 
 @pytest.mark.parametrize("target", [LINUX, WINDOWS])
 @pytest.mark.parametrize("mutation", [None, "zero", "missing", "ignored", "wrong", "failed"])
-def test_native_tfra_gate_requires_every_test(monkeypatch, tmp_path, target, mutation):
+def test_native_tfra_gate_requires_every_test(monkeypatch, tmp_path, capsys, target, mutation):
     names = [
         "versions_widths_and_large_headers_preserve_every_non_offset_byte",
         "splice_boundaries_use_original_coordinates",
@@ -911,12 +922,12 @@ def test_native_tfra_gate_requires_every_test(monkeypatch, tmp_path, target, mut
             "--format", "pretty", "--color", "never",
         ]
         assert kwargs == {
-            "cwd": tmp_path.resolve(), "check": True,
+            "cwd": tmp_path.resolve(), "check": False,
             "stdout": subprocess.PIPE, "text": True,
         }
         if mutation == "failed":
-            raise subprocess.CalledProcessError(1, command)
-        return SimpleNamespace(stdout=output)
+            return subprocess.CompletedProcess(command, 1, stdout="fixture cargo failure details")
+        return subprocess.CompletedProcess(command, 0, stdout=output)
 
     monkeypatch.setattr(release.subprocess, "run", run)
     args = release.parser().parse_args([
@@ -927,26 +938,184 @@ def test_native_tfra_gate_requires_every_test(monkeypatch, tmp_path, target, mut
     else:
         with pytest.raises((SystemExit, subprocess.CalledProcessError)):
             args.func(args)
+        if mutation == "failed":
+            assert "fixture cargo failure details" in capsys.readouterr().out
 
 
-def test_both_platform_builds_require_native_tfra_before_wheel_staging():
+@pytest.mark.parametrize("command", ["cargo-tfra-tests", "cargo-ladder-tests"])
+def test_both_platform_builds_require_native_gates_before_wheel_staging(command):
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/castlabs-stable-fmp4-release.yml").read_text()
     )
     for platform, target in (("linux", LINUX), ("windows", WINDOWS)):
         steps = workflow["jobs"][platform]["steps"]
-        gate = [step for step in steps if "cargo-tfra-tests" in step.get("run", "")]
+        gate = [step for step in steps if command in step.get("run", "")]
         assert len(gate) == 1
         step = gate[0]
         assert "if" not in step and "continue-on-error" not in step
         script = step["run"]
         assert f"--target {target}" in script
-        assert script.index("cargo-build") < script.index("cargo-tfra-tests") < script.index("stage-native")
+        assert script.index("cargo-build") < script.index(command) < script.index("stage-native")
         if platform == "windows":
-            after_gate = script[script.index("cargo-tfra-tests"):script.index("stage-native")]
+            after_gate = script[script.index(command):script.index("stage-native")]
             assert "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }" in after_gate
         else:
             assert "bash -euxo pipefail" in script
+
+
+@pytest.mark.parametrize("target", [LINUX, WINDOWS])
+@pytest.mark.parametrize("bad_suite", range(4))
+@pytest.mark.parametrize("mutation", [
+    None, "zero", "missing", "ignored", "wrong", "failed", "count",
+    "duplicate", "extra", "extra-summary", "failed-record",
+])
+def test_native_ladder_gate_requires_exact_suites(monkeypatch, tmp_path, capsys, target, bad_suite, mutation):
+    suites = [
+        ("c2pa", "assertions::bmff_hash::single_file_ladder_tests::", [
+            "ladder_binds_every_rendition_to_its_own_map",
+            "ladder_verifies_after_signing_when_asked",
+            "ladder_of_one_matches_signing_that_rendition_alone",
+            "ladder_rejects_mixed_and_overlapping_input",
+            "ladder_never_overwrites_an_existing_file",
+            "ladder_rejects_a_rendition_that_already_carries_a_manifest",
+            "ladder_binds_unequal_fragment_counts_and_distinct_track_ids",
+            "ladder_leaves_nothing_behind_when_signing_itself_fails",
+            "ladder_cleanup_preserves_a_replacement_and_the_renamed_reservation",
+            "ladder_dynamic_assertion_endorses_the_finished_binding",
+        ]),
+        ("c2pa", "store::tests::test_fragmented_refuses_", [
+            "an_empty_fragment_match_before_writing_anything",
+            "rendition_directories_that_differ_only_by_case",
+            "fragments_that_flatten_onto_each_other", "the_same_init_twice",
+        ]),
+        ("c2pa-c-ffi", "c_api::tests::sign_ladder", ["_through_the_c_api"]),
+        ("c2pa-c-ffi", "c_api::tests::sign_fragmented", [
+            "_glob_returns_the_manifest_embedded_in_every_rendition",
+            "_names_a_glob_that_matches_the_init",
+            "_refuses_an_output_that_is_a_source_directory",
+            "_refuses_fragments_that_flatten_onto_the_init_name",
+            "_refuses_renditions_whose_directories_share_a_name",
+        ] + (["_refuses_output_directories_that_alias_one_another"] if target == LINUX else [])),
+    ]
+    calls = []
+
+    def run(command, **kwargs):
+        index = len(calls)
+        calls.append(command)
+        package, prefix, names = suites[index]
+        assert command == [
+            "cargo", "+1.88.0", "test", "--release", "--locked", "--target",
+            target, "--package", package, "--lib", "--features", "file_io",
+            prefix, "--", "--include-ignored", "--format", "pretty", "--color", "never",
+        ]
+        assert kwargs == {"cwd": tmp_path.resolve(), "check": False,
+                          "stdout": subprocess.PIPE, "text": True}
+        records = [f"test {prefix}{name} ... ok" for name in names]
+        summary = (f"test result: ok. {len(names)} passed; 0 failed; 0 ignored; "
+                   "0 measured; 827 filtered out; finished in 0.02s")
+        if index == bad_suite:
+            if mutation == "failed":
+                return subprocess.CompletedProcess(command, 1, stdout="fixture cargo failure details")
+            if mutation == "zero":
+                records = []
+                summary = summary.replace(f"{len(names)} passed", "0 passed")
+            elif mutation == "missing":
+                records.pop()
+            elif mutation == "ignored":
+                summary = summary.replace("0 ignored", "1 ignored")
+            elif mutation == "wrong":
+                records[0] = "test unrelated::smoke ... ok"
+            elif mutation == "count":
+                summary = summary.replace(f"{len(names)} passed", "99 passed")
+            elif mutation == "duplicate":
+                records.append(records[0])
+            elif mutation == "extra":
+                records.append("test unrelated::smoke ... ok")
+            elif mutation == "extra-summary":
+                summary += "\n" + summary
+            elif mutation == "failed-record":
+                records[0] = records[0].replace("... ok", "... FAILED")
+        return subprocess.CompletedProcess(command, 0, stdout="\n".join([*records, summary]))
+
+    monkeypatch.setattr(release.subprocess, "run", run)
+    args = release.parser().parse_args([
+        "cargo-ladder-tests", "--rust-root", str(tmp_path), "--target", target,
+    ])
+    if mutation is None:
+        args.func(args)
+        assert len(calls) == 4
+        assert f": {21 if target == LINUX else 20} passed, 0 ignored" in capsys.readouterr().out
+    else:
+        with pytest.raises((SystemExit, subprocess.CalledProcessError)):
+            args.func(args)
+        assert len(calls) == bad_suite + 1
+        if mutation == "failed":
+            assert "fixture cargo failure details" in capsys.readouterr().out
+
+
+def test_installed_wheel_ladder_gate_runs_on_every_python_and_platform():
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/castlabs-stable-fmp4-release.yml").read_text()
+    )
+    for platform in ("linux", "windows"):
+        job = workflow["jobs"][f"test-{platform}-wheel"]
+        assert job["strategy"]["matrix"]["python"] == ["3.10", "3.11", "3.12", "3.13"]
+        steps = [step for step in job["steps"] if "test_builder_sign_ladder.py" in step.get("run", "")]
+        assert len(steps) == 1
+        step = steps[0]
+        assert "if" not in step and "continue-on-error" not in step
+        assert step["env"]["C2PA_REQUIRE_SIGN_LADDER"] == "1"
+        assert step["env"]["CASTLABS_RELEASE_EXPECTED_VERSION"] == release.RELEASE_VERSION
+        script = step["run"]
+        assert "-m venv" in script and "cbor2==5.6.5" in script
+        assert script.index("test_builder_sign_ladder.py") < script.index('matrix.python')
+        for variable in ("PYTHONPATH", "C2PA_LIBRARY_NAME", "C2PA_LIBRARY_PATH", "LD_LIBRARY_PATH"):
+            assert variable in script
+    smoke = (ROOT / "tests/test_castlabs_release_smoke.py").read_text()
+    assert 'Path(binding.__file__).resolve().parent == package.parent' in smoke
+    assert 'package.is_relative_to(Path(sys.prefix).resolve())' in smoke
+
+
+def test_legacy_workflows_refuse_current_and_published_stable_versions():
+    for name in ("build.yml", "build-release-wheel.yml"):
+        text = (ROOT / ".github/workflows" / name).read_text()
+        for suffix in (3, 4, 5, 6):
+            assert f"0.31.0+stardustproof.{suffix}" in text
+        assert "Use castlabs-stable-fmp4-release.yml" in text
+
+
+@pytest.mark.parametrize("name", ["build.yml", "build-release-wheel.yml"])
+def test_legacy_release_refusal_executes_for_current_candidate(name):
+    workflow = yaml.safe_load((ROOT / ".github/workflows" / name).read_text())
+    job = "read-version" if name == "build.yml" else "build-wheel"
+    step_name = "Reserve stable hotfix for the schema-2 lane" if name == "build.yml" else "Validate release inputs"
+    step = next(step for step in workflow["jobs"][job]["steps"] if step.get("name") == step_name)
+    result = subprocess.run(
+        ["bash", "-c", step["run"]], cwd=ROOT, capture_output=True, text=True,
+        env={**os.environ, "INPUT_RELEASE_VERSION": release.RELEASE_VERSION,
+             "REF_PROTECTED": "true", "GITHUB_REF_NAME": "main", "DEFAULT_BRANCH": "main"},
+    )
+    assert result.returncode != 0
+    assert "Use castlabs-stable-fmp4-release.yml" in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("mutation", ["unknown-target", "missing-native", "missing-lock"])
+def test_ladder_gate_fails_before_cargo_without_approved_inputs(monkeypatch, tmp_path, mutation):
+    def unexpected_run(*args, **kwargs):
+        pytest.fail("Cargo must not execute with unapproved inputs")
+
+    monkeypatch.setattr(release.subprocess, "run", unexpected_run)
+    target = LINUX
+    if mutation == "unknown-target":
+        target = "aarch64-unknown-linux-gnu"
+    else:
+        constant = "RUST_COMMIT" if mutation == "missing-native" else "CARGO_LOCK_SHA256"
+        monkeypatch.setattr(release, constant, None)
+    args = release.parser().parse_args([
+        "cargo-ladder-tests", "--rust-root", str(tmp_path), "--target", target,
+    ])
+    with pytest.raises(SystemExit, match="unknown target|missing approved stable"):
+        args.func(args)
 
 
 @pytest.mark.parametrize(
@@ -967,8 +1136,10 @@ def test_both_platform_builds_require_native_tfra_before_wheel_staging():
         ("push", "refs/tags/castlabs-v0.31.0+stardustproof.2", "", False),
         ("push", "refs/tags/castlabs-v0.31.0+stardustproof.3", "", False),
         ("push", "refs/tags/castlabs-v0.31.0+stardustproof.4", "", False),
+        ("push", "refs/tags/castlabs-v0.31.0+stardustproof.5", "", False),
         ("push", "refs/tags/v0.31.0+stardustproof.4", "", False),
         ("push", "refs/tags/v0.31.0+stardustproof.5", "", False),
+        ("push", "refs/tags/v0.31.0+stardustproof.6", "", False),
         ("pull_request", "refs/pull/1/merge", SOURCE, False),
     ],
 )
@@ -1032,11 +1203,15 @@ def test_smoke_fixture_and_cbor_inspection_are_self_contained():
         return (len(payload) + 8).to_bytes(4, "big") + kind + payload
 
     assertion = {"merkle": [{"initHash": bytes(32), "count": 2}]}
-    description = bytes(16) + b"\x01c2pa.hash.bmff.v3\0"
+    description = bytes(16) + b"\x03c2pa.hash.bmff.v3\0"
     jumbf = box(
         b"jumb", box(b"jumd", description) + box(b"cbor", cbor2.dumps(assertion))
     )
     assert namespace["bmff_assertions"](jumbf) == [assertion]
+    label_present_only = jumbf.replace(description, bytes(16) + b"\x02c2pa.hash.bmff.v3\0")
+    assert namespace["bmff_assertions"](label_present_only) == [assertion]
+    requestable_only = jumbf.replace(description, bytes(16) + b"\x01c2pa.hash.bmff.v3\0")
+    assert namespace["bmff_assertions"](requestable_only) == []
     proof = {"uniqueId": 0, "localId": 0, "location": 1, "hashes": None}
     content = box(b"uuid", uuid + bytes(4) + b"merkle\0" + cbor2.dumps(proof))
     assert namespace["proof_boxes"](content) == [(0, proof)]

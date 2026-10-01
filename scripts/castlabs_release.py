@@ -28,11 +28,11 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / "release" / "castlabs-stable-fmp4-inputs.lock.json"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-RELEASE_VERSION = "0.31.0+stardustproof.5"
+RELEASE_VERSION = "0.31.0+stardustproof.6"
 # Reviewed stable native source; update these AND the lock/gitlink together.
-RUST_COMMIT: str | None = "589174898eca4c2c42289d3251c0619420806f43"
+RUST_COMMIT: str | None = "75f6df217e9bdd11a82e62b42ae550b7d91e9d04"
 CARGO_LOCK_SHA256: str | None = (
-    "fc10bef635df091377d02cfa9f1597462aa016c3db3439d43451a3b93c37edcf"
+    "e42129cab9c33fec6f748878d7738ee5dc5ead4537c86512ae654282a68fcc94"
 )
 RELEASE_CONTEXT = "castlabs-stable-fmp4"
 PROFILE_ID = "stable-fmp4-v1"
@@ -41,7 +41,7 @@ MANYLINUX_IMAGE = "quay.io/pypa/manylinux_2_28_x86_64"
 MANYLINUX_DIGEST = (
     "sha256:0d9c2a66a745961947a8cecbe217ca0a7ee7a5849ba2517f20f9581d18444977"
 )
-RELEASE_TAG = "castlabs-v0.31.0+stardustproof.5"
+RELEASE_TAG = "castlabs-v0.31.0+stardustproof.6"
 RELEASE_NAME = f"Castlabs c2pa-python {RELEASE_VERSION} (stable fMP4)"
 RELEASE_BODY_MARKER = f"castlabs-stable-fmp4-release:{RELEASE_VERSION}"
 RELEASE_IDENTITY_TEXT = (
@@ -50,7 +50,8 @@ RELEASE_IDENTITY_TEXT = (
 RELEASE_BODY = (
     f"{RELEASE_BODY_MARKER}\n\n"
     f"{RELEASE_IDENTITY_TEXT}. Profile {PROFILE_ID}; context {RELEASE_CONTEXT}. "
-    "Single-file fragmented MP4 and legacy TFRA fixes on native 0.80.0, default OpenSSL crypto. "
+    "Single-file fragmented MP4 ladder signing, identity-guarded cleanup, fragmented refusal "
+    "and legacy TFRA fixes on native 0.80.0, default OpenSSL crypto. "
     "TFRA diagnosis, original per-entry fix and fixture contributed by BibinBaby444. "
     "Regenerate previously corrupted assets from the unsigned master. "
     "No live-video VSI runtime. See the attached "
@@ -248,12 +249,12 @@ def validate_lock(lock: dict[str, Any]) -> None:
     ):
         fail("missing approved stable Cargo.lock pin; release is blocked")
     if lock["package"] != {"name": "c2pa-python", "version": RELEASE_VERSION}:
-        fail("release lock package identity is not 0.31.0+stardustproof.5")
+        fail("release lock package identity is not 0.31.0+stardustproof.6")
     if lock["pythonSource"] != {
         "repository": "castlabs/c2pa-python",
         "url": "https://github.com/castlabs/c2pa-python.git",
         "releaseBranch": "fix/stable-single-file-fmp4",
-        "releaseTag": "castlabs-v0.31.0+stardustproof.5",
+        "releaseTag": "castlabs-v0.31.0+stardustproof.6",
     }:
         fail("unexpected c2pa-python release source policy")
     rust = lock["rustSource"]
@@ -442,10 +443,11 @@ def command_cargo_tfra_tests(args: argparse.Namespace) -> None:
         "--", "--include-ignored", "--format", "pretty", "--color", "never",
     ]
     result = subprocess.run(
-        command, cwd=Path(args.rust_root).resolve(), check=True,
+        command, cwd=Path(args.rust_root).resolve(), check=False,
         stdout=subprocess.PIPE, text=True,
     )
     print(result.stdout, flush=True)
+    result.check_returncode()
     expected = {
         "versions_widths_and_large_headers_preserve_every_non_offset_byte",
         "splice_boundaries_use_original_coordinates",
@@ -467,6 +469,76 @@ def command_cargo_tfra_tests(args: argparse.Namespace) -> None:
     ):
         fail("legacy TFRA gate requires all 10 named tests, zero failures and zero ignores")
     print(f"legacy TFRA gate passed: {args.target}: 10 passed, 0 ignored", flush=True)
+
+
+def command_cargo_ladder_tests(args: argparse.Namespace) -> None:
+    """Require the reviewed ladder/cleanup and segmented refusal suites."""
+    lock = load_lock()
+    validate_lock(lock)
+    if args.target not in lock["targets"]:
+        fail(f"unknown target: {args.target}")
+    suites = (
+        ("c2pa", "assertions::bmff_hash::single_file_ladder_tests::", {
+            "ladder_binds_every_rendition_to_its_own_map",
+            "ladder_verifies_after_signing_when_asked",
+            "ladder_of_one_matches_signing_that_rendition_alone",
+            "ladder_rejects_mixed_and_overlapping_input",
+            "ladder_never_overwrites_an_existing_file",
+            "ladder_rejects_a_rendition_that_already_carries_a_manifest",
+            "ladder_binds_unequal_fragment_counts_and_distinct_track_ids",
+            "ladder_leaves_nothing_behind_when_signing_itself_fails",
+            "ladder_cleanup_preserves_a_replacement_and_the_renamed_reservation",
+            "ladder_dynamic_assertion_endorses_the_finished_binding",
+        }),
+        ("c2pa", "store::tests::test_fragmented_refuses_", {
+            "an_empty_fragment_match_before_writing_anything",
+            "rendition_directories_that_differ_only_by_case",
+            "fragments_that_flatten_onto_each_other",
+            "the_same_init_twice",
+        }),
+        ("c2pa-c-ffi", "c_api::tests::sign_ladder", {
+            "_through_the_c_api",
+        }),
+        ("c2pa-c-ffi", "c_api::tests::sign_fragmented", {
+            "_glob_returns_the_manifest_embedded_in_every_rendition",
+            "_names_a_glob_that_matches_the_init",
+            "_refuses_an_output_that_is_a_source_directory",
+            "_refuses_fragments_that_flatten_onto_the_init_name",
+            "_refuses_renditions_whose_directories_share_a_name",
+        } | ({"_refuses_output_directories_that_alias_one_another"}
+             if args.target == "x86_64-unknown-linux-gnu" else set())),
+    )
+    for package, prefix, names in suites:
+        command = [
+            "cargo", f"+{lock['rustToolchain']['channel']}", "test", "--release",
+            "--locked", "--target", args.target, "--package", package, "--lib",
+            "--features", "file_io", prefix,
+            "--", "--include-ignored", "--format", "pretty", "--color", "never",
+        ]
+        result = subprocess.run(
+            command, cwd=Path(args.rust_root).resolve(), check=False,
+            stdout=subprocess.PIPE, text=True,
+        )
+        print(result.stdout, flush=True)
+        result.check_returncode()
+        expected = {prefix + name for name in names}
+        # Check every test record and the sole summary, not a matching subset.
+        records = re.findall(r"^test (\S+) \.\.\. (.+)$", result.stdout, re.MULTILINE)
+        summaries = re.findall(r"^test result: (.+)$", result.stdout, re.MULTILINE)
+        if (
+            len(records) != len(expected)
+            or {name for name, status in records if status == "ok"} != expected
+            or len(summaries) != 1
+            or not re.fullmatch(
+                rf"ok\. {len(expected)} passed; 0 failed; 0 ignored; 0 measured; \d+ filtered out;"
+                r"(?: finished in \d+(?:\.\d+)?s)?",
+                summaries[0],
+            )
+        ):
+            fail(f"native ladder gate requires all {len(expected)} named tests in {prefix}, "
+                 "zero failures and zero ignores")
+    total = sum(len(names) for _, _, names in suites)
+    print(f"native ladder gate passed: {args.target}: {total} passed, 0 ignored", flush=True)
 
 
 def validate_feature_report(text: str) -> None:
@@ -1729,6 +1801,11 @@ def parser() -> argparse.ArgumentParser:
     tfra.add_argument("--rust-root", required=True, type=Path)
     tfra.add_argument("--target", required=True)
     tfra.set_defaults(func=command_cargo_tfra_tests)
+
+    ladder = commands.add_parser("cargo-ladder-tests")
+    ladder.add_argument("--rust-root", required=True, type=Path)
+    ladder.add_argument("--target", required=True)
+    ladder.set_defaults(func=command_cargo_ladder_tests)
 
     pack = commands.add_parser("pack")
     pack.add_argument("--output", required=True)
