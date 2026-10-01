@@ -25,7 +25,7 @@ import ctypes
 import json
 import os
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest import mock
 
 import pytest
@@ -268,16 +268,21 @@ def test_a_closed_builder_is_refused_before_any_native_call(fake_native, signer)
 # --- marshalling -------------------------------------------------------------
 
 
-def test_paths_reach_c_in_order_as_utf8(fake_native, builder, signer, tmp_path):
+@pytest.mark.parametrize("middle_dest", [
+    Path("out/720p.mp4"), PurePosixPath("out/720p.mp4"), PureWindowsPath("out/720p.mp4"),
+])
+def test_paths_reach_c_in_order_as_utf8(fake_native, builder, signer, tmp_path, middle_dest):
     fake, free = fake_native(result=5, manifest=b"jumbf")
     sources = [tmp_path / "1080p.mp4", "720p/vidéo.mp4", os.fspath(tmp_path / "360p.mp4")]
-    dests = ["out/1080p.mp4", Path("out/720p.mp4"), b"out/360p.mp4"]  # bytes are paths too
+    dests = ["out/1080p.mp4", middle_dest, b"out/360p.mp4"]  # bytes are paths too
     manifest = builder.sign_ladder(signer=signer, sources=sources, dests=dests)
     assert manifest == b"jumbf"
     (call,) = fake.calls
     assert call["count"] == 3
     assert call["sources"] == [os.fspath(p).encode("utf-8") for p in sources]
-    assert call["dests"] == [b"out/1080p.mp4", b"out/720p.mp4", b"out/360p.mp4"]
+    assert call["dests"] == [
+        p if isinstance(p, bytes) else os.fspath(p).encode("utf-8") for p in dests
+    ]
     free.assert_called_once()
 
 
