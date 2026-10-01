@@ -23,7 +23,7 @@
   dev5 release facts, pins and artifact names remain unchanged. Functional
   native qualification is required, never an optional skip.
 - Pairs with the consolidated native `0.92.0-dev`
-  (`castlabs/c2pa-rs@203dc08d`, Rust 1.96.0) and integrates single-file ladder
+  (`castlabs/c2pa-rs@6b506352`, Rust 1.96.0) and integrates single-file ladder
   signing (`Builder.sign_ladder`). Ladder signing now propagates
   DynamicAssertion and claim-signer interrupt exceptions like the other Builder
   paths. Consume-first FFI calls (Reader/Builder `with_*`) no longer treat a

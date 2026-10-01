@@ -1,12 +1,23 @@
 # Trusted VSI Python Contract
 
 Status: implemented and qualified against the consolidated functional native
-library built from `castlabs/c2pa-rs@5c186c07ac9b432d3b8f1336ecb6ee09518408de`
-(`feat/trusted-vsi-functional`, native `0.92.0-dev`, Rust 1.96.0; debug
-`libc2pa_c.so` SHA-256 `dc79e81a084fc7b25e12423539b137f24d69693da46cb0166cb04538bd5589f9`,
-capability mask 63), following `c2pa-rs` `docs/trusted-vsi-native-contract.md`.
-The Python source integrates single-file ladder signing (`Builder.sign_ladder`)
-and carries the unreleased identity `0.37.13.dev0`. Qualification of source
+library from `castlabs/c2pa-rs` `feat/trusted-vsi-functional` (native
+`0.92.0-dev`, Rust 1.96.0, capability mask 63), following `c2pa-rs`
+`docs/trusted-vsi-native-contract.md`. The paired native is pinned to
+`6b506352800c8225cf5564ce99c726aaa71039f4`: `203dc08d` (ContentAuth main
+`69907b5a` merged) plus CI-only fixes (rustls `0.23.45` / rustls-webpki
+`0.103.15` for RUSTSEC-2026-0285, test-only lint scopes, a feature gate on a
+crate-private helper, rustdoc) with no C ABI or capability change. The Python
+source integrates single-file ladder signing (`Builder.sign_ladder`) and
+carries the unreleased identity `0.37.13.dev0`. The `203dc08d` pairing was
+qualified at source `5c64f2cc090eeb29506bc766faa69b959e4ed982` by hosted
+Linux/Windows paired run `castlabs/c2pa-python` Actions 36793704783 (focused
+186, real-native ladder harness, non-threaded 730, threaded 54, installed-wheel
+186). Qualification of the `6b506352` pairing is recorded on
+castlabs/c2pa-python#4 by run ID.
+
+Earlier evidence: native `5c186c07` (debug `libc2pa_c.so` SHA-256
+`dc79e81a084fc7b25e12423539b137f24d69693da46cb0166cb04538bd5589f9`) at source
 `941c2ad5b57d23f31dbabf9fbef4776878cf630c`: local Linux focused 179 passed,
 real-native ladder harness passed, non-threaded 714 passed, threaded 54 passed,
 installed-wheel 179 passed; hosted Linux/Windows paired run
@@ -207,7 +218,7 @@ Paired tests require the full native library and FAIL under
 `C2PA_TRUSTED_VSI_ABI_REQUIRED=1` (all Linux/Windows qualification jobs); they
 skip only in ad-hoc local runs. `.github/workflows/trusted-vsi-paired.yml`
 builds the native with Rust 1.96.0 from the reviewed consolidated commit
-`203dc08db2bc9548a739bf209e6b510a546d70db` (ContentAuth main `69907b5a` merged;
-previously `5c186c07`). The status block at the top records the `5c186c07` qualification;
-qualification of the `203dc08d` pairing is recorded once its paired run passes
-by full SHA; update that pin (not a branch name) for later native revisions.
+`6b506352800c8225cf5564ce99c726aaa71039f4` (ContentAuth main `69907b5a` merged
+plus CI-only fixes; previously `203dc08d`, before that `5c186c07`). The status
+block at the top records the qualified pairings; update that pin by full SHA
+(not a branch name) for later native revisions.

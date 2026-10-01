@@ -24,5 +24,5 @@ Remaining work is separate from this integration:
   evaluate that ownership lane separately from legacy Windows ARM64 wheel jobs.
 
 Qualify each new merged Python head against the pinned consolidated native
-`203dc08d` before updating the functional branch. These follow-ups do not
+`6b506352` before updating the functional branch. These follow-ups do not
 authorize a dev5 release or change immutable historical release evidence.
