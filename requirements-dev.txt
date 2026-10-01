@@ -6,6 +6,8 @@ toml==0.10.2  # For reading pyproject.toml files
 
 # Testing dependencies
 pytest>=8.1.0
+cbor2>=5.6.0  # Canonical CBOR fixtures for functional trusted-VSI qualification
+packaging>=23.0  # Separate development artifact version validation
 
 # for downloading the library artifacts
 requests>=2.0.0

@@ -19,7 +19,7 @@ A **native pointer** is an address that says where a piece of memory lives. The 
 
 The **native side** of the Rust library is reached through its C FFI.
 
-A **handle** is a single native pointer a `ManagedResource` object holds and manages, stored in its `_handle` attribute. Each object owns one handle at a time. The lifecycle machinery is mostly about tracking that one handle: creating it, swapping it, and freeing it.
+A **handle** is the native pointer-shaped value a `ManagedResource` object holds in its `_handle` attribute. Stock 0.91.0 uses real allocation addresses, which can be reused; newer native registries use opaque, non-reused IDs. Python treats both as handles to pass back to native, not memory to dereference. Each object owns one handle at a time.
 
 **Ownership** answers one question: who is responsible for freeing a piece of native memory. Native memory has to be freed (exactly once). The owner is whoever must free it. If nobody frees it, the memory leaks. If two owners each free it, the same memory is freed twice, which corrupts the allocator and can crash the process. So exactly one side owns each pointer at any moment, and that side frees it.
 
@@ -94,7 +94,7 @@ Notes:
 
 ## Python frees only what Python owns
 
-The C FFI is consistent about one thing that shapes this whole layer: some calls consume the pointer passed to them and hand back a replacement, because the native side may free and reallocate the underlying value. A pointer that went into a consuming call must never be freed by Python afterwards. Its address may already have been reallocated to a different object (address space is not infinite, so addresses get reused).
+Some C FFI calls take ownership of a handle and return a replacement. Once ownership actually moves, Python must not free the old handle. A rejected call may leave ownership unchanged, but rejection of a later argument may happen after the managed handle was consumed. On stock 0.91.0, the old allocation address may already belong to a different object; newer opaque IDs are not reused.
 
 Python owns and frees two kinds of things: the **single current native handle** for each object, and **Python-side resources it created itself** (stream wrappers, callbacks pinned so the native side can call back into them, caches). It swaps that one tracked handle to whatever a consuming call returns and, on the success path, never frees the value the call took. Beyond those owned resources it also carries bookkeeping it never frees (lifecycle state, the owning process ID, a borrowed reference to a caller-supplied `Context`), and it does not manage native reallocation itself: it swaps handles and, on the ambiguous failure paths, reads the native error tags to decide who still owns the pointer rather than assuming.
 
@@ -102,7 +102,7 @@ Therefore, the managed resources have the following principles:
 
 - Each `ManagedResource` holds exactly one `_handle`. `_swap_handle()` replaces it with the pointer a consuming call returned and does not free the old value, since the native side took it (see [Consume-and-swap](#consume-and-swap)).
 - `_teardown(free_handle=False)`, `_consume_no_replacement()`, and `_consume_into()` all close or advance the object without calling `c2pa_free`, because ownership moved to the native side.
-- Only a few sites free a live handle. Two of them free a pointer this layer still provably owns: normal teardown (`_teardown(free_handle=True)`), and the create-then-validate path, which frees a freshly created pointer if activation fails. The third, `_release_handle()`, is a *guarded* free used only when ownership is genuinely unknown (a consuming call failed without setting an error, or a Python exception was raised before the native side reported anything): if the native side already took the pointer, its address is no longer in the registry and `c2pa_free` is a `-1` no-op, so the free touches no memory. No path frees a pointer known to have been consumed and reallocated (see [Why an ownership-taken failure does not free](#why-an-ownership-taken-failure-does-not-free)).
+- Normal teardown (`_teardown(free_handle=True)`) and create-then-validate failure free handles Python still owns. `_release_handle()` issues a *guarded* free when ownership cannot be established: a missing native error, an exception other than `ctypes.ArgumentError`, or a consume-first registry rejection without a comparable handle value. The registry rejects an untracked value, but a stale stock address may have been reused; this is not a universal stale-free guarantee. Known-consumed handles are closed without freeing (see [Why an ownership-taken failure does not free](#why-an-ownership-taken-failure-does-not-free)).
 - `_release()` drops stream wrappers, callbacks, and caches before the native pointer is freed (see [Subclass-specific cleanup with `_release()`](#subclass-specific-cleanup)).
 
 ### Double-free risk mitigations
@@ -111,7 +111,7 @@ Three distinct risks. Two have a mechanism in this layer; the third is the calle
 
 | Hazard | Covered by | How |
 | --- | --- | --- |
-| Freeing a pointer a consuming call already took (single flow) | `_swap_handle` / `_teardown(free_handle=False)` triage | The consumed pointer is abandoned, never freed. The retained-vs-consumed decision reads the native error tag (`UntrackedPointer:` / `WrongPointerType:` mean not taken). |
+| Freeing a pointer a consuming call already took (single flow) | `_swap_handle` / `_teardown(free_handle=False)` triage | Known-consumed handles are never freed. Failure triage uses call order and, for consume-first registry rejections, compares the rejected value with the managed handle; the tag alone does not establish retention. |
 | A forked child freeing a pointer its parent owns | PID stamp (`record_owner_pid` / `is_foreign_process`) | Cleanup in a process that did not allocate the pointer nulls the handle and marks `CLOSED` without freeing (see [Fork safety](#fork-safety)). |
 | Two **threads** in one process racing frees on distinct objects, where the allocator recycles a just-freed address | Not covered here | `ManagedResource` has no lock and no thread stamping. The PID stamp cannot see it: sibling threads share a PID. Safety for genuinely shared handles must come from the caller's own synchronization or from the native registry, not this layer. |
 
@@ -123,7 +123,7 @@ The PID stamp is fork-only: it compares process IDs, and two threads in the same
 
 | Guarantee | Description |
 | --- | --- |
-| **Pointer freed exactly once** | Each native pointer is passed to `c2pa_free` at most once. No leak (zero frees) and no double-free. |
+| **Ownership-aware release** | Python frees handles it still owns and does not free handles known to have been consumed. Unknown-ownership failures use the guarded-free fallback described below. |
 | **Cleanup is idempotent** | Calling `close()` (or exiting a `with` block) multiple times is safe; after the first successful cleanup, further calls do nothing. |
 | **Cleanup never raises (ordinary errors)** | The cleanup path catches and logs `Exception`, never re-raising it. `_release()` runs inside `_safe_release()`, which logs and swallows; the `c2pa_free` call has its own handler; and `_cleanup_resources()` wraps both. The original exception from the `with` block (if any) is never masked. **Asynchronous interrupts are the deliberate exception.** The cleanup handlers catch `Exception`, which excludes the `BaseException` signals the interpreter raises to unwind a process (a cancellation request or an exit in progress). Those propagate through cleanup untouched, and the remaining free may not run. Such a signal means the process is being torn down and its address space, native allocations included, is about to be reclaimed as a whole. Catching it would suppress a shutdown the caller asked for in order to complete a free that is about to become irrelevant, so the handlers stay scoped to `Exception`. |
 | **State transitions are one-way** | Lifecycle moves only from UNINITIALIZED to ACTIVE to CLOSED. A closed resource cannot be reactivated. |
@@ -151,9 +151,9 @@ def _free_native_ptr(ptr):
 
 All native pointers are freed through this single path, regardless of which constructor created them (`c2pa_reader_from_stream`, `c2pa_builder_from_json`, `c2pa_signer_from_info`, etc.). No explicit `ctypes.cast` is needed: `c2pa_free`'s declared argtype is `c_void_p`, so ctypes converts any pointer instance on the way in. Casting explicitly with `ctypes.cast(ptr, c_void_p)` performs the same conversion but leaves a reference cycle behind on every call, which creates additional load on the (Python) garbage collector.
 
-It returns `c2pa_free`'s status code: `0` when the pointer was really freed, `-1` when the native registry rejected an already-consumed or untracked address. That `-1` is expected on the guarded-free paths and is handled gracefully by the native lib too.
+It returns `c2pa_free`'s status code: `0` when a tracked value was freed, `-1` when the registry rejected it. An untracked handle is rejected, but a stale stock address that has been reused can identify a different live allocation.
 
-`ManagedResource` guarantees that `c2pa_free` is called exactly once per pointer: not zero times (leak), not twice (double-free).
+Normal owned cleanup calls `c2pa_free` once; consumed handles are not freed by Python. Unknown-ownership failures use the guarded-free fallback.
 
 ## Lifecycle states
 
@@ -186,14 +186,14 @@ Each transition has one method that performs it, and subclasses must go through 
 
 Because activation is the only way in, no code path can leave an object ACTIVE while holding a null handle.
 
-Two terms recur throughout this document. An **owned free** calls `c2pa_free` on a pointer this layer still provably holds: the normal `close()` / `__del__` path and the create-then-validate failure path both do this. A **guarded free** is the same call made when ownership is uncertain, which is what `_release_handle()` does: the native pointer registry tolerates being asked to free an address it no longer tracks, returning `-1` instead of crashing, so the free does not double-free a pointer the native side already took. That tolerance makes a guarded free safe to *issue*, but it is not free of consequence under concurrency — on a branch where the value is already known to be consumed, the layer skips the free rather than relying on the `-1`, because a stale free can race a recycled address (see [Why an ownership-taken failure does not free](#why-an-ownership-taken-failure-does-not-free)).
+An **owned free** calls `c2pa_free` on a handle Python still owns (normal cleanup or create-then-validate failure). A **guarded free** makes that call when ownership is uncertain, via `_release_handle()`. The registry rejects untracked values, but stock allocation addresses can be recycled, so generic guarded frees are not guaranteed harmless. Known-consumed branches skip the free (see [Why an ownership-taken failure does not free](#why-an-ownership-taken-failure-does-not-free)).
 
 `_teardown(free_handle)` is the one method that performs the ACTIVE to CLOSED transition, and the boolean decides the only thing that varies between the two exit paths: whether the native pointer is freed. Both paths run `_release()`, set `CLOSED`, and null the handle.
 
 | `free_handle` | When | What it does with the pointer |
 | --- | --- | --- |
-| `True` | Either the pointer is still provably ours (normal `close()`, `__del__`) — an owned free — or ownership is unknown after a failure (`_release_handle()`) — a guarded free. | Calls `c2pa_free`. On the owned paths the pointer is really freed; on the unknown-ownership path the registry returns `-1` without touching memory if the native side already took it. |
-| `False` | The native side already took ownership: a consuming FFI call swallowed the pointer, or it passed to another object. | Frees nothing; the new owner does. A `c2pa_free` here would double-free (or hit the guarded `-1` no-op that dirties the error slot and risks racing a recycled address). |
+| `True` | Python still owns the handle, or ownership is unknown after a failure (`_release_handle()`). | Calls `c2pa_free`; an untracked value is rejected, but a reused stock address need not be untracked. |
+| `False` | The native side took ownership. | Frees nothing; native now owns or has dropped the value. Avoids an unnecessary free, error-slot overwrite, and stock address-reuse risk. |
 
 Every public method calls `_ensure_valid_state()` before doing any work, which raises `C2paError` unless the resource is ACTIVE with a non-null handle.
 
@@ -318,6 +318,12 @@ While `ACTIVE`, callers can use `.add_ingredient()`, `.add_action()`, etc. repea
 
 The native sign calls borrow the builder's pointer rather than taking ownership of it, so `Builder` never marks it consumed and the pointer is freed normally through `c2pa_free`. The close enforces single use; it is not a memory-management requirement. `sign_fragmented()` also borrows its explicit Signer, which remains active, and copies its tracked output buffer before freeing that buffer once through `c2pa_free`.
 
+[`sign_ladder()`](ladder-signing.md) follows the same single-use rule after an
+attempted native call, while preflight errors (including unavailable capability)
+leave the builder usable. The explicit signer is borrowed and remains usable.
+Any returned manifest buffer is freed through `ManagedResource._free_native_ptr`
+(`c2pa_free`) even when signing or copying fails, without masking the original error.
+
 ## Ownership transfer
 
 Some operations transfer a native pointer from one object to another. When this happens, the original object must stop managing the pointer (e.g. so it is not freed twice).
@@ -347,14 +353,14 @@ sequenceDiagram
     alt status 0 (success)
         S->>S: _teardown(free_handle=False)
         Note right of S: Consumed: native took the signer
-    else pre-consume rejection (UntrackedPointer / WrongPointerType)
+    else registry rejection (UntrackedPointer / WrongPointerType / PointerInUse / WrongWrapperKind)
         Note right of S: Rejected before ownership moved:<br/>Signer retained, typed error raised
     else other error
         S->>S: _teardown(free_handle=False)
         Note right of S: Native took it then failed and dropped it
     end
 
-    X->>B: _consume_into(build)
+    X->>B: _consume_into(build, consumes_first=True)
     B->>N: c2pa_context_builder_build(builder_ptr)
     N-->>X: context_ptr (builder consumed)
     X->>X: _activate(context_ptr) (outside the with)
@@ -363,7 +369,7 @@ sequenceDiagram
 Details in that sequence that are easy to get wrong:
 
 - Callback references are copied to the Context *before* the transfer. A successful consume runs `_release()`, which drops the Signer's claim callback and DynamicAssertion registration list; copying either afterwards would leave native code with a callable that Python may already have collected. The DynamicAssertion registration tuples also carry the original Python callback and its exception state so callback failures can be re-raised after the FFI signing call returns.
-- `set_signer` does not always take the pointer. A pre-consume rejection (`UntrackedPointer:` / `WrongPointerType:`) leaves the Signer `ACTIVE` and retained, so the triage must read the native error before deciding to close it. Treating every failure as "consumed" would close a signer the native side never took.
+- `set_signer` validates before consuming the signer. Any registry rejection retains the Signer, whether it identifies the signer, the builder, or no address. This uses the helpers' default `consumes_first=False`. `PointerInUse:` and `WrongWrapperKind:` occur only with newer opaque registries.
 - A `ctypes.ArgumentError` from `set_signer` is re-raised untouched by `_invoke_consume`: marshalling failed, the native function never ran, and the Signer still owns its handle. Only calls that reached native go through the consumed/retained triage.
 - The builder is never held as a raw local across the signer and build calls. `_NativeBuilder`'s `with` block owns it: a settings error, a retained-signer error, a build rejection, or an async interrupt all free it through `close()`, and a successful build consumes it so `close()` is then a no-op. The old raw-pointer recovery block that used to free `builder_ptr` on the un-reached-build path is gone.
 
@@ -404,36 +410,29 @@ Every call of this shape goes through one helper, which takes the FFI call as a 
 ```python
 # Reader.with_fragment() internally does:
 self._consume_and_swap(
-    lambda handle: _lib.c2pa_reader_with_fragment(handle, format_bytes, stream),
-    Reader._ERROR_MESSAGES['reader_error'])
+    lambda handle: _lib.c2pa_reader_with_fragment(
+        handle, format_arg, main_obj._stream, frag_obj._stream),
+    Reader._ERROR_MESSAGES['fragment_error'], consumes_first=True)
 ```
 
 The call is passed as a lambda because the helper supplies the handle and, on success, replaces it via `_swap_handle()`.
 
-The helper exists because a failed return can be ambiguous. The native functions run in phases: it validates the **borrowed pointer** (passed in without transferring ownership; the caller still owns it unless the callee explicitly takes it over), then takes ownership, then does the work. A failure in the first phase and a failure after the second come back to Python as the same value (a null pointer, or a non-zero status), but they leave ownership in opposite places.
+The return value alone cannot establish ownership. All three consume helpers accept the keyword-only `consumes_first=False`. Validate-first `c2pa_context_builder_set_signer` retains the signer on any registry rejection. These six calls instead take ownership of the managed handle before validating later arguments and use `consumes_first=True`: `c2pa_context_builder_build`, `c2pa_reader_with_stream`, `c2pa_reader_with_manifest_data_and_stream`, `c2pa_reader_with_fragment`, `c2pa_builder_with_definition`, and `c2pa_builder_with_archive`.
 
-```mermaid
-flowchart TD
-    CALL["FFI call(handle)"] --> V{"validate borrowed handle"}
-    V -->|invalid| R["reject: handle NOT taken<br/>sets UntrackedPointer / WrongPointerType"] --> F1["returns a failure value<br/>(null, or non-zero status)"]
-    V -->|valid| TAKE["take ownership of handle"]
-    TAKE --> WORK{"execute function logic"}
-    WORK -->|fails| DROP["native drops the value itself<br/>sets some other error"] --> F2["returns a failure value<br/>(null, or non-zero status)"]
-    WORK -->|succeeds| OK["returns replacement / 0 / new pointer"]
+Registry rejections start with `UntrackedPointer:`, `WrongPointerType:`, `PointerInUse:`, or `WrongWrapperKind:`, optionally wrapped in stock native's `Other: ` prefix. Tags quoted inside another error's payload do not establish ownership. The last two tags are addressless and exist only in newer opaque registries. Failure triage is:
 
-    F1 -.failure value returned to Python.- AMB(["needs to consult error to know failure mode from Python"])
-    F2 -.failure value returned to Python.- AMB
-```
-
-The two failure paths are indistinguishable from the return value alone. Only the native error message set alongside them tells the phases apart:
-
-| Native error | Who owns the handle | What the helper does |
+| Native error / call order | Ownership decision | What the helper does |
 | --- | --- | --- |
-| `UntrackedPointer:` or `WrongPointerType:` | Still ours: rejected before ownership moved | Handle kept, resource stays `ACTIVE`, typed error raised. Normal cleanup frees it later. |
-| Any other error | Taken, then the operation failed | `_teardown(free_handle=False)`: the native side already dropped the value, so nothing is freed here. Resource goes `CLOSED`, error typed from the native message. |
-| No error at all | Unknown | `_release_handle()` guarded free, the caller's message is raised with `"Unknown error"` filled in. |
+| Any registry rejection, validate-first | Managed handle not taken | Retains the handle and `ACTIVE` state; raises the typed native error. |
+| Addressed rejection, consume-first, rejected value equals managed value | Managed handle not taken | Retains the handle and `ACTIVE` state; raises the typed native error. |
+| Addressed rejection, consume-first, known rejected value differs from managed value | Managed handle consumed before another argument was rejected | `_teardown(free_handle=False)`; closes without freeing, raises the typed native error. |
+| Registry rejection, consume-first, missing rejected address or unreadable managed value (`None`) | Cannot establish ownership | Requests native release through `_release_handle()` and closes the Python resource; raises the saved typed native error. |
+| Any non-registry native error | Native took and dropped the value | Closes without freeing; raises the typed native error. |
+| No native error | Unknown | Guarded free and close; raises the caller's message with `"Unknown error"`. |
 
-This error and ownership triage relies on the native error still being readable (and correctly being the last error encountered) after the call returns. Reading an error copies the message out and frees the copy, but leaves the native slot set until the next error overwrites it.
+`_handle_value()` reads the Python handle representation without dereferencing native memory: integers are used directly, otherwise `ctypes.c_void_p.from_buffer(handle).value` reads the stored pointer value. It avoids `ctypes.cast` and its reference cycle; an unreadable representation returns `None`.
+
+Triage saves the native error before cleanup can overwrite it, preserving the exception raised by the wrapper, not restoring the slot itself. A defensive free can leave its own error in the sticky thread-local slot. The wrapper does not clear the slot before the call and trusts each failing native path to set its own error. Reading an error copies the message out and frees the copy, but leaves the slot set until the next error overwrites it.
 
 Three consume helpers share this triage; they differ only in what the FFI call returns on success:
 
@@ -443,23 +442,24 @@ Three consume helpers share this triage; they differ only in what the FFI call r
 | `_consume_no_replacement()` | a status code (`0` = ok) | `_teardown(free_handle=False)`, resource `CLOSED` |
 | `_consume_into()` | a *different* object's pointer | `_teardown(free_handle=False)`, the pointer returned for the caller to own |
 
-`_consume_no_replacement()` is how a `Signer` is fed to a `Context` (`set_signer` returns a status code); `_consume_into()` is how that same `Context` build returns the new context pointer. A failure in any of the three is handled by the same native-error triage, so a pre-consume rejection retains the handle rather than assuming it was taken.
+`_consume_no_replacement()` feeds a `Signer` to a `Context` with the validate-first default; `_consume_into(..., consumes_first=True)` builds the context. All three helpers share the failure triage above.
 
 #### Why an ownership-taken failure does not free
 
-A consuming FFI call can fail. It may reject the borrowed pointer before taking it, or it may take ownership first and then, on a later failure, drop the value itself.
+A consume-first call can reject its own handle before taking it, or consume it and then reject another argument. Only an addressed rejection matching the managed value proves retention on this path. A known different rejected value or a non-registry error closes without freeing: native already owns or has dropped the managed value.
 
-The native error message indicates which of the errors happened. A rejection carries one of the `_PRE_CONSUME_ERROR_TAGS` (`UntrackedPointer:` or `WrongPointerType:`), which means the handle was never taken and is retained. Any other error message means the native side may have taken ownership and already dropped the value. On top of those, preparing the call's own arguments can fail in Python before the native function ever runs (for example, encoding a bad value or a ctypes marshalling error other than `ArgumentError`), and that outcome is handled separately.
+An unnecessary free can overwrite the native error slot. On stock 0.91.0 it can also free an unrelated allocation if the old address has been recycled. Newer opaque IDs avoid address reuse, but that does not justify issuing generic guarded frees for known-consumed handles.
 
-The two settled branches each take the exact action their ownership implies. A pre-consume rejection (an error prefixed `UntrackedPointer:` or `WrongPointerType:`) means the handle is still the caller's, so it is retained and freed later by normal cleanup. Any other native error means the value is already gone, so `_teardown(free_handle=False)` runs the Python-side cleanup without freeing anything.
+`_release_handle()` is the fallback for a missing native error, an exception other than `ctypes.ArgumentError` from `_invoke_consume`, or a consume-first registry rejection without a comparable address. `ctypes.ArgumentError` retains the handle and propagates unchanged because native was not called. For native failures the original error is saved before any guarded free, so cleanup cannot replace the reported failure.
 
-Always calling the guarded free instead, even where the value is known to be gone, is tempting because a stale free looks like a harmless `-1` no-op. It is only harmless while the freed address stays unclaimed. The native registry rejects an address it no longer tracks, but once another thread allocates a fresh tracked object at that recycled address, the registry does track it again — and a stale free aimed at the old value would now find a live entry and destroy a different thread's object. The scenario is unlikely, but not unreachable: it needs a second thread inside its own FFI call, an allocator that hands back the exact address just freed, and that reuse to happen during the (narrow) window between the native drop and this free. But the window is real under concurrent use. The failure is a silent cross-thread corruption rather than a clean error, and the free is not needed in the first place on this branch. So where the value is known to be consumed, the free is skipped rather than issued and left to the registry to reject. The native error slot stays sticky: it holds whatever it last held until the next error overwrites it, and nothing clears it in between. Issuing an unneeded free would set an untracked-pointer error there that a later caller could mistake for the failure it actually asked about, so skipping the free keeps the slot free for the next real error.
-
-`_release_handle()` (a guarded free) is reserved for the two branches where ownership is not known for certain: a Python exception raised before native reports anything, and a failure that leaves the error slot empty (which no defined native failure is expected to produce). In both, a guarded free is a good default, since it is a real free when the handle is still ours and a `-1` no-op when the native side already took it.
+The addressless `PointerInUse:` / `WrongWrapperKind:` fallback is safe with the newer opaque registry: release removes a tracked entry or rejects an already untracked handle without targeting a different allocation. Removal is not necessarily immediate destruction. Outstanding checkout guards retain the entry, so actual cleanup waits until the last guard is dropped. These errors do not exist on stock 0.91.0. Stock emitted addressed-rejection paths provide a comparable managed value, so the guarded-free rejection fallback is unreachable there; this is not a claim that arbitrary stale raw-address frees are safe.
 
 None of this is protected by a lock on the Python side: `ManagedResource` has no thread-safety mechanism of its own, and the retained-vs-consumed guarantee comes entirely from the native pointer registry and its thread-local error slot. As noted under [Which double-free risks this layer guards](#double-free-risk-mitigations), sharing one instance across threads without external synchronization is the caller's responsibility. This is a different hazard from [Fork safety](#fork-safety), which concerns a forked child process, not a thread within the same process.
 
-A consuming C FFI function first removes the pointer from its registry, then reconstructs the owned value from it. `untrack_or_return!` runs ahead of `Box::from_raw` in `c2pa_c_ffi`. If the address is unknown or the wrong type, the untrack step fails before ownership is taken and sets an error whose prefix (`UntrackedPointer:` or `WrongPointerType:`) identifies it as a pre-consume rejection. Once the value has been reconstructed, a later failure simply drops it, the same as any owned value going out of scope. The Python side stays defensive (and as generic as possible) rather than assuming any exact behavior: it retains the handle when it recognizes one of those rejection prefixes, and where the outcome is unclear it falls back to the guarded free. A native side that behaved differently would degrade in one of two bounded ways: If it kept a pointer the Python side treated as consumed, nothing would free that pointer and it would leak. If it had already released a pointer the Python side then tried to free, the registry would not find the address and the free would return `-1` without touching memory.
+Registry rejection describes the rejected argument, not necessarily the managed handle. Correct helper configuration therefore depends on the native call's ownership order, not just an error prefix. A native implementation with a different ownership contract could leak or free the wrong allocation; the fallback is not a general compatibility guarantee.
+
+The remaining real-native concurrency and sticky-error checks are tracked in
+[the roadmap](roadmap.md#native-resource-ownership-follow-ups).
 
 ### Adopting the handle before giving it away
 
@@ -472,9 +472,9 @@ self._create_and_activate(
 
 self._consume_and_swap(
     lambda handle: _lib.c2pa_reader_with_stream(
-        handle, format_bytes, self._own_stream._stream,
+        handle, format_arg, self._own_stream._stream,
     ),
-    Reader._ERROR_MESSAGES['reader_error'])
+    Reader._ERROR_MESSAGES['reader_error'], consumes_first=True)
 ```
 
 Activating a handle that is about to be handed to the native library looks backwards, and there are two reasons for it. `_consume_and_swap` needs an active resource to read the handle from and swap the result into. It also puts the intermediate pointer under normal cleanup before anything can go wrong with it: whichever way the consuming call goes, `close()` and `__del__` will free the pointer if the native side did not take it. The alternative, holding the pointer in a local variable across the call, means every failure path has to decide for itself whether to free it.
@@ -545,6 +545,8 @@ The reason is that ownership runs in the opposite direction. A `Reader` or `Buil
 
 `Stream` tracks its own state with `_closed` and `_initialized` flags rather than `LifecycleState`, but it supports the same three cleanup paths: context manager, explicit `.close()`, and `__del__` fallback.
 
+Python's `C2paStream` declaration is opaque (`_fields_ = []`): it only passes the pointer back to native and never reads its fields. This is safe with both stock 0.91.0's C-layout stream and newer opaque stream handles. `Stream` keeps the Python callback references separately.
+
 ## Which method to use when?
 
 `_create_and_activate`, `_consume_and_swap`, `_consume_no_replacement`,
@@ -557,12 +559,16 @@ different situation when writing a new subclass:
 | An FFI call consumes the current handle and returns a replacement for the same object | `_consume_and_swap(ffi_call, error_message)` |
 | An FFI call consumes the current handle to configure or feed another object, returning only a status code | `_consume_no_replacement(ffi_call, error_message)` |
 | An FFI call consumes the current handle and returns a *different* object's pointer, for that object to own | `_consume_into(ffi_call, error_message)` |
-| A call fails and it is unclear whether native took the handle first (a Python exception before native reported anything, or an empty error slot) | `_release_handle()` |
+| Ownership cannot be established after a failure (an exception other than `ctypes.ArgumentError`, an empty error slot, or a consume-first rejection without a comparable address) | `_release_handle()` |
 | A Python instance needs to wrap a handle a native call already returned, without creating a new one | `_wrap_native_handle(handle)` (classmethod) |
 | Ordinary teardown (`close()`, `__del__`) | Neither: these already route through `_cleanup_resources()` and `_teardown()`. Nothing outside `ManagedResource` itself calls `_teardown()` directly. |
 
 `_activate()` and `_swap_handle()` are two low-level primitives this
 situation table builds on.
+
+The three consume helpers default to keyword-only `consumes_first=False`.
+Pass `consumes_first=True` when native takes the managed handle before
+validating later arguments, as in the fragment and stream examples above.
 
 ## Implementing a subclass of `ManagedResource`
 
@@ -634,7 +640,7 @@ class NativeResource(ManagedResource):
 
 - `_release()` can be called more than once (via `close()` then `__del__`, or multiple `close()` calls), so it must handle being called on an already-cleaned-up object. Setting attributes to `None` after closing them is the standard pattern.
 
-- Calling `c2pa_free` directly is not recommended. `ManagedResource` handles this. A redundant free of an already-released pointer is not a crash: the native pointer registry rejects an untracked address without touching memory and returns `-1`. `ManagedResource` relies on this guard so the unknown-ownership failure paths can issue a guarded free without risking a double-free. A manual free is still wrong — the lifecycle owns the pointer and bypassing it defeats the state checks.
+- Calling `c2pa_free` directly bypasses `ManagedResource` ownership and state checks. The registry rejects untracked values, but a stale stock address may have been reused for another allocation; a redundant raw-address free is not guaranteed harmless. Use the lifecycle helpers instead.
 
 - When a subclass inherits from both `ManagedResource` and an ABC like `ContextProvider`, and both define a property with the same name (e.g. `is_valid`), Python resolves it using the MRO. The parent listed first in the class definition wins. With the ABC listed first, Python finds the abstract property before the concrete one and raises `TypeError: Can't instantiate abstract class`. The class with the concrete implementation therefore comes first (e.g. `class Context(ManagedResource, ContextProvider)`, not `class Context(ContextProvider, ManagedResource)`).
 

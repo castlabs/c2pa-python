@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -28,12 +29,39 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(release)
 
 
+def _posix_bash() -> str:
+    """Return a POSIX bash for workflow shell snippets.
+
+    On Windows a bare ``bash`` resolves to ``System32\\bash.exe`` (the WSL
+    launcher, unusable without a distribution). GitHub's ``shell: bash`` uses
+    Git for Windows' bash, so use the same one; fail rather than skip if absent.
+    """
+    if os.name != "nt":
+        return "bash"
+    git = shutil.which("git")
+    assert git, "Git for Windows is required to run workflow shell helpers"
+    # git.exe may live in <Git>\\cmd, <Git>\\bin or <Git>\\mingw64\\bin.
+    for root in Path(git).resolve().parents:
+        for candidate in (root / "bin" / "bash.exe", root / "usr" / "bin" / "bash.exe"):
+            if candidate.is_file() and "system32" not in str(candidate).lower():
+                return str(candidate)
+    raise AssertionError(f"Git for Windows bash not found near {git}")
+
+
 def test_prerelease_version_is_consistent():
-    assert release.project_version(ROOT) == "0.37.8.dev5"
+    # The immutable dev5 release identity stays frozen in the tooling and lock.
+    assert release.RELEASE_VERSION == "0.37.8.dev5"
+    assert release.load_lock()["package"]["version"] == "0.37.8.dev5"
+    # This checkout is the unreleased consolidated functional source. Its
+    # identity is consistent and deliberately differs from dev5, so
+    # validate-sources refuses to release it under the dev5 lock.
+    source = release.project_version(ROOT)
+    assert source == "0.37.13.dev0"
+    assert source != release.RELEASE_VERSION
     first_line = (
         (ROOT / "src" / "c2pa" / "c2pa.py").read_text(encoding="utf-8").splitlines()[13]
     )
-    assert first_line == "# Version: 0.37.8.dev5"
+    assert first_line == f"# Version: {source}"
 
 
 def test_release_lock_and_schemas_are_valid_json():
@@ -60,6 +88,45 @@ def test_release_lock_and_schemas_are_valid_json():
         jsonschema.validate(lock, schema)
 
 
+def test_trusted_vsi_workflows_isolate_paired_abi_from_dev5():
+    workflow_dir = ROOT / ".github" / "workflows"
+    paired = (workflow_dir / "trusted-vsi-paired.yml").read_text(encoding="utf-8")
+    legacy = (workflow_dir / "build.yml").read_text(encoding="utf-8")
+    dedicated = (workflow_dir / "castlabs-vsi-release.yml").read_text(encoding="utf-8")
+    for caller in (legacy, dedicated):
+        assert "uses: ./.github/workflows/trusted-vsi-paired.yml" in caller
+    assert legacy.count('tests/test_trusted_vsi_api.py -k "not paired"') == 2
+    assert "if: github.event_name == 'workflow_dispatch' && inputs.trusted_vsi_only" in dedicated
+    assert "  prepare:\n    if: ${{ !inputs.trusted_vsi_only }}" in dedicated
+    assert dedicated.count(f"ref: {release.RUST_COMMIT}") == 3
+    assert 'C2PA_TRUSTED_VSI_ABI_REQUIRED: "1"' in paired
+    assert 'C2PA_TRUSTED_VSI_FUNCTIONAL_REQUIRED: "1"' in paired
+    focused = ("python -m pytest -q tests/test_trusted_vsi_api.py\n"
+               "          tests/test_fragmented_files.py tests/test_sign_ladder.py\n"
+               "          tests/test_native_ownership.py tests/test_native_ownership_opaque.py -ra")
+    assert focused in paired
+    assert "-k " not in paired
+    assert "ubuntu-24.04" in paired and "windows-2022" in paired
+    assert "C2PA_LIBRARY_NAME: ${{ github.workspace }}/paired-rust/target/debug/" in paired
+    assert "PYTHONPATH: ${{ github.workspace }}/python-source/src" in paired
+    assert "python setup.py egg_info" in paired
+    assert "cargo +1.96.0 build --locked" in paired
+    # Paired native is pinned to a reviewed full SHA, never a moving branch.
+    assert re.search(r"^\s+ref: [0-9a-f]{40}$", paired, re.MULTILINE)
+    assert "ref: feat/" not in paired
+    assert "FUNCTIONAL_BUILD_VERSION: 0.37.13.dev0" in paired
+    assert "C2PA_SOURCE_BUILD_VERSION: 0.92.0-dev" in paired
+    assert 'C2PA_REQUIRE_SIGN_LADDER: "1"' in paired
+    assert 'C2PA_REQUIRE_FRAGMENTED_FILES: "1"' in paired
+    assert "tests/ladder_native.py --lane candidate" in paired
+    assert "scripts/build_trusted_vsi_functional.py" in paired
+    assert "scripts/qualify_trusted_vsi_functional.py" in paired
+    for forbidden in ("download_artifacts.py", "castlabs_release.py",
+                      "upload-artifact@", "bdist_wheel", "contents: write",
+                      "id-token: write", "continue-on-error", "gh release"):
+        assert forbidden not in paired
+
+
 def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
     tmp_path,
 ):
@@ -72,13 +139,20 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
     legacy_workflow = (ROOT / ".github" / "workflows" / "build.yml").read_text(
         encoding="utf-8"
     )
-    for workflow in (release_workflow, pypi_workflow):
+    paired_workflow = (
+        ROOT / ".github" / "workflows" / "trusted-vsi-paired.yml"
+    ).read_text(encoding="utf-8")
+    for workflow in (release_workflow, pypi_workflow, paired_workflow):
         action_shas = re.findall(
             r"^\s*(?:-\s+)?uses:\s+[^@\s]+@([0-9a-f]{40})(?:\s+#.*)?$",
             workflow,
             re.MULTILINE,
         )
-        assert len(action_shas) == workflow.count("uses:")
+        local_calls = workflow.count(
+            "uses: ./.github/workflows/trusted-vsi-paired.yml"
+        )
+        assert local_calls == (1 if workflow == release_workflow else 0)
+        assert len(action_shas) + local_calls == workflow.count("uses:")
         assert "mstattma/" not in workflow
     assert release_workflow.count("timeout-minutes:") == 6
     assert pypi_workflow.count("timeout-minutes:") == 1
@@ -280,7 +354,7 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
         release_workflow[shell_helpers_start:shell_helpers_end]
     )
     subprocess.run(
-        ["bash"],
+        [_posix_bash()],
         cwd=tmp_path,
         input=(
             "set -euo pipefail\n"

@@ -24,6 +24,31 @@ from c2pa import Settings, Context, ContextBuilder, ContextProvider
 
 All of `Builder`, `Reader`, `Signer`, `Context`, and `Settings` support context managers (the `with` statement) for automatic resource cleanup.
 
+## Trusted-processor VSI (unreleased functional API)
+
+`TrustedVsiSession` is separate from complete-buffer
+`LiveVideoVsiSession`. It requires the complete functional 0.92.0-dev native ABI
+and capability mask 63. Older libraries import normally but do not advertise
+trusted functionality; construction fails before inspecting arguments or
+invoking callbacks. These changes are not in immutable dev5 artifacts.
+
+Expert mode uses `sign_sig_structure(sig_structure: bytes, sequence_number: int)
+-> bytes`. The trusted processor supplies the uint32 sequence as metadata and
+owns media ordering, MFHD/VSI equality, and EMSG construction. Native validates
+canonical framing and signs the original bytes without decoding the opaque
+payload. The result is exactly 64 raw signature bytes, not a sequence result.
+Expert callback metadata has no event ID or exhaustion, even at UINT32_MAX.
+
+Composed mode reserves a full EMSG at the supplied sequence/time and finalizes
+it against the canonical BMFF hash. Init uses the same reserve/finalize split
+for full UUID boxes. Explicit public-state export/import preserves pending
+reservations; preflight validates without key use or state mutation. Native
+owns all state validation and cryptography, while the coordinator owns durable
+operation identities and provider retry enforcement.
+
+See the [Python contract](trusted-vsi-python-contract.md) for exact constructor
+options, mode names, callback ownership, error behavior, and qualification commands.
+
 ## Define manifest JSON
 
 The Python library works with both file-based and stream-based operations.
