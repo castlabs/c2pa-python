@@ -6,7 +6,11 @@ own initialization and media fragments and one track, without an existing C2PA
 manifest. A ladder contains 1 to 256 renditions. Outputs correspond to inputs by
 position. Destination paths must be distinct and must not exist, and their parent
 directories must exist; the native implementation validates file layouts and
-overlap. Errors may leave partial newly created outputs; discard these files.
+overlap, and refuses to overwrite existing destinations. Errors may leave partial
+outputs. Never delete sources or preexisting destinations while cleaning up a
+failed operation. Delete only newly created files you positively own. Use a fresh,
+exclusively owned staging directory per operation so output ownership is clear;
+do not infer ownership just because a path was supplied in `dests`.
 
 ```python
 with Builder(manifest_definition) as builder:
@@ -22,6 +26,12 @@ This method does not fall back to a context signer. Like ordinary signing, an
 attempted native call closes the builder on success or failure; the signer remains
 usable. Preflight errors leave the builder usable. Paths must be UTF-8 strings
 or `Path` objects and cannot contain NUL characters.
+
+After validation, failure to admit the signing borrow (for example, an explicit
+Signer closing between preflight and admission) closes the Builder too, matching
+ordinary and fragmented signing. This does not change non-consuming preflight
+validation failures. The call guard is a lifetime mechanism, not permission to
+run concurrent native operations on either borrowed resource.
 
 Dynamic assertions registered on the signer run once for the shared manifest.
 Callback errors follow the other Builder signing paths: an exception raised by a

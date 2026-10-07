@@ -25,6 +25,7 @@ import warnings
 import weakref
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union, Callable, Any, overload
@@ -396,8 +397,12 @@ class ManagedResource:
         the handle without returning a replacement: the new owner frees it,
         so this does not.
       - Call `_release_handle()` when a consuming FFI call fails with ownership
-        unknown: it frees eagerly (guarded), then closes. `_consume_and_swap`
-        uses it on that failure path.
+        unknown: it closes and requests a guarded free. `_consume_and_swap`
+        uses it on that failure path; admitted calls defer physical cleanup.
+      - Use `_native_call()` around borrowed signing FFI calls that must survive
+        callback-initiated close, also guarding any explicitly borrowed Signer.
+        This is not generic thread safety: unguarded operations (Reader calls,
+        with_archive, recover, etc.) and close must be externally serialized.
       - Override `_release()` to free class-specific resources
         (streams, caches, callbacks, etc.), called before the
         native pointer is freed.
@@ -420,6 +425,9 @@ class ManagedResource:
     def __init__(self):
         self._lifecycle_state = LifecycleState.UNINITIALIZED
         self._handle = None
+        self._call_lock = threading.RLock()
+        self._active_calls = 0
+        self._pending_teardown = None
         record_owner_pid(self)
 
     @staticmethod
@@ -475,7 +483,7 @@ class ManagedResource:
             )
 
     def _teardown(self, free_handle: bool):
-        """Close the object: run _release, optionally free the handle, null it.
+        """Close logically; release/null/free after admitted calls drain, if any.
         free_handle=False (consumed) frees nothing, the new owner needs to free.
         """
         if is_foreign_process(self):
@@ -483,10 +491,28 @@ class ManagedResource:
             self._lifecycle_state = LifecycleState.CLOSED
             return
 
-        self._lifecycle_state = LifecycleState.CLOSED
-        self._safe_release()
+        with getattr(self, '_call_lock', nullcontext()):
+            if self._lifecycle_state == LifecycleState.CLOSED:
+                return
+            self._lifecycle_state = LifecycleState.CLOSED
+            if getattr(self, '_active_calls', 0):
+                self._pending_teardown = free_handle
+                return
+            handle = self._handle
+        self._finish_teardown(handle, free_handle)
 
-        handle, self._handle = self._handle, None
+    def _finish_teardown(self, handle, free_handle):
+        if is_foreign_process(self):
+            self._handle = None
+            return
+        # _release clears these attributes/lists. Retain the actual ctypes
+        # thunks, not just their error states, until native destruction returns.
+        callback_pins = [getattr(self, name, None) for name in (
+            '_callback_cb', '_signer_callback_cb', '_vsi_callback',
+            '_trusted_vsi_callback')]
+        callback_pins.extend(list(getattr(self, '_dynamic_assertion_cbs', ())))
+        self._safe_release()
+        self._handle = None
         if free_handle and handle:
             try:
                 ManagedResource._free_native_ptr(handle)
@@ -494,13 +520,47 @@ class ManagedResource:
                 logger.error("Failed to free native %s resources",
                              type(self).__name__, exc_info=True)
 
+    @contextmanager
+    def _native_call(self):
+        """Admit a borrowed native call; close is logical, not cancellation.
+
+        No lock is held across native code or user callbacks. This guards the
+        selected signing paths, not all resource methods or concurrent native
+        operations. Unguarded calls and close require external serialization.
+        Foreign-PID resources are rejected before touching an inherited lock;
+        create worker-owned signers/sessions in the worker. This admission rule
+        is deliberately limited to guarded calls, not an SDK-wide fork ban.
+        """
+        if is_foreign_process(self):
+            raise C2paError("Native resources cannot be used after fork")
+        with self._call_lock:
+            self._ensure_valid_state()
+            self._active_calls += 1
+        try:
+            yield
+        finally:
+            teardown = None
+            if is_foreign_process(self):
+                self._cleanup_resources()
+            else:
+                with self._call_lock:
+                    self._active_calls -= 1
+                    if not self._active_calls and self._pending_teardown is not None:
+                        teardown = (self._handle, self._pending_teardown)
+                        self._pending_teardown = None
+            if teardown is not None:
+                self._finish_teardown(*teardown)
+
     def _release_handle(self):
-        """Free this handle, then close the object. Used only where ownership is
-        unknown (a guarded free is a real free if ours, a no-op if not).
+        """Request guarded free/close when ownership is unknown.
+
+        Admitted calls defer physical cleanup. Already-CLOSED resources retain
+        their pending cleanup decision, handle and pins until the guard drains.
         """
         if self._lifecycle_state != LifecycleState.ACTIVE:
-            self._handle = None
-            self._lifecycle_state = LifecycleState.CLOSED
+            if self._lifecycle_state != LifecycleState.CLOSED:
+                self._handle = None
+                self._lifecycle_state = LifecycleState.CLOSED
             return
         self._teardown(free_handle=True)
 
@@ -789,7 +849,7 @@ class ManagedResource:
         )
 
     def close(self) -> None:
-        """Release the resource (idempotent, never raises)."""
+        """Close logically; admitted calls defer physical release (idempotent)."""
         self._cleanup_resources()
 
     def __enter__(self):
@@ -889,6 +949,7 @@ class C2paLiveVideoTrustedVsiStatusV1(ctypes.Structure):
         ("next_event_id", ctypes.c_uint32),
         ("exhausted", ctypes.c_bool),
         ("has_exhaustion_reason", ctypes.c_bool),
+        ("blocked", ctypes.c_bool),
         ("exhaustion_reason", ctypes.c_uint32),
     ]
 
@@ -2395,6 +2456,7 @@ class TrustedVsiStatus:
     next_event_id: Optional[int]
     exhausted: bool
     exhaustion_reason: Optional[str] = None
+    blocked: bool = False
 
 
 def _has_trusted_vsi_capability(bit: int, symbols_available: bool = True) -> bool:
@@ -2734,7 +2796,8 @@ class TrustedVsiSession(ManagedResource):
         if claim_state is not None:
             states.append(claim_state)
         _clear_callback_errors(states)
-        result = function(self._handle, *args)
+        with self._native_call():
+            result = function(self._handle, *args)
         if result < 0:
             _reraise_callback_errors(states)
         _check_ffi_operation_result(result, "Trusted VSI operation failed", check=lambda r: r < 0)
@@ -2750,7 +2813,8 @@ class TrustedVsiSession(ManagedResource):
 
     def reserved_manifest_id(self) -> str:
         self._ensure_valid_state()
-        pointer = _lib.c2pa_live_video_trusted_vsi_session_reserved_manifest_id(self._handle)
+        with self._native_call():
+            pointer = _lib.c2pa_live_video_trusted_vsi_session_reserved_manifest_id(self._handle)
         _check_ffi_operation_result(pointer, "No reserved trusted VSI manifest ID")
         try:
             return ctypes.string_at(pointer).decode('utf-8')
@@ -2836,7 +2900,8 @@ class TrustedVsiSession(ManagedResource):
         return TrustedVsiStatus(native.init_uuid_committed, native.init_uuid_pending,
             native.media_emsg_pending, native.next_sequence_number if native.has_next_sequence_number else None,
             native.next_event_id if native.has_next_event_id else None, native.exhausted,
-            reasons[native.exhaustion_reason] if native.has_exhaustion_reason else None)
+            reasons[native.exhaustion_reason] if native.has_exhaustion_reason else None,
+            blocked=native.blocked)
 
 
 class LiveVideoVsiSession(ManagedResource):
@@ -3183,7 +3248,8 @@ class LiveVideoVsiSession(ManagedResource):
         claim_state = _claim_signer_error_state(self._signer_callback_cb)
         _clear_callback_errors(states + [claim_state])
         output = ctypes.POINTER(ctypes.c_ubyte)()
-        length = ffi_call(ctypes.byref(output))
+        with self._native_call():
+            length = ffi_call(ctypes.byref(output))
         if length < 0:
             _reraise_callback_errors(
                 states, [claim_state] if claim_state is not None else [])
@@ -5586,7 +5652,7 @@ class Builder(ManagedResource):
         self._ensure_valid_state()
 
         if signer is not None:
-            if not hasattr(signer, '_handle') or not signer._handle:
+            if not hasattr(signer, '_handle') or not signer.is_valid:
                 raise C2paError("Invalid or closed signer")
 
         dynamic_assertion_cbs = list(
@@ -5606,30 +5672,35 @@ class Builder(ManagedResource):
         manifest_bytes_ptr = ctypes.POINTER(ctypes.c_ubyte)()
 
         try:
-            if signer is not None:
-                result = _lib.c2pa_builder_sign(
-                    self._handle,
-                    format_arg,
-                    source_stream._stream,
-                    dest_stream._stream,
-                    signer._handle,
-                    ctypes.byref(manifest_bytes_ptr)
-                )
-            else:
-                result = _lib.c2pa_builder_sign_context(
-                    self._handle,
-                    format_arg,
-                    source_stream._stream,
-                    dest_stream._stream,
-                    ctypes.byref(manifest_bytes_ptr),
-                )
-            # Sign borrows the Builder without taking ownership.
-            # Closing here ensures resources clean up,
-            # and single use/single sign done by a Builder.
-            self.close()
+            with self._native_call(), signer._native_call() if signer is not None else nullcontext():
+                try:
+                    if signer is not None:
+                        result = _lib.c2pa_builder_sign(
+                            self._handle,
+                            format_arg,
+                            source_stream._stream,
+                            dest_stream._stream,
+                            signer._handle,
+                            ctypes.byref(manifest_bytes_ptr)
+                        )
+                    else:
+                        result = _lib.c2pa_builder_sign_context(
+                            self._handle,
+                            format_arg,
+                            source_stream._stream,
+                            dest_stream._stream,
+                            ctypes.byref(manifest_bytes_ptr),
+                        )
+                finally:
+                    # Close logically inside the borrows; physical teardown runs
+                    # as the guards drain after the native call has returned.
+                    self.close()
         except Exception as e:
-            self.close()
             raise C2paError(f"Error during signing: {e}") from e
+        finally:
+            # Admission can fail after preflight if the borrowed Signer closes.
+            # Match the other signing paths without consuming preflight errors.
+            self.close()
 
         if result < 0:
             _reraise_callback_errors(
@@ -5848,14 +5919,15 @@ class Builder(ManagedResource):
         manifest_bytes_ptr = ctypes.POINTER(ctypes.c_ubyte)()
         try:
             try:
-                result = _lib.c2pa_builder_sign_fragmented(
-                    self._handle,
-                    signer._handle,
-                    asset_path_bytes,
-                    fragments_glob_bytes,
-                    output_dir_bytes,
-                    ctypes.byref(manifest_bytes_ptr),
-                )
+                with self._native_call(), signer._native_call():
+                    result = _lib.c2pa_builder_sign_fragmented(
+                        self._handle,
+                        signer._handle,
+                        asset_path_bytes,
+                        fragments_glob_bytes,
+                        output_dir_bytes,
+                        ctypes.byref(manifest_bytes_ptr),
+                    )
             except Exception as error:
                 raise C2paError(
                     f"Error during fragmented signing: {error}") from error
@@ -5903,8 +5975,10 @@ class Builder(ManagedResource):
         API. Sources must not already contain a C2PA manifest. Destinations
         correspond to sources in order; they must be distinct, must not exist,
         and their parent directories must exist. Native code validates the file
-        layout and path overlap. Errors may leave partial newly created outputs;
-        discard these files.
+        layout and path overlap and refuses to overwrite existing destinations.
+        Errors may leave partial outputs. Delete only newly created files you
+        positively own, never sources or preexisting destinations. Prefer a
+        fresh, exclusively owned staging directory for every operation.
 
         Like :py:meth:`sign`, an attempted native signing call closes this
         Builder on success or failure. Preflight errors (including unavailable
@@ -5969,9 +6043,10 @@ class Builder(ManagedResource):
 
         try:
             try:
-                result = _lib.c2pa_builder_sign_ladder(
-                    self._handle, signer._handle, source_array, dest_array,
-                    count, ctypes.byref(manifest_bytes_ptr))
+                with self._native_call(), signer._native_call():
+                    result = _lib.c2pa_builder_sign_ladder(
+                        self._handle, signer._handle, source_array, dest_array,
+                        count, ctypes.byref(manifest_bytes_ptr))
             except Exception as e:
                 raise C2paError(f"Error during ladder signing: {e}") from e
             if result < 0:
