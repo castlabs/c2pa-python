@@ -17,6 +17,10 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
+import threading
+import weakref
 from unittest.mock import Mock
 
 import cbor2
@@ -132,7 +136,14 @@ def test_value_wrappers_are_frozen_and_v1_layouts_exact():
     assert [getattr(native, name).offset for name, _ in native._fields_] == [0, 4, 8, 12, 16, 17]
     status = bindings.C2paLiveVideoTrustedVsiStatusV1
     assert ctypes.sizeof(status) == 24 and ctypes.alignment(status) == 4
-    assert [getattr(status, name).offset for name, _ in status._fields_] == [0, 1, 2, 3, 4, 8, 12, 16, 17, 20]
+    assert status._fields_ == [
+        ("init_uuid_committed", ctypes.c_bool), ("init_uuid_pending", ctypes.c_bool),
+        ("media_emsg_pending", ctypes.c_bool), ("has_next_sequence_number", ctypes.c_bool),
+        ("next_sequence_number", ctypes.c_uint32), ("has_next_event_id", ctypes.c_bool),
+        ("next_event_id", ctypes.c_uint32), ("exhausted", ctypes.c_bool),
+        ("has_exhaustion_reason", ctypes.c_bool), ("blocked", ctypes.c_bool),
+        ("exhaustion_reason", ctypes.c_uint32)]
+    assert [getattr(status, name).offset for name, _ in status._fields_] == [0, 1, 2, 3, 4, 8, 12, 16, 17, 18, 20]
 
 
 def test_python_mapping_matches_native_contract_signatures():
@@ -362,7 +373,7 @@ def test_scripted_media_reservation_status_preflight_and_state(monkeypatch, scri
     def status(handle, output):
         target = ctypes.cast(output, ctypes.POINTER(bindings.C2paLiveVideoTrustedVsiStatusV1))
         target[0] = bindings.C2paLiveVideoTrustedVsiStatusV1(
-            True, False, False, True, 9, True, 2, True, True, 2)
+            True, False, False, True, 9, True, 2, True, True, False, 2)
         return 0
     native.install(monkeypatch, "session_status_v1", status)
     assert session.status() == c2pa.TrustedVsiStatus(True, False, False, 9, 2, True, "event_id_max")
@@ -436,6 +447,11 @@ def test_scripted_wrappers_store_base_exceptions_return_minus_one_and_reraise(
             alg=b"es256", sign_cert=certs,
             private_key=(FIXTURES / "es256_private.key").read_bytes(), ta_url=None))
         if which == "dynamic":
+            if not c2pa.has_dynamic_assertions():
+                message = "scripted dynamic wrapper needs native registration export"
+                if _qualification_required():
+                    pytest.fail(message)
+                pytest.skip(message)
             signer.add_dynamic_assertion(fail, label="com.example.functional", reserve_size=64)
     context = c2pa.Context(signer=signer)
     native = _ScriptedNative(monkeypatch)
@@ -587,8 +603,15 @@ def sessions(paired_native):
         resource.close()
 
 
-def _sig_structure(algorithm="ed25519", payload=b"opaque, not a SegmentInfoMap"):
-    protected = cbor2.dumps({1: -8 if algorithm == "ed25519" else -7, "iat": IAT}, canonical=True)
+def _sig_structure(algorithm="ed25519", payload=None, *, session=None, sequence=1, iat=IAT):
+    protected = cbor2.dumps({1: -8 if algorithm == "ed25519" else -7, "iat": iat}, canonical=True)
+    if payload is None:
+        media_hash = {"alg": "sha256", "name": "jumbf manifest", "hash": bytes(32),
+                      "exclusions": [{"xpath": "/emsg", "data": [
+                          {"offset": 12, "value": b"urn:c2pa:verifiable-segment-info"}]}]}
+        payload = cbor2.dumps({"sequenceNumber": sequence,
+                              "manifestId": session.reserved_manifest_id() if session else "test-manifest",
+                              "bmffHash": media_hash})
     return cbor2.dumps(["Signature1", protected, b"", payload], canonical=True)
 
 
@@ -690,9 +713,9 @@ def test_paired_expert_exact_bytes_supplied_sequence_retry_and_no_counter(sessio
         assert reader.get_validation_state() == "Trusted"
         assert reader.get_validation_results()["activeManifest"]["failure"] == []
     before = session.export_state()
-    original = _sig_structure(algorithm)
-    c2pa.validate_trusted_vsi_input(KIND.SIG_STRUCTURE, algorithm, original)
     for sequence in (1, 37, 2**32 - 1, 1):
+        original = _sig_structure(algorithm, session=session, sequence=sequence)
+        c2pa.validate_trusted_vsi_input(KIND.SIG_STRUCTURE, algorithm, original)
         session.preflight(OP.EXPERT_SIGN, original, sequence_number=sequence)
         signature = session.sign_sig_structure(original, sequence)
         assert isinstance(signature, bytes) and len(signature) == 64
@@ -708,7 +731,7 @@ def test_paired_expert_exact_bytes_supplied_sequence_retry_and_no_counter(sessio
     assert status.next_event_id is None and not status.exhausted and status.exhaustion_reason is None
     context.close()
     gc.collect()
-    assert len(session.sign_sig_structure(original, 2)) == 64
+    assert len(session.sign_sig_structure(_sig_structure(algorithm, session=session, sequence=2), 2)) == 64
 
 
 def test_paired_init_pending_export_import_preflight_and_identical_replay(sessions):
@@ -718,6 +741,8 @@ def test_paired_init_pending_export_import_preflight_and_identical_replay(sessio
     assert new == first.export_state() and calls == []
     reserved = first.reserve_init_uuid()
     assert first.reserve_init_uuid() == reserved and calls == []
+    independent, independent_calls, _, _ = sessions()
+    assert independent.reserve_init_uuid() == reserved and independent_calls == []
     pending = first.export_state()
     restored, restored_calls, _, context = sessions()
     restored.import_state(pending)
@@ -767,6 +792,7 @@ def test_paired_composed_pending_import_and_uint32_exhaustion(sessions):
     assert final[4:8] == b"emsg" and len(final) == len(reserved.placeholder_emsg_box)
     assert restored_calls[-1][0] == reserved.signing_context
     assert restored.status().exhausted and restored.status().exhaustion_reason == "sequence_max"
+    assert not restored.status().blocked
     with pytest.raises(c2pa.C2paError):
         restored.reserve_media_emsg_at(0, IAT, 1000, 2000)
 
@@ -833,17 +859,31 @@ def test_paired_composed_real_fragment_native_verification(sessions):
     assert value  # non-empty EMSG value per native framing
 
 
-@pytest.mark.parametrize("data", [
-    b"garbage", b"\x9f\xff", _sig_structure() + b"\x00",
-    cbor2.dumps(["Signature1", b"\xa2\x01\x27\x01\x27", b"", b"opaque"]),
-    cbor2.dumps(["Signature1", b"\xa1\x01\x38\x07", b"", b"opaque"]),
-    cbor2.dumps(["Signature1", b"\xa1\x01\x27", b"aad", b"opaque"]),
-    _sig_structure("es256"),
+@pytest.mark.parametrize("invalid", [
+    "garbage", "indefinite", "trailing", "duplicate_alg", "nonminimal_alg", "aad", "wrong_algorithm",
 ])
-def test_paired_invalid_expert_framing_before_callback_and_no_mutation(sessions, data):
+def test_paired_invalid_expert_framing_before_callback_and_no_mutation(sessions, invalid):
     session, calls, _, _ = sessions()
     _init(session)
     count, state = len(calls), session.export_state()
+    data = _sig_structure(session=session)
+    framing = cbor2.loads(data)
+    if invalid == "garbage":
+        data = b"garbage"
+    elif invalid == "indefinite":
+        data = b"\x9f\xff"
+    elif invalid == "trailing":
+        data += b"\x00"
+    elif invalid == "wrong_algorithm":
+        data = _sig_structure("es256", session=session)
+    else:
+        if invalid == "duplicate_alg":
+            framing[1] = b"\xa3\x01\x27\x01\x27\x63iat" + cbor2.dumps(IAT)
+        elif invalid == "nonminimal_alg":
+            framing[1] = b"\xa2\x01\x38\x07\x63iat" + cbor2.dumps(IAT)
+        else:
+            framing[2] = b"aad"
+        data = cbor2.dumps(framing)
     with pytest.raises(c2pa.C2paError):
         c2pa.validate_trusted_vsi_input(KIND.SIG_STRUCTURE, "ed25519", data)
     with pytest.raises(c2pa.C2paError):
@@ -859,7 +899,7 @@ def test_paired_mode_and_sequence_limits_precede_callback(sessions):
     count = len(calls)
     for value in (6, 10):
         with pytest.raises(c2pa.C2paError):
-            expert.sign_sig_structure(_sig_structure(), value)
+            expert.sign_sig_structure(_sig_structure(session=expert, sequence=value), value)
     for value in (-1, 2**32, True, 1.0):
         with pytest.raises((TypeError, ValueError)):
             expert.sign_sig_structure(_sig_structure(), value)
@@ -885,17 +925,21 @@ def test_paired_callback_exception_identity_blocked_state_and_durable_retry(sess
     session, calls, _, _ = sessions(callback=callback)
     _init(session)
     before = session.export_state()
+    assert not session.status().blocked and not session.status().exhausted
+    tbs = _sig_structure(session=session)
     with pytest.raises(RuntimeError) as caught:
-        session.sign_sig_structure(_sig_structure(), 1)
+        session.sign_sig_structure(tbs, 1)
     assert caught.value is error
+    assert session.status().blocked and not session.status().exhausted
     assert session.export_state() != before
     count = len(calls)
     with pytest.raises(c2pa.C2paError):
-        session.sign_sig_structure(_sig_structure(), 1)
+        session.sign_sig_structure(tbs, 1)
     assert len(calls) == count
     restored, _, _, _ = sessions()
     restored.import_state(before)
-    assert len(restored.sign_sig_structure(_sig_structure(), 1)) == 64
+    assert not restored.status().blocked
+    assert len(restored.sign_sig_structure(tbs, 1)) == 64
 
 
 
@@ -915,7 +959,7 @@ def test_paired_claim_and_da_errors_keep_identity_and_block(sessions, which, sce
         # Pending state from a healthy session with the same claim certificate and
         # DynamicAssertion declaration (label/reserve size), finalized by a NEW
         # session whose Context signer/DA fails and whose Context is closed.
-        # Declarations must be identical (native v2 state pins the claim
+        # Declarations must be identical (native v3 state pins the claim
         # signer's reserve size and ordered DA label/reserve size), so the
         # healthy claim signer is also a from_callback signer with the same
         # certificate; only its signing behavior differs.
@@ -933,9 +977,11 @@ def test_paired_claim_and_da_errors_keep_identity_and_block(sessions, which, sce
         context.close()
         gc.collect()
     canonical = c2pa.trusted_vsi_hash_template(KIND.INIT_HASH)
+    assert not session.status().blocked
     with pytest.raises(type(error)) as caught:
         session.finalize_init_uuid(canonical)
     assert caught.value is error
+    assert session.status().blocked and not session.status().exhausted
     assert len(failures) == 1
     # The external signing attempt blocks the local session: no retry, no
     # further callback, and init is never committed.
@@ -959,7 +1005,7 @@ def test_paired_claim_and_da_errors_keep_identity_and_block(sessions, which, sce
                  {"dynamic": [("com.example.b", 64), ("com.example.a", 64)]}, id="da-order"),
 ])
 def test_paired_import_rejects_mismatched_claim_and_da_declarations(paired_native, reserving, importing):
-    """v2 identity pins claim reserve size and ordered DA declarations.
+    """v3 identity pins claim reserve size and ordered DA declarations.
 
     A mismatch must be rejected by import_state itself, before mutation and
     without invoking the VSI session key, claim signer, or any DA callback.
@@ -1005,7 +1051,7 @@ def test_paired_import_rejects_mismatched_claim_and_da_declarations(paired_nativ
         reserving_session.reserve_init_uuid()
         record = reserving_session.export_state()
         state = json.loads(record)
-        assert (state["format"], state["version"]) == ("c2pa.trusted-vsi.state", 2)
+        assert (state["format"], state["version"]) == ("c2pa.trusted-vsi.state", 3)
         assert [(d["label"], d["reserve_size"]) for d in state["identity"]["dynamic_assertions"]] == \
             list(reserving.get("dynamic", ()))
         importing_session = build(importing, "importing")
@@ -1090,3 +1136,529 @@ def test_paired_claim_and_dynamic_callbacks_survive_pending_import_and_close(ses
     assert len(final) == len(reservation)
     assert len(da_calls) == 1 and len(claim_calls) >= 1
     assert da_calls[0][0:2] == ("com.example.functional", 64)
+
+
+@pytest.mark.parametrize("field", ["sequence", "manifest", "iat", "binding_payload"])
+def test_paired_expert_rejects_signed_identity_and_time_mismatch_without_callbacks(sessions, field):
+    session, calls, _, _ = sessions()
+    _init(session)
+    before, count = session.export_state(), len(calls)
+    tbs = _sig_structure(session=session, sequence=2 if field == "sequence" else 1,
+                         iat=IAT + 86400 if field == "iat" else IAT)
+    framing = cbor2.loads(tbs)
+    if field == "manifest":
+        payload = cbor2.loads(framing[3])
+        payload["manifestId"] = "foreign-manifest"
+        framing[3] = cbor2.dumps(payload)
+    elif field == "binding_payload":
+        framing[3] = cbor2.dumps(b"detached signerBinding certificate")
+    tbs = cbor2.dumps(framing)
+    # Static validation cannot know session identity or its validity window.
+    if field == "binding_payload":
+        with pytest.raises(c2pa.C2paError):
+            c2pa.validate_trusted_vsi_input(KIND.SIG_STRUCTURE, "ed25519", tbs)
+    else:
+        c2pa.validate_trusted_vsi_input(KIND.SIG_STRUCTURE, "ed25519", tbs)
+    with pytest.raises(c2pa.C2paError):
+        session.preflight(OP.EXPERT_SIGN, tbs, sequence_number=1)
+    with pytest.raises(c2pa.C2paError):
+        session.sign_sig_structure(tbs, 1)
+    assert session.export_state() == before and len(calls) == count
+    assert not session.status().blocked
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_paired_old_state_versions_rejected_before_mutation(sessions, version):
+    original, _, _, _ = sessions()
+    original.reserve_init_uuid()
+    state = json.loads(original.export_state())
+    assert state["version"] == 3
+    state["version"] = version
+    new, calls, _, _ = sessions()
+    before = new.export_state()
+    with pytest.raises(c2pa.C2paError):
+        new.import_state(json.dumps(state).encode())
+    assert new.export_state() == before and calls == []
+
+
+@pytest.mark.parametrize("make_error", [None] + [p.values[0] for p in CALLBACK_FAILURES])
+def test_scripted_reentrant_close_retains_thunks_until_free_and_then_collects(monkeypatch, make_error):
+    native = _ScriptedNative(monkeypatch)
+    certs = (FIXTURES / "es256_certs.pem").read_bytes()
+    signer = c2pa.Signer.from_callback(_fixture_claim_signature, c2pa.C2paSigningAlg.ES256, certs, None)
+    context = c2pa.Context(signer=signer)
+    error = make_error() if make_error else None
+    holder = {}
+
+    def callback(ctx, data):
+        session = holder["session"]
+        session.close()
+        session.close()
+        assert not session.is_valid and session._handle is not None
+        with pytest.raises(c2pa.C2paError, match="closed"):
+            session.export_state()
+        gc.collect()
+        assert claim_ref() is not None and vsi_ref() is not None
+        assert native.freed == []
+        if error is not None:
+            raise error
+        return b"S" * 64
+
+    native.install(monkeypatch, "session_create_callback_v1",
+                   lambda *args: setattr(native, "callback", weakref.proxy(args[-1])) or native.handle)
+    session = c2pa.TrustedVsiSession(
+        context, {"format": "video/mp4"}, "es256", b"k", b"kid", 1,
+        "2026-09-10T00:00:00Z", 86400, callback, mode="expert_sig_structure",
+        reservation_nonce="0" * 32, signing_time_unix_seconds=IAT)
+    holder["session"] = session
+    claim_ref = weakref.ref(session._signer_callback_cb)
+    vsi_ref = weakref.ref(session._trusted_vsi_callback[0])
+    # Recorded constructor arguments would otherwise be artificial strong pins.
+    native.calls.clear()
+    context.close()
+    real_free = bindings.ManagedResource._free_native_ptr
+
+    def free(ptr):
+        if ctypes.addressof(ptr.contents) == ctypes.addressof(native.handle.contents):
+            assert session._trusted_vsi_callback is None  # _release already ran
+            gc.collect()
+            assert claim_ref() is not None and vsi_ref() is not None
+        return real_free(ptr)
+    monkeypatch.setattr(bindings.ManagedResource, "_free_native_ptr", staticmethod(free))
+
+    def sign(handle, data, length, sequence, output):
+        result, signature = native.invoke()
+        if error is not None:
+            assert result == -1
+            return -1
+        assert result == 64
+        return native.output(output, signature)
+    native.install(monkeypatch, "session_sign_sig_structure", sign)
+    if error is not None:
+        with pytest.raises(type(error)) as caught:
+            session.sign_sig_structure(b"tbs", 1)
+        assert caught.value is error
+        # Exception tracebacks legitimately retain callback frames.
+        error.__traceback__ = None
+        del caught
+    else:
+        assert session.sign_sig_structure(b"tbs", 1) == b"S" * 64
+    session.close()
+    assert native.freed.count(ctypes.addressof(native.handle.contents)) == 1
+    gc.collect()
+    assert claim_ref() is None and vsi_ref() is None
+
+
+def test_call_guard_close_from_other_thread_is_nonblocking_and_drains_once(monkeypatch):
+    resource = bindings.ManagedResource()
+    resource._activate(ctypes.c_void_p(123))
+    freed = Mock()
+    monkeypatch.setattr(bindings.ManagedResource, "_free_native_ptr", freed)
+    with resource._native_call():
+        closer = threading.Thread(target=resource.close)
+        closer.start()
+        closer.join(timeout=2)
+        assert not closer.is_alive(), "close must not wait for a callback/native call"
+        assert not resource.is_valid and resource._handle is not None
+        freed.assert_not_called()
+        with pytest.raises(c2pa.C2paError, match="closed"):
+            with resource._native_call():
+                pytest.fail("closed resource admitted another operation")
+    freed.assert_called_once()
+    assert resource._handle is None
+    resource.close()
+    freed.assert_called_once()
+
+
+def test_two_admitted_call_guards_close_and_staggered_drain(monkeypatch):
+    # Exercise bookkeeping, not concurrent native operations (which require
+    # external serialization even when both calls have a lifetime guard).
+    resource = bindings.ManagedResource()
+    handle = ctypes.c_void_p(123)
+    resource._activate(handle)
+    freed = Mock()
+    monkeypatch.setattr(bindings.ManagedResource, "_free_native_ptr", freed)
+    with resource._native_call():
+        with resource._native_call():
+            assert resource._active_calls == 2
+            resource.close()
+            assert not resource.is_valid and resource._handle is handle
+            freed.assert_not_called()
+        assert resource._active_calls == 1 and resource._handle is handle
+        freed.assert_not_called()
+    assert resource._active_calls == 0 and resource._handle is None
+    freed.assert_called_once_with(handle)
+    resource.close()
+    freed.assert_called_once()
+
+
+def test_release_handle_preserves_closed_pending_borrow(monkeypatch):
+    resource = bindings.ManagedResource()
+    handle = ctypes.c_void_p(123)
+    resource._activate(handle)
+    freed = Mock()
+    monkeypatch.setattr(bindings.ManagedResource, "_free_native_ptr", freed)
+    with resource._native_call():
+        resource.close()
+        resource._release_handle()
+        assert resource._handle is handle and resource._pending_teardown is True
+        assert resource._active_calls == 1 and not resource.is_valid
+        freed.assert_not_called()
+    assert resource._handle is None and resource._pending_teardown is None
+    freed.assert_called_once_with(handle)
+
+
+def test_call_guard_foreign_pid_drain_never_locks_releases_or_frees(monkeypatch):
+    resource = bindings.ManagedResource()
+    resource._activate(ctypes.c_void_p(123))
+    freed = Mock()
+    release = Mock()
+    monkeypatch.setattr(bindings.ManagedResource, "_free_native_ptr", freed)
+    resource._release = release
+    with resource._native_call():
+        resource.close()
+        resource._owner_pid = os.getpid() + 1
+        # A copied lock might have belonged to a vanished thread at fork.
+        resource._call_lock = Mock(side_effect=AssertionError("foreign lock touched"))
+    assert not resource.is_valid and resource._handle is None
+    release.assert_not_called()
+    freed.assert_not_called()
+
+
+def test_call_guard_foreign_pid_admission_rejects_before_lock_or_ffi_without_cleanup(monkeypatch):
+    resource = bindings.Signer._wrap_native_handle(ctypes.pointer(bindings.C2paSigner()))
+    handle, parent_pid, parent_lock = resource._handle, resource._owner_pid, resource._call_lock
+    callback_pin = bindings.SignerCallback(lambda *args: -1)
+    resource._callback_cb = callback_pin
+    dynamic_pins = resource._dynamic_assertion_cbs
+    dynamic_pins.append((bindings.DynamicAssertionCallback(lambda *args: -1),
+                         threading.local(), lambda *args: b""))
+    dynamic_pin = dynamic_pins[0]
+    freed, release, ffi = Mock(), Mock(), Mock()
+    monkeypatch.setattr(bindings.ManagedResource, "_free_native_ptr", freed)
+    monkeypatch.setattr(resource, "_release", release)
+
+    class InheritedLock:
+        def __enter__(self):
+            raise AssertionError("foreign admission touched an inherited lock")
+
+        def __exit__(self, *args):
+            raise AssertionError("foreign admission touched an inherited lock")
+
+    resource._owner_pid = parent_pid + 1
+    resource._call_lock = InheritedLock()
+    try:
+        with pytest.raises(c2pa.C2paError, match="after fork"):
+            with resource._native_call():
+                ffi(handle)
+        ffi.assert_not_called()
+        release.assert_not_called()
+        freed.assert_not_called()
+        assert resource.is_valid and resource._handle is handle
+        assert resource._active_calls == 0 and resource._pending_teardown is None
+        assert resource._callback_cb is callback_pin
+        assert resource._dynamic_assertion_cbs is dynamic_pins
+        assert dynamic_pins == [dynamic_pin]
+    finally:
+        # Restore the simulated parent's identity/lock for its own cleanup.
+        resource._owner_pid, resource._call_lock = parent_pid, parent_lock
+        resource.close()
+
+
+def test_consumed_teardown_inside_call_guard_retains_pins_then_releases_without_free(monkeypatch):
+    # Bookkeeping-only: actual consuming FFI operations still require external
+    # serialization and must not consume a handle another native call borrows.
+    resource = bindings.Builder._wrap_native_handle(ctypes.pointer(bindings.C2paBuilder()))
+    handle = resource._handle
+    callback_pin = bindings.SignerCallback(lambda *args: -1)
+    resource._signer_callback_cb = callback_pin
+    dynamic_pin = (bindings.DynamicAssertionCallback(lambda *args: -1),
+                   threading.local(), lambda *args: b"")
+    resource._dynamic_assertion_cbs.append(dynamic_pin)
+    freed = Mock()
+    release = Mock(wraps=resource._release)
+    monkeypatch.setattr(bindings.ManagedResource, "_free_native_ptr", freed)
+    monkeypatch.setattr(resource, "_release", release)
+    with resource._native_call():
+        resource._teardown(free_handle=False)
+        resource.close()
+        resource._release_handle()
+        assert not resource.is_valid and resource._handle is handle
+        assert resource._pending_teardown is False and resource._active_calls == 1
+        assert resource._signer_callback_cb is callback_pin
+        assert resource._dynamic_assertion_cbs == [dynamic_pin]
+        release.assert_not_called()
+        freed.assert_not_called()
+    assert resource._handle is None and resource._pending_teardown is None
+    assert resource._active_calls == 0 and not resource.is_valid
+    assert resource._signer_callback_cb is None and resource._dynamic_assertion_cbs == []
+    release.assert_called_once()
+    resource.close()
+    release.assert_called_once()
+    freed.assert_not_called()
+
+
+def test_teardown_copies_dynamic_thunks_through_release_and_free(monkeypatch):
+    resource = bindings.Builder._wrap_native_handle(ctypes.pointer(bindings.C2paBuilder()))
+    resource._dynamic_assertion_cbs.append((
+        bindings.DynamicAssertionCallback(lambda *args: -1), threading.local(), lambda *args: b""))
+    callback_ref = weakref.ref(resource._dynamic_assertion_cbs[0][0])
+
+    def free(ptr):
+        assert resource._dynamic_assertion_cbs == []
+        gc.collect()
+        assert callback_ref() is not None
+        return 0
+    monkeypatch.setattr(bindings.ManagedResource, "_free_native_ptr", staticmethod(free))
+    resource.close()
+    gc.collect()
+    assert callback_ref() is None
+
+
+def _actual_native_reentrant_close(kind):
+    """Executed only in a subprocess: a stale ctypes thunk can crash Python."""
+    certs = (FIXTURES / "es256_certs.pem").read_bytes()
+    seen, churn, holder = [], [], {}
+    manifest = {"claim_version": 2, "assertions": [{"label": "c2pa.actions", "data": {
+        "actions": [{"action": "c2pa.created", "digitalSourceType":
+                     "http://c2pa.org/digitalsourcetype/empty"}]}}]}
+
+    def impostor(*args):
+        seen.append("IMPOSTOR")
+        return -1
+
+    def close_and_churn():
+        holder["resource"].close()
+        if "signer" in holder:
+            holder["signer"].close()
+        gc.collect()
+        churn.extend(bindings.SignerCallback(impostor) for _ in range(512))
+
+    def claim(data):
+        seen.append("claim")
+        if kind.startswith("builder"):
+            if kind == "builder_context_callback_close":
+                holder["context"].close()
+                assert not holder["context"].is_valid
+            close_and_churn()
+        return _fixture_claim_signature(data)
+
+    signer = c2pa.Signer.from_callback(claim, c2pa.C2paSigningAlg.ES256, certs, None)
+    if kind.startswith("builder"):
+        if kind == "builder_explicit":
+            builder = c2pa.Builder(manifest)
+            holder["signer"] = signer
+        else:
+            context = c2pa.Context(signer=signer)
+            builder = c2pa.Builder(manifest, context=context)
+            if kind == "builder_context_callback_close":
+                holder["context"] = context
+            else:
+                context.close()
+        holder["resource"] = builder
+        source = io.BytesIO((FIXTURES / "A.jpg").read_bytes())
+        dest = io.BytesIO()
+        result = (builder.sign(signer, "image/jpeg", source, dest)
+                  if kind == "builder_explicit" else builder.sign("image/jpeg", source, dest))
+        assert result and dest.getvalue() and not builder.is_valid
+        signer.close()
+    else:
+        config = json.loads((Path(__file__).parent / "trust_config_test_settings.json").read_text())
+        context = c2pa.Context.from_dict(config, signer=signer)
+        key = ed25519.Ed25519PrivateKey.from_private_bytes(bytes([7]) * 32)
+        public = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        cose = cbor2.dumps({1: 1, 2: b"kid", 3: -8, -1: 6, -2: public}, canonical=True)
+
+        def vsi(*args):
+            seen.append("binding")
+            close_and_churn()
+            return key.sign(args[-1])
+
+        if kind == "trusted":
+            resource = c2pa.TrustedVsiSession(
+                context, manifest, "ed25519", cose, b"kid", 1,
+                "2026-09-10T00:00:00Z", 86400, vsi, mode="expert_sig_structure",
+                reservation_nonce="0" * 32, signing_time_unix_seconds=IAT)
+            resource.reserve_init_uuid()
+        else:
+            resource = c2pa.LiveVideoVsiSession.from_callback(
+                manifest, context, vsi, "ed25519", cose,
+                b"kid", 1, "2026-09-10T00:00:00Z", 86400, clock=lambda: IAT)
+        holder["resource"] = resource
+        context.close()
+        if kind == "trusted":
+            result = resource.finalize_init_uuid(c2pa.trusted_vsi_hash_template(KIND.INIT_HASH))
+        else:
+            result = resource.sign_init_segment(_unsigned_init())
+        assert result and not resource.is_valid
+        assert seen[0] == "binding"
+        resource.close()
+    assert "claim" in seen and "IMPOSTOR" not in seen
+    print("actual native reentrant close:", kind, seen)
+
+
+def _check_native_reentrant_close_subprocess(kind):
+    result = subprocess.run(
+        [sys.executable, "-c", "from tests.test_trusted_vsi_api import _actual_native_reentrant_close; "
+         f"_actual_native_reentrant_close({kind!r})"],
+        cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, timeout=90)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "actual native reentrant close:" in result.stdout
+
+
+@pytest.mark.parametrize("kind", ["trusted", "live"])
+def test_paired_reentrant_close_native_subprocess(paired_native, kind):
+    _check_native_reentrant_close_subprocess(kind)
+
+
+@pytest.mark.parametrize("kind", ["builder_context", "builder_explicit", "builder_context_callback_close"])
+def test_builder_reentrant_close_native_subprocess(kind):
+    _check_native_reentrant_close_subprocess(kind)
+
+
+@pytest.mark.parametrize("kind", ["ordinary", "fragmented", "ladder"])
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_builder_borrowed_signer_reentrant_close_and_automatic_close(monkeypatch, tmp_path, kind, interrupt):
+    """Scripted native call: both borrowed handles survive callback close."""
+    error = SystemExit(7)
+    holder = {}
+
+    def claim(data):
+        holder["builder"].close()
+        holder["signer"].close()
+        if interrupt:
+            raise error
+        return _fixture_claim_signature(data)
+
+    signer = c2pa.Signer.from_callback(claim, c2pa.C2paSigningAlg.ES256,
+                                      (FIXTURES / "es256_certs.pem").read_bytes(), None)
+    builder = c2pa.Builder({})
+    holder.update(builder=builder, signer=signer)
+    builder_handle, signer_handle = builder._handle, signer._handle
+    freed = []
+    real_free = bindings.ManagedResource._free_native_ptr
+
+    def free(ptr):
+        freed.append(ctypes.cast(ptr, ctypes.c_void_p).value)
+        return real_free(ptr)
+    monkeypatch.setattr(bindings.ManagedResource, "_free_native_ptr", staticmethod(free))
+    callback_ref = weakref.ref(signer._callback_cb)
+
+    def sign(*args):
+        tbs = (ctypes.c_ubyte * 3)(1, 2, 3)
+        signature = (ctypes.c_ubyte * 2048)()
+        result = signer._callback_cb(None, tbs, 3, signature, len(signature))
+        gc.collect()
+        assert builder._handle is builder_handle and signer._handle is signer_handle
+        assert not builder.is_valid and not signer.is_valid
+        assert freed == [] and callback_ref() is not None
+        if interrupt:
+            assert result == -1
+            return -1
+        assert result > 0
+        # Failure without a callback error is sufficient to exercise cleanup;
+        # no fake byte allocation should reach the real native deallocator.
+        return -1
+
+    monkeypatch.setattr(bindings, "_read_native_error", lambda: "Other: scripted signing failure")
+    if kind == "ordinary":
+        monkeypatch.setattr(bindings._lib, "c2pa_builder_sign", sign)
+        operation = lambda: builder.sign(signer, "image/jpeg", io.BytesIO(b"input"), io.BytesIO())
+    elif kind == "fragmented":
+        monkeypatch.setattr(bindings, "_FRAGMENTED_SIGN_AVAILABLE", True)
+        monkeypatch.setattr(bindings._lib, "c2pa_builder_sign_fragmented", sign, raising=False)
+        source = tmp_path / "init.mp4"
+        source.write_bytes(b"input")
+        operation = lambda: builder.sign_fragmented(signer, source, "*.m4s", tmp_path)
+    else:
+        monkeypatch.setattr(bindings, "_HAS_SIGN_LADDER", True)
+        monkeypatch.setattr(bindings._lib, "c2pa_builder_sign_ladder", sign, raising=False)
+        operation = lambda: builder.sign_ladder(signer, ["input.mp4"], ["output.mp4"])
+    with pytest.raises(SystemExit if interrupt else c2pa.C2paError) as caught:
+        operation()
+    if interrupt:
+        assert caught.value is error
+        error.__traceback__ = None
+    del caught
+    assert builder._handle is None and signer._handle is None
+    for handle in (builder_handle, signer_handle):
+        assert freed.count(ctypes.cast(handle, ctypes.c_void_p).value) == 1
+    builder.close()
+    signer.close()
+    gc.collect()
+    assert callback_ref() is None
+
+
+@pytest.mark.parametrize("kind", ["ordinary", "fragmented", "ladder"])
+@pytest.mark.parametrize("when", ["preflight", "admission", "interrupted_admission"])
+def test_builder_rejects_logically_closed_signer_preflight_or_admission(monkeypatch, tmp_path, kind, when):
+    builder = bindings.Builder._wrap_native_handle(ctypes.pointer(bindings.C2paBuilder()))
+    signer = bindings.Signer._wrap_native_handle(ctypes.pointer(bindings.C2paSigner()))
+    handle = signer._handle
+    freed = Mock(return_value=0)
+    monkeypatch.setattr(bindings.ManagedResource, "_free_native_ptr", freed)
+    native = Mock(side_effect=AssertionError("closed Signer reached native signing"))
+    interruption = KeyboardInterrupt("admission interrupted")
+    if kind == "ordinary":
+        monkeypatch.setattr(bindings._lib, "c2pa_builder_sign", native)
+        operation = lambda: builder.sign(signer, "image/jpeg", io.BytesIO(b"input"), io.BytesIO())
+    elif kind == "fragmented":
+        monkeypatch.setattr(bindings, "_FRAGMENTED_SIGN_AVAILABLE", True)
+        monkeypatch.setattr(bindings._lib, "c2pa_builder_sign_fragmented", native, raising=False)
+        source = tmp_path / "init.mp4"
+        source.write_bytes(b"input")
+        operation = lambda: builder.sign_fragmented(signer, source, "*.m4s", tmp_path)
+    else:
+        monkeypatch.setattr(bindings, "_HAS_SIGN_LADDER", True)
+        monkeypatch.setattr(bindings._lib, "c2pa_builder_sign_ladder", native, raising=False)
+        operation = lambda: builder.sign_ladder(signer, ["input.mp4"], ["output.mp4"])
+    try:
+        # A simulated close between preflight and call admission, not permission
+        # to run concurrent native operations on the borrowed Signer.
+        with signer._native_call():
+            if when == "preflight":
+                signer.close()
+            else:
+                admit = signer._native_call
+
+                def close_then_admit():
+                    signer.close()
+                    if when == "interrupted_admission":
+                        raise interruption
+                    return admit()
+                monkeypatch.setattr(signer, "_native_call", close_then_admit)
+            expected = KeyboardInterrupt if when == "interrupted_admission" else c2pa.C2paError
+            with pytest.raises(expected) as caught:
+                operation()
+            if when == "interrupted_admission":
+                assert caught.value is interruption
+            else:
+                assert "closed" in str(caught.value)
+            native.assert_not_called()
+            assert not signer.is_valid and signer._handle is handle
+            assert builder.is_valid is (when == "preflight")
+            assert freed.call_count == (0 if when == "preflight" else 1)
+        assert signer._handle is None
+    finally:
+        builder.close()
+        signer.close()
+    assert freed.call_count == 2
+
+
+def test_builder_bad_format_preflight_keeps_builder_and_signer_active(monkeypatch):
+    builder = bindings.Builder._wrap_native_handle(ctypes.pointer(bindings.C2paBuilder()))
+    signer = bindings.Signer._wrap_native_handle(ctypes.pointer(bindings.C2paSigner()))
+    freed = Mock(return_value=0)
+    monkeypatch.setattr(bindings.ManagedResource, "_free_native_ptr", freed)
+    native = Mock(side_effect=AssertionError("bad format reached native signing"))
+    monkeypatch.setattr(bindings._lib, "c2pa_builder_sign", native)
+    try:
+        with pytest.raises(c2pa.C2paError.NotSupported):
+            builder.sign(signer, "", io.BytesIO(b"input"), io.BytesIO())
+        assert builder.is_valid and signer.is_valid
+        assert builder._active_calls == signer._active_calls == 0
+        native.assert_not_called()
+        freed.assert_not_called()
+    finally:
+        builder.close()
+        signer.close()

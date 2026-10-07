@@ -91,3 +91,14 @@ def test_functional_installed_qualification_removes_source_overrides():
                  "test_sign_ladder.py", "test_native_ownership.py",
                  "test_native_ownership_opaque.py"):
         assert f'"{name}"' in source
+
+
+def test_ci_keeps_existing_trusted_author_and_label_gate():
+    workflow = (ROOT / ".github/workflows/build.yml").read_text()
+    gate = workflow.split("  trusted-vsi-paired:", 1)[1].split("  read-version:", 1)[0]
+    assert "author_association == 'COLLABORATOR'" in gate
+    assert "author_association == 'MEMBER'" in gate
+    assert "contains(github.event.pull_request.labels.*.name, 'safe to test')" in gate
+    assert "pull_request_target" not in workflow
+    assert "      - labeled" in workflow
+    assert "secrets: inherit" not in gate

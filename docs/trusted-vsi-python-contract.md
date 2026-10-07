@@ -1,34 +1,15 @@
 # Trusted VSI Python Contract
 
-Status: implemented and qualified against the consolidated functional native
-library from `castlabs/c2pa-rs` `feat/trusted-vsi-functional` (native
-`0.92.0-dev`, Rust 1.96.0, capability mask 63), following `c2pa-rs`
-`docs/trusted-vsi-native-contract.md`. The paired native is pinned to
-`6b506352800c8225cf5564ce99c726aaa71039f4`: `203dc08d` (ContentAuth main
-`69907b5a` merged) plus CI-only fixes (rustls `0.23.45` / rustls-webpki
-`0.103.15` for RUSTSEC-2026-0285, test-only lint scopes, a feature gate on a
-crate-private helper, rustdoc) with no C ABI or capability change. The Python
-source integrates single-file ladder signing (`Builder.sign_ladder`) and
-carries the unreleased identity `0.37.13.dev0`. The `203dc08d` pairing was
-qualified at source `5c64f2cc090eeb29506bc766faa69b959e4ed982` by hosted
-Linux/Windows paired run `castlabs/c2pa-python` Actions 36793704783 (focused
-186, real-native ladder harness, non-threaded 730, threaded 54, installed-wheel
-186). Qualification of the `6b506352` pairing is recorded on
-castlabs/c2pa-python#4 by run ID.
-
-Earlier evidence: native `5c186c07` (debug `libc2pa_c.so` SHA-256
-`dc79e81a084fc7b25e12423539b137f24d69693da46cb0166cb04538bd5589f9`) at source
-`941c2ad5b57d23f31dbabf9fbef4776878cf630c`: local Linux focused 179 passed,
-real-native ladder harness passed, non-threaded 714 passed, threaded 54 passed,
-installed-wheel 179 passed; hosted Linux/Windows paired run
-`castlabs/c2pa-python` Actions 36671268428 passed on both. Local qualification-only artifacts
-(never published): `c2pa_python-0.37.13.dev0-py3-none-linux_x86_64.whl` SHA-256
-`8731d135ce2c1db61b061e1f2c76272a55b9f7e7e2e2ea8769b10b5fd4a8707f`, sdist
-`e846e5688d07bcf5959885c0c1728afde4ec89bbb7cf2b80a665956056b8b5ab`. The earlier
-`0.37.9.dev0` artifacts paired with native `3569fb86` are historical evidence
-only. This is unreleased API; immutable dev5 release inputs and artifacts are
-unchanged. The class is `TrustedVsiSession`, and `reserve_init_uuid()` returns
-`bytes` (see below).
+Status: unreleased PR4 review changes requiring the native step2 contract
+(state version 3 and typed expert VSI payloads), following `c2pa-rs`
+`docs/trusted-vsi-native-contract.md`. The Python identity is `0.37.13.dev0`;
+immutable dev5 release inputs and artifacts are unchanged. No native pin is
+changed here. Select a reviewed local library with `C2PA_LIBRARY_NAME` for
+integration tests. Version `0.92.0-dev` and mask 63 do not establish revision
+identity; the explicit native revision probe is deferred step3 work, not a new
+API in step1/2. Hosted qualification is on hold until final native integration.
+Prior results and machine-local provenance are archived in
+[review verification](archive/trusted-vsi-review-verification.md).
 
 ## Availability
 
@@ -83,7 +64,7 @@ Methods (externally serialize calls on one session):
 | `sign_sig_structure(sig_structure: bytes, sequence_number: int)` | `bytes`: exactly 64 raw signature bytes (ES256 P1363 or Ed25519) |
 | `reserve_media_emsg_at(sequence_number, signing_time_unix_seconds, timescale, event_duration)` | `TrustedVsiMediaEmsgReservation` |
 | `finalize_media_emsg(canonical_bmff_hash: bytes)` | `bytes`: complete signed EMSG, same length as reservation |
-| `export_state()` | `bytes`: versioned public JSON record (currently version 2), including pending reservations |
+| `export_state()` | `bytes`: versioned public JSON record (currently version 3), including pending reservations |
 | `import_state(state: bytes)` | `None`; only into a NEW session with identical identity (see State records) |
 | `status()` | `TrustedVsiStatus` |
 | `preflight(operation, data=b"", *, sequence_number=0, iat=0, timescale=0, event_duration=0, format="video/mp4")` | `None`; no callbacks, key use, reservation or mutation |
@@ -106,9 +87,15 @@ INIT_HASH=0, SIG_STRUCTURE=1, MEDIA_HASH=2.
   `sequence_number` / `event_id` properties. `signing_context` is exactly what the
   finalize callback will receive (terminal `exhaust_after_sign=True` at the limit).
 - `TrustedVsiStatus(init_uuid_committed, init_uuid_pending, media_emsg_pending,
-  next_sequence_number, next_event_id, exhausted, exhaustion_reason)`; optional
+  next_sequence_number, next_event_id, exhausted, exhaustion_reason=None, blocked=False)`; optional
   fields are `None` when absent. Expert: counters `None`, `exhausted=False`.
   `exhaustion_reason` is `"sequence_max"`, `"event_id_max"` or `"legacy_sentinel"`.
+  `blocked` reports an external-signing failure, independently of exhaustion.
+  The C V1 layout has `blocked: bool` at offset 18; `exhaustion_reason: uint32`
+  remains at offset 20 (24-byte size, 4-byte alignment).
+  This native field already exists in the current `6b506352` pairing, including
+  its `blocked: rust.blocked()` conversion; the Python bridge now exposes it.
+  The integration hold is not a known missing-`blocked` ABI problem in that pin.
 
 Removed without aliases: `TrustedVsiPrehashedSession`, `TrustedVsiSignResult`,
 `TrustedVsiInitUuidReservation`, `recover(...)`, and the private Python gate.
@@ -117,8 +104,16 @@ Removed without aliases: `TrustedVsiPrehashedSession`, `TrustedVsiSignResult`,
 
 - Expert: the processor supplies the sequence (must equal `moof/mfhd`) and owns
   ordering, replay IDs and rollover. Any sequence in `[min, max]` is accepted,
-  including repeats of older sequences. Native validates canonical framing,
-  signs the original bytes unchanged, never decodes the payload, keeps no counter.
+  including repeats of older sequences. Native validates framing and a typed,
+  untagged VSI payload map: `sequenceNumber` (uint32 matching the supplied
+  sequence), `manifestId` (the pinned init ID), and `bmffHash` (the exact native
+  SHA-256 media-template map with a 32-byte hash), plus optional valid
+  `manifestUri` hashed-URI map. Protected headers require canonical matching
+  integer `alg` and integer `iat` within the configured key window. Payload
+  field order need not be canonical. Native signs the original bytes unchanged
+  and keeps no expert media counter. A detached signerBinding certificate bstr
+  is not an expert VSI payload. Static validation checks shape/types but cannot
+  check a particular session's manifest ID or key validity window.
 - Composed: reserve requires `sequence_number == next_sequence_number`
   (initially `min`); events start at 1; timing values must be positive. Reserve
   signs nothing. Finalize advances counters or exhausts without wrapping.
@@ -157,8 +152,14 @@ Removed without aliases: `TrustedVsiPrehashedSession`, `TrustedVsiSignResult`,
 `export_state()` returns native-owned bytes; Python neither parses nor rewrites
 them. Treat them as opaque, persist them atomically and authenticated, and pass
 them back byte-for-byte. The native format is
-`{"format": "c2pa.trusted-vsi.state", "version": 2, "identity", "state"}`.
-Version 1 (unreleased) is rejected; there is no migration.
+`{"format": "c2pa.trusted-vsi.state", "version": 3, "identity", "state"}`.
+Versions 1 and 2 (unreleased) are rejected; there is no migration.
+Trusted reservation salts are deterministically derived from the public nonce
+and versioned artifact/label domains, not private key material. Import and init
+finalize preflight reconstruct the entire expected reservation (including static
+assertions, resources and DA slots) and require byte-for-byte equality; matching
+the editable identity alone is not sufficient. Signed-init imports additionally
+validate full finalized-store consistency. Python treats these bytes as opaque.
 
 `import_state()` succeeds only on a NEW session whose identity matches exactly:
 mode, VSI session config/public key/kid, constructor options (including the
@@ -184,6 +185,32 @@ callback, so they survive signer consumption into the Context and caller
 `Context.close()`. Returned native byte buffers are initialized to NULL, copied,
 and freed exactly once with `c2pa_free`; the manifest-ID string uses
 `c2pa_string_free`. Input buffers are borrowed.
+
+Signing calls on TrustedVsiSession, complete-buffer LiveVideoVsiSession and
+Builder admit a native borrow under a short per-resource lock. `close()` makes
+the resource logically closed immediately and rejects new operations, but does
+not cancel an admitted operation. Physical `_release` and handle free wait for
+the last admitted call to return, including when close is called reentrantly
+from a callback or from another thread. Builder also guards its explicit borrowed
+Signer. Locks are never held across native calls or user callbacks. Callback
+objects (including a copied DA list) remain pinned through `_release` and native
+destruction, then become collectible. Consuming-handle ownership and Reader
+stream cleanup ordering are unchanged. Builder still closes automatically after
+an attempted sign, on success or failure including BaseException. If a borrowed
+Signer closes after preflight and admission fails, Builder closes too; earlier
+validation failures remain non-consuming. These guards do not make all resource
+methods thread-safe: unguarded Reader, `with_archive()` and complete-buffer
+`recover()` calls must be externally serialized with close and other operations.
+Concurrent native operations also require serialization on guarded paths.
+
+Guarded admission deliberately rejects foreign-PID inherited resources before
+touching an inherited lock or making the guarded FFI call. This is a limited
+behavior change from cleanup-only suppression of inherited native frees, not an
+SDK-wide fork ban. Create worker-owned signers, Contexts and sessions in the
+worker. Unguarded constructors accepting inherited Contexts are not uniformly
+blocked; their existence does not establish safe inherited-object use. Caller
+serialization obligations for unguarded operations and close remain unchanged.
+See [fork safety](native-resources-management.md#fork-safety).
 
 Errors: Python argument problems raise `TypeError`/`ValueError`. Callback results
 that are not exactly 64 `bytes` raise `TypeError`/`ValueError`. Any exception
@@ -219,6 +246,27 @@ Paired tests require the full native library and FAIL under
 skip only in ad-hoc local runs. `.github/workflows/trusted-vsi-paired.yml`
 builds the native with Rust 1.96.0 from the reviewed consolidated commit
 `6b506352800c8225cf5564ce99c726aaa71039f4` (ContentAuth main `69907b5a` merged
-plus CI-only fixes; previously `203dc08d`, before that `5c186c07`). The status
-block at the top records the qualified pairings; update that pin by full SHA
-(not a branch name) for later native revisions.
+plus CI-only fixes; previously `203dc08d`, before that `5c186c07`). That older
+pin emits state version 2, so the required version-3 tests deliberately fail
+against it. No tests or capability gates are weakened to accommodate this hold.
+Final native integration/qualification and a full-SHA repin belong to a separate
+authorized step, not these Python-only review changes.
+
+## PR4 CI Gate
+
+At head `12d265db92e8dcbf80b8255278e9a7fc5945f750`, Build run
+`36810322522` completed its version/format/tooling jobs but skipped the paired
+and platform test jobs. The current PR API reports author association `MEMBER`
+and no labels; the source gate already accepts `COLLABORATOR` and `MEMBER`.
+The retained run metadata does not establish the event-time association, so this
+is not evidence that the current MEMBER condition is wrong. No author gate is
+broadened here (in particular no speculative OWNER exception or fork secrets).
+Do NOT apply the maintainer `safe to test` label or run paired CI expecting it to
+pass until the final native revision is integrated and pinned in the separate
+authorized integration step. The unchanged older native pin and the new
+required state-v3 tests are intentionally incompatible. Only after integration
+should a maintainer review the head, apply the existing label to trigger the
+`labeled` event, and confirm required jobs actually ran. This task does not post
+labels, dispatch CI, or repin. A green workflow with skipped test jobs is not
+qualification, and local targeted older-library compatibility checks do not lift
+the integration hold.
