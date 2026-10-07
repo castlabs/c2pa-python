@@ -83,20 +83,25 @@ def test_unshipped_counter_result_and_recovery_are_removed():
 def test_partial_or_unknown_capability_mask_never_advertises_functionality(monkeypatch, mask):
     monkeypatch.setattr(bindings, "_TRUSTED_VSI_ABI_AVAILABLE", True)
     monkeypatch.setattr(bindings, "_TRUSTED_VSI_VERSION_MATCHES", True)
+    monkeypatch.setattr(bindings, "_TRUSTED_VSI_CONTRACT_REVISION", 3)
     monkeypatch.setattr(bindings, "_TRUSTED_VSI_CAPABILITIES", mask)
     assert not any(probe() for probe in PROBES)
 
 
 @pytest.mark.parametrize("missing", ["_TRUSTED_VSI_ABI_AVAILABLE", "_TRUSTED_VSI_VERSION_MATCHES"])
 def test_missing_symbols_or_wrong_native_version_fail_closed(monkeypatch, missing):
+    monkeypatch.setattr(bindings, "_TRUSTED_VSI_ABI_AVAILABLE", True)
+    monkeypatch.setattr(bindings, "_TRUSTED_VSI_VERSION_MATCHES", True)
+    monkeypatch.setattr(bindings, "_TRUSTED_VSI_CONTRACT_REVISION", 3)
     monkeypatch.setattr(bindings, "_TRUSTED_VSI_CAPABILITIES", 63)
     monkeypatch.setattr(bindings, missing, False)
     assert not any(probe() for probe in PROBES)
 
 
 def test_paired_native_version_is_exact_consolidated_release_line():
-    # Changing this pin requires re-pairing qualification with a reviewed native SHA.
+    # This release line is necessary but does not identify the trusted contract.
     assert bindings._TRUSTED_VSI_NATIVE_VERSION == "0.92.0-dev"
+    assert bindings._TRUSTED_VSI_REQUIRED_CONTRACT_REVISION == 3
 
 
 @pytest.mark.parametrize("native_version, expected", [
@@ -114,9 +119,26 @@ def test_native_version_gate_accepts_only_exact_paired_token(native_version, exp
     assert bindings._trusted_vsi_version_matches(native_version) is expected
 
 
+@pytest.fixture(params=[
+    ("_TRUSTED_VSI_CONTRACT_REVISION", revision) for revision in (0, 1, 2, 4)
+] + [
+    ("_TRUSTED_VSI_ABI_AVAILABLE", False),
+    ("_TRUSTED_VSI_VERSION_MATCHES", False),
+    ("_TRUSTED_VSI_CAPABILITIES", 0),
+    ("_TRUSTED_VSI_CAPABILITIES", 62),
+    ("_TRUSTED_VSI_CAPABILITIES", 127),
+])
+def disabled_gate(monkeypatch, request):
+    monkeypatch.setattr(bindings, "_TRUSTED_VSI_ABI_AVAILABLE", True)
+    monkeypatch.setattr(bindings, "_TRUSTED_VSI_VERSION_MATCHES", True)
+    monkeypatch.setattr(bindings, "_TRUSTED_VSI_CONTRACT_REVISION", 3)
+    monkeypatch.setattr(bindings, "_TRUSTED_VSI_CAPABILITIES", 63)
+    monkeypatch.setattr(bindings, *request.param)
+    assert not any(probe() for probe in PROBES)
+
+
 @pytest.mark.parametrize("factory", [c2pa.TrustedVsiSession, c2pa.TrustedVsiSession.from_callback])
-def test_disabled_constructor_gates_before_arguments_callbacks_or_bookkeeping(monkeypatch, factory):
-    monkeypatch.setattr(bindings, "_TRUSTED_VSI_CAPABILITIES", 0)
+def test_disabled_constructor_gates_before_arguments_callbacks_or_bookkeeping(monkeypatch, disabled_gate, factory):
     forbidden = Mock(side_effect=AssertionError("side effect before capability gate"))
     monkeypatch.setattr(bindings.ManagedResource, "__init__", forbidden)
     monkeypatch.setattr(bindings, "_lib", forbidden)
@@ -174,13 +196,127 @@ def test_python_mapping_matches_native_contract_signatures():
     ("validate_trusted_vsi_input", (object(), object(), object())),
     ("trusted_vsi_hash_template", (object(),)),
 ])
-def test_static_helpers_gate_before_arguments_or_native(monkeypatch, function, args):
-    monkeypatch.setattr(bindings, "_TRUSTED_VSI_CAPABILITIES", 0)
+def test_static_helpers_gate_before_arguments_or_native(monkeypatch, disabled_gate, function, args):
     forbidden = Mock(side_effect=AssertionError("native touched"))
     monkeypatch.setattr(bindings, "_lib", forbidden)
     with pytest.raises(c2pa.C2paError.NotSupported):
         getattr(c2pa, function)(*args)
     forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize("revision,version,mask,missing", [
+    (revision, "0.92.0-dev", 63, None) for revision in (None, 0, 1, 2, 3, 4)
+] + [
+    (3, "0.91.0", 63, None),
+    (3, "0.92.0-dev", 63, "c2pa_live_video_trusted_vsi_session_status_v1"),
+    (3, "0.92.0-dev", 63, "c2pa_live_video_trusted_vsi_capabilities"),
+] + [
+    (3, "0.92.0-dev", mask, None) for mask in (0, 1, 31, 62, 64, 127)
+])
+def test_raw_loader_contract_gate_precedes_operational_ffi(revision, version, mask, missing):
+    """A fresh import must not bind/call old ABI even with matching names/mask."""
+    program = r'''
+import ctypes
+import json
+from pathlib import Path
+import sys
+
+revision, version, mask, missing = json.loads(sys.argv[1])
+prefix = "c2pa_live_video_trusted_vsi_"
+probe_names = {prefix + "contract_revision", prefix + "capabilities"}
+events = []
+version_buffer = ctypes.create_string_buffer(("c2pa-rs/" + version).encode())
+
+class Function:
+    def __init__(self, name):
+        self.name = name
+
+    def __setattr__(self, name, value):
+        if name in ("argtypes", "restype"):
+            events.append(("bind", self.name, name))
+        object.__setattr__(self, name, value)
+
+    def __call__(self, *args):
+        events.append(("call", self.name))
+        if self.name in probe_names:
+            assert args == () and self.argtypes == []
+            assert self.restype is (ctypes.c_uint32 if self.name.endswith("revision") else ctypes.c_uint64)
+            return revision if self.name.endswith("revision") else mask
+        if self.name == "c2pa_version":
+            return ctypes.addressof(version_buffer)
+        if self.name == "c2pa_string_free":
+            return None
+        raise AssertionError("unsafe native call: " + self.name)
+
+class Library:
+    def __getattr__(self, name):
+        if name == missing or (name == prefix + "contract_revision" and revision is None):
+            raise AttributeError(name)
+        function = Function(name)
+        setattr(self, name, function)
+        return function
+
+library = Library()
+ctypes.CDLL = lambda *args, **kwargs: library
+import c2pa
+import c2pa.c2pa as bindings
+assert Path(bindings.__file__).resolve() == Path(sys.argv[2]).resolve()
+
+accepted = revision == 3 and version == "0.92.0-dev" and mask == 63 and missing is None
+probes = [getattr(c2pa, name) for name in c2pa.__all__ if name.startswith("has_live_video_trusted_vsi_")]
+assert len(probes) == 6 and [probe() for probe in probes] == [accepted] * 6
+assert bindings._TRUSTED_VSI_ABI_AVAILABLE is accepted
+assert bindings._TRUSTED_VSI_CONTRACT_REVISION == (revision or 0)
+operational = set(bindings._TRUSTED_VSI_FUNCTIONS) - probe_names
+for name in operational - {missing}:
+    assert ("argtypes" in vars(getattr(library, name))) is accepted, name
+    assert ("restype" in vars(getattr(library, name))) is accepted, name
+if accepted:
+    revision_call = events.index(("call", prefix + "contract_revision"))
+    version_call = events.index(("call", "c2pa_version"))
+    mask_call = events.index(("call", prefix + "capabilities"))
+    assert revision_call < version_call < mask_call
+    assert all(mask_call < i for i, event in enumerate(events)
+               if event[0] == "bind" and event[1] in operational)
+else:
+    def forbidden(*args, **kwargs):
+        raise AssertionError("argument processing/buffer/callback/bookkeeping before gate")
+    bindings.ManagedResource.__init__ = forbidden
+    bindings.ctypes.create_string_buffer = forbidden
+    bindings.TrustedVsiSignCallbackV1 = forbidden
+    bindings._trusted_vsi_algorithm = forbidden
+    for factory in (c2pa.TrustedVsiSession, c2pa.TrustedVsiSession.from_callback):
+        try:
+            factory(*[object() for _ in range(9)], mode=object(),
+                    reservation_nonce=object(), signing_time_unix_seconds=object())
+        except c2pa.C2paError.NotSupported:
+            pass
+        else:
+            raise AssertionError("constructor accepted rejected contract")
+    for function, args in ((c2pa.validate_trusted_vsi_input, (object(), object(), object())),
+                           (c2pa.trusted_vsi_hash_template, (object(),))):
+        try:
+            function(*args)
+        except c2pa.C2paError.NotSupported:
+            pass
+        else:
+            raise AssertionError("helper accepted rejected contract")
+assert not any(event[0] == "call" and event[1] in operational for event in events)
+assert c2pa.has_live_video_vsi() and c2pa.has_live_video_vsi_callbacks()
+assert library.c2pa_live_video_vsi_signer_create_callback.argtypes
+assert library.c2pa_builder_sign.argtypes
+print("raw loader contract gate verified")
+'''
+    env = os.environ.copy()
+    # Keep raw-loader checks on the parent's selected source or installed package.
+    env["PYTHONPATH"] = str(Path(bindings.__file__).resolve().parent.parent)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    result = subprocess.run(
+        [sys.executable, "-c", program, json.dumps([revision, version, mask, missing]), bindings.__file__],
+        cwd=Path(__file__).resolve().parents[1], env=env,
+        capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "raw loader contract gate verified" in result.stdout
 
 
 class _ScriptedNative:
@@ -196,6 +332,7 @@ class _ScriptedNative:
         self._keep = self.handle._objects
         monkeypatch.setattr(bindings, "_TRUSTED_VSI_ABI_AVAILABLE", True)
         monkeypatch.setattr(bindings, "_TRUSTED_VSI_VERSION_MATCHES", True)
+        monkeypatch.setattr(bindings, "_TRUSTED_VSI_CONTRACT_REVISION", 3)
         monkeypatch.setattr(bindings, "_TRUSTED_VSI_CAPABILITIES", 63)
         real_free = bindings.ManagedResource._free_native_ptr
 
@@ -240,6 +377,22 @@ class _ScriptedNative:
         signature = (ctypes.c_ubyte * 64)()
         result = self.callback(None, ctypes.pointer(context), tbs, len(data), signature, 64)
         return result, bytes(signature)
+
+
+def test_scripted_static_helpers_use_current_contract(monkeypatch):
+    native = _ScriptedNative(monkeypatch)
+
+    def validate(kind, algorithm, data, length):
+        assert (kind, algorithm, ctypes.string_at(data, length)) == (
+            KIND.SIG_STRUCTURE, c2pa.C2paSigningAlg.ED25519, b"exact-input")
+        return 0
+
+    native.install(monkeypatch, "validate_input", validate)
+    native.install(monkeypatch, "hash_template", lambda kind, output: native.output(output, b"template"))
+    assert c2pa.validate_trusted_vsi_input(KIND.SIG_STRUCTURE, "ed25519", b"exact-input") is None
+    assert c2pa.trusted_vsi_hash_template(KIND.INIT_HASH) == b"template"
+    assert [name for name, args in native.calls] == ["validate_input", "hash_template"]
+    assert len(native.freed) == 1
 
 
 @pytest.fixture
@@ -524,6 +677,9 @@ def paired_native():
     problems = []
     if missing:
         problems.append("missing symbols: " + ", ".join(missing))
+    revision = bindings._TRUSTED_VSI_CONTRACT_REVISION
+    if revision != 3:
+        problems.append(f"contract revision {revision} != 3")
     expected = bindings._TRUSTED_VSI_NATIVE_VERSION
     if c2pa.sdk_version() != expected:
         problems.append(f"native version {c2pa.sdk_version()!r} != {expected!r}")
@@ -545,6 +701,28 @@ def paired_native():
         assert Path(bindings._lib._name).resolve().is_relative_to(root)
         assert c2pa.__version__ == os.environ["C2PA_FUNCTIONAL_EXPECTED_VERSION"]
         assert "C2PA_LIBRARY_NAME" not in os.environ and "PYTHONPATH" not in os.environ
+
+
+@pytest.mark.parametrize("flag", ["C2PA_TRUSTED_VSI_ABI_REQUIRED", "C2PA_TRUSTED_VSI_FUNCTIONAL_REQUIRED"])
+@pytest.mark.parametrize("revision", [None, 0, 1, 2, 4])
+def test_required_qualification_revision_diagnostic_fails_never_skips(monkeypatch, flag, revision):
+    library = Mock()
+    if revision is None:
+        del library.c2pa_live_video_trusted_vsi_contract_revision
+    library.c2pa_live_video_trusted_vsi_capabilities.return_value = 63
+    monkeypatch.setattr(bindings, "_lib", library)
+    monkeypatch.setattr(bindings, "_TRUSTED_VSI_CONTRACT_REVISION", revision or 0)
+    monkeypatch.setattr(c2pa, "sdk_version", lambda: "0.92.0-dev")
+    monkeypatch.delenv("C2PA_TRUSTED_VSI_ABI_REQUIRED", raising=False)
+    monkeypatch.delenv("C2PA_TRUSTED_VSI_FUNCTIONAL_REQUIRED", raising=False)
+    monkeypatch.setenv(flag, "1")
+    with pytest.raises(pytest.fail.Exception, match=f"contract revision {revision or 0} != 3") as caught:
+        paired_native.__wrapped__()
+    assert "required qualification; never skipped" in str(caught.value)
+    if revision is None:
+        assert "missing symbols: c2pa_live_video_trusted_vsi_contract_revision" in str(caught.value)
+    library.c2pa_live_video_trusted_vsi_session_create_callback_v1.assert_not_called()
+    library.c2pa_live_video_trusted_vsi_session_status_v1.assert_not_called()
 
 
 @pytest.fixture
@@ -681,6 +859,11 @@ def _init(session):
 
 def test_paired_ctypes_exact_functional_contract_and_error_outputs(paired_native):
     lib = bindings._lib
+    assert lib.c2pa_live_video_trusted_vsi_contract_revision.argtypes == []
+    assert lib.c2pa_live_video_trusted_vsi_contract_revision.restype is ctypes.c_uint32
+    assert lib.c2pa_live_video_trusted_vsi_contract_revision() == 3
+    assert lib.c2pa_live_video_trusted_vsi_capabilities.argtypes == []
+    assert lib.c2pa_live_video_trusted_vsi_capabilities.restype is ctypes.c_uint64
     session = ctypes.POINTER(bindings.C2paLiveVideoTrustedVsiSession)
     byte = ctypes.POINTER(ctypes.c_ubyte)
     output = ctypes.POINTER(byte)

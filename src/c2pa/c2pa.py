@@ -130,7 +130,11 @@ _LIVE_VIDEO_VSI_MFHD_PROBE_FUNCTIONS = (
 
 # Optional trusted-processor prehashed VSI API. The native ABI is being
 # developed independently, so every symbol remains optional and the Python
-# surface fails closed unless both the corresponding bit and symbols exist.
+# surface fails closed unless the exact contract revision, version, mask and
+# complete symbol set match. Only stateless probes are safe before that gate.
+_TRUSTED_VSI_CONTRACT_REVISION_FUNCTIONS = (
+    'c2pa_live_video_trusted_vsi_contract_revision',
+)
 _TRUSTED_VSI_CAPABILITIES_FUNCTIONS = (
     'c2pa_live_video_trusted_vsi_capabilities',
 )
@@ -163,7 +167,8 @@ _TRUSTED_VSI_PREFLIGHT_FUNCTIONS = (
     'c2pa_live_video_trusted_vsi_hash_template',
 )
 _TRUSTED_VSI_FUNCTIONS = (
-    _TRUSTED_VSI_CAPABILITIES_FUNCTIONS + _TRUSTED_VSI_CREATE_FUNCTIONS
+    _TRUSTED_VSI_CONTRACT_REVISION_FUNCTIONS
+    + _TRUSTED_VSI_CAPABILITIES_FUNCTIONS + _TRUSTED_VSI_CREATE_FUNCTIONS
     + _TRUSTED_VSI_SPLIT_INIT_FUNCTIONS + _TRUSTED_VSI_EXPERT_SIG_STRUCTURE_FUNCTIONS
     + _TRUSTED_VSI_COMPOSED_MEDIA_FUNCTIONS + _TRUSTED_VSI_RECOVERY_FUNCTIONS
     + _TRUSTED_VSI_STATUS_FUNCTIONS + _TRUSTED_VSI_PREFLIGHT_FUNCTIONS
@@ -176,6 +181,7 @@ _TRUSTED_VSI_CAP_RECOVERY = 1 << 3
 _TRUSTED_VSI_CAP_SIGNING_CONTEXT_V1 = 1 << 4
 _TRUSTED_VSI_CAP_FULL_UINT32_SEQUENCE = 1 << 5
 _TRUSTED_VSI_REQUIRED_CAPABILITIES = 63
+_TRUSTED_VSI_REQUIRED_CONTRACT_REVISION = 3
 
 # Castlabs dynamic-assertion extension. Keep this optional so the package can
 # still be imported with standard upstream native libraries.
@@ -296,15 +302,16 @@ _TRUSTED_VSI_STATUS_AVAILABLE = all(
     hasattr(_lib, name) for name in _TRUSTED_VSI_STATUS_FUNCTIONS
 )
 _TRUSTED_VSI_CAPABILITIES = 0
+_TRUSTED_VSI_CONTRACT_REVISION = 0
 _TRUSTED_VSI_ABI_AVAILABLE = all(hasattr(_lib, name) for name in _TRUSTED_VSI_FUNCTIONS)
 _TRUSTED_VSI_VERSION_MATCHES = False
-# Exact paired native version for the functional trusted-VSI ABI. Qualification
-# pins the native commit separately; this is deliberately not a range.
+# Required SDK release line, not contract identity. The revision probe gates the
+# trusted-VSI contract; qualification pins the native commit separately.
 _TRUSTED_VSI_NATIVE_VERSION = "0.92.0-dev"
 
 
 def _trusted_vsi_version_matches(native_version: bytes) -> bool:
-    """Return whether c2pa_version() names exactly the paired c2pa-rs build."""
+    """Return whether c2pa_version() names the required SDK release line."""
     expected = b"c2pa-rs/" + _TRUSTED_VSI_NATIVE_VERSION.encode("ascii")
     return expected in native_version.split()
 
@@ -1479,14 +1486,24 @@ if _LIVE_VIDEO_VSI_MFHD_PROBE_AVAILABLE:
         ctypes.c_int
     )
 
-# Only bind the functional ABI when its complete distinguishing symbol set is
-# present. The old scaffold reused names with incompatible argument layouts.
-if _TRUSTED_VSI_ABI_AVAILABLE:
+# Bind/call only safe, stateless probes before admitting the operational ABI.
+# Older contracts reused symbols and SDK versions with incompatible semantics.
+if hasattr(_lib, 'c2pa_live_video_trusted_vsi_contract_revision'):
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_contract_revision,
+        [],
+        ctypes.c_uint32,
+    )
+    _TRUSTED_VSI_CONTRACT_REVISION = int(
+        _lib.c2pa_live_video_trusted_vsi_contract_revision())
+if _TRUSTED_VSI_CAPABILITIES_FUNCTION_AVAILABLE:
     _setup_function(
         _lib.c2pa_live_video_trusted_vsi_capabilities,
         [],
         ctypes.c_uint64,
     )
+if (_TRUSTED_VSI_ABI_AVAILABLE
+        and _TRUSTED_VSI_CONTRACT_REVISION == _TRUSTED_VSI_REQUIRED_CONTRACT_REVISION):
     native_version_ptr = _lib.c2pa_version()
     if native_version_ptr:
         try:
@@ -1496,6 +1513,13 @@ if _TRUSTED_VSI_ABI_AVAILABLE:
             _lib.c2pa_string_free(native_version_ptr)
     if _TRUSTED_VSI_VERSION_MATCHES:
         _TRUSTED_VSI_CAPABILITIES = int(_lib.c2pa_live_video_trusted_vsi_capabilities())
+_TRUSTED_VSI_ABI_AVAILABLE = (
+    _TRUSTED_VSI_ABI_AVAILABLE
+    and _TRUSTED_VSI_CONTRACT_REVISION == _TRUSTED_VSI_REQUIRED_CONTRACT_REVISION
+    and _TRUSTED_VSI_VERSION_MATCHES
+    and _TRUSTED_VSI_CAPABILITIES == _TRUSTED_VSI_REQUIRED_CAPABILITIES
+)
+if _TRUSTED_VSI_ABI_AVAILABLE:
     _setup_function(
         _lib.c2pa_live_video_trusted_vsi_session_create_callback_v1,
         [ctypes.POINTER(C2paContext),
@@ -2462,6 +2486,7 @@ class TrustedVsiStatus:
 def _has_trusted_vsi_capability(bit: int, symbols_available: bool = True) -> bool:
     return (
         _TRUSTED_VSI_ABI_AVAILABLE
+        and _TRUSTED_VSI_CONTRACT_REVISION == _TRUSTED_VSI_REQUIRED_CONTRACT_REVISION
         and _TRUSTED_VSI_VERSION_MATCHES
         and _TRUSTED_VSI_CAPABILITIES == _TRUSTED_VSI_REQUIRED_CAPABILITIES
         and symbols_available
@@ -2602,7 +2627,7 @@ def _require_trusted_vsi():
     if not has_live_video_trusted_vsi_signing_context_v1():
         raise C2paError.NotSupported(
             f"Functional trusted VSI requires the complete {_TRUSTED_VSI_NATIVE_VERSION} native ABI "
-            "and capability mask 63; the loaded library is unavailable")
+            "with contract revision 3 and capability mask 63; the loaded library is unavailable")
 
 
 def _trusted_vsi_integer(value, name, maximum=2**32 - 1, minimum=0):
@@ -5865,17 +5890,29 @@ class Builder(ManagedResource):
     ) -> bytes:
         """Sign a fragmented BMFF file set and return its manifest bytes.
 
-        The native library writes signed files below
-        ``<output_dir>/<asset-parent-name>/``. This compatibility API accepts
-        one literal existing initialization segment and an explicit Signer.
+        With the paired glob-aware Castlabs 0.92.0-dev native including #17,
+        the native library writes signed files below
+        ``<output_dir>/<init-parent-name>/``. An init path or glob selects one
+        or more renditions, all signed with one shared manifest and an explicit
+        Signer. Native code validates globs and output collisions and refuses
+        existing rendition output directories. Use fresh, exclusively owned
+        outputs outside the input globs; failures may leave partial outputs.
+        These glob/output guarantees are verified for that pairing. Export
+        presence alone does not establish them for older native lineages, which
+        may be literal-only or have different overwrite semantics. Older builds
+        may contain backports; no version cutoff is imposed here.
         Like :meth:`sign`, an attempted native signing operation closes this
         single-use Builder while leaving the borrowed Signer active.
 
         Args:
             signer: Active Signer borrowed for this operation.
-            asset_path: Literal path to an existing initialization segment.
-            fragments_glob: Fragment filename glob relative to the asset's
-                parent directory.
+            asset_path: Init path or glob matching one or more initialization
+                segments, each with a named parent directory (e.g.
+                ``video/init.mp4``, not bare ``init.mp4``). Parent directory names
+                must be distinct. Paths use native glob syntax even for a single
+                init in the paired native.
+            fragments_glob: Fragment glob relative to each init's parent
+                directory. Fragment subdirectories are flattened in output.
             output_dir: Root directory for the nested signed output.
 
         Returns:
@@ -5884,9 +5921,9 @@ class Builder(ManagedResource):
         Raises:
             C2paError.NotSupported: If the native API is unavailable.
             TypeError: If signer or path inputs have invalid types.
-            ValueError: If a path is empty, contains a NUL character, or
-                ``asset_path`` is not one literal existing file.
-            C2paError: If signing fails.
+            ValueError: If a path is empty or contains a NUL character.
+            C2paError.Encoding: If a path cannot be encoded as UTF-8.
+            C2paError: If native glob/layout validation or signing fails.
         """
         self._ensure_valid_state()
         if not isinstance(signer, Signer):
@@ -5899,18 +5936,11 @@ class Builder(ManagedResource):
                 "file_io feature"
             )
 
-        asset_path_str, asset_path_bytes = _encode_path(
+        _, asset_path_bytes = _encode_path(
             asset_path, "asset_path")
         _, fragments_glob_bytes = _encode_path(
             fragments_glob, "fragments_glob")
         _, output_dir_bytes = _encode_path(output_dir, "output_dir")
-        if any(character in asset_path_str for character in "*?[]"):
-            raise ValueError(
-                "asset_path must be one literal initialization-segment path")
-        if not Path(asset_path_str).is_file():
-            raise ValueError(
-                "asset_path must identify an existing regular file")
-
         dynamic_assertion_cbs = list(signer._dynamic_assertion_cbs)
         claim_state = _claim_signer_error_state(signer._callback_cb)
         da_states = [state for _, state, _ in dynamic_assertion_cbs]

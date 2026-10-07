@@ -1,26 +1,41 @@
 # Trusted VSI Python Contract
 
-Status: unreleased PR4 review changes requiring the native step2 contract
-(state version 3 and typed expert VSI payloads), following `c2pa-rs`
+Status: integrated, unreleased PR4 review changes requiring native trusted-VSI
+contract revision 3 (state version 3 and typed expert VSI payloads), following
+`c2pa-rs`
 `docs/trusted-vsi-native-contract.md`. The Python identity is `0.37.13.dev0`;
-immutable dev5 release inputs and artifacts are unchanged. No native pin is
-changed here. Select a reviewed local library with `C2PA_LIBRARY_NAME` for
-integration tests. Version `0.92.0-dev` and mask 63 do not establish revision
-identity; the explicit native revision probe is deferred step3 work, not a new
-API in step1/2. Hosted qualification is on hold until final native integration.
+immutable dev5 release inputs and artifacts are unchanged. The paired source
+workflow pins native `a6d4cdcc05638ee8dd0afce7fa5c850d7031a80c` for the
+integrated revision-3 qualification batch. Select a reviewed local library with
+`C2PA_LIBRARY_NAME` for integration tests. Version `0.92.0-dev` and mask 63 do not establish contract
+identity; Python now requires the explicit native contract-revision probe.
+Local source and installed-wheel checks passed; hosted results must be recorded
+against the final source SHAs before claiming Linux/Windows qualification.
 Prior results and machine-local provenance are archived in
 [review verification](archive/trusted-vsi-review-verification.md).
 
 ## Availability
 
 All `has_live_video_trusted_vsi_*()` probes return `True` only when the loaded
-library exports every symbol in the contract's C ABI, reports native version
-`0.92.0-dev`, and `c2pa_live_video_trusted_vsi_capabilities() == 63`. Missing
-symbols, a scaffold/older/partial library, or any other mask disables every
-probe. Old scaffold symbol layouts are never bound. When unavailable, the
-constructor, `from_callback`, `validate_trusted_vsi_input` and
+library exports every symbol in the contract's C ABI, reports the exact SDK
+release token `c2pa-rs/0.92.0-dev`, returns
+`c2pa_live_video_trusted_vsi_contract_revision() == 3`, and returns
+`c2pa_live_video_trusted_vsi_capabilities() == 63`. The revision probe has the
+safe stateless signature `uint32_t c2pa_live_video_trusted_vsi_contract_revision(void)`.
+Only stateless probes are bound before these checks; operational trusted-VSI
+ctypes signatures are bound only after every check passes. A missing revision
+probe, revisions 0/1/2/4 (or any revision other than exactly 3), missing symbols,
+wrong SDK version or any other mask disables all six availability probes.
+There is no trial construction, status/state inspection or fallback to infer
+compatibility. The SDK version is a release-line check, not a native commit or
+generic SDK identity attestation. Old scaffold symbol layouts are never bound.
+When unavailable, the constructor, `from_callback`, `validate_trusted_vsi_input` and
 `trusted_vsi_hash_template` raise `C2paError.NotSupported` before inspecting
-arguments, invoking callbacks, touching native code or managed-resource state.
+arguments, allocating buffers, registering/invoking callbacks, touching
+operational native code or managed-resource state. Ordinary SDK signing and
+legacy complete-buffer `LiveVideoVsiSession` callback bindings remain independent;
+they are not feature fallbacks for trusted VSI. The observed revision is internal,
+not a new public Python availability API.
 
 ## Session
 
@@ -93,9 +108,10 @@ INIT_HASH=0, SIG_STRUCTURE=1, MEDIA_HASH=2.
   `blocked` reports an external-signing failure, independently of exhaustion.
   The C V1 layout has `blocked: bool` at offset 18; `exhaustion_reason: uint32`
   remains at offset 20 (24-byte size, 4-byte alignment).
-  This native field already exists in the current `6b506352` pairing, including
+  This native field already exists in the older workflow pin `6b506352`, including
   its `blocked: rust.blocked()` conversion; the Python bridge now exposes it.
-  The integration hold is not a known missing-`blocked` ABI problem in that pin.
+  The integration hold is not a known missing-`blocked` ABI problem in that pin;
+  the new revision gate nevertheless rejects that older library.
 
 Removed without aliases: `TrustedVsiPrehashedSession`, `TrustedVsiSignResult`,
 `TrustedVsiInitUuidReservation`, `recover(...)`, and the private Python gate.
@@ -247,8 +263,11 @@ skip only in ad-hoc local runs. `.github/workflows/trusted-vsi-paired.yml`
 builds the native with Rust 1.96.0 from the reviewed consolidated commit
 `6b506352800c8225cf5564ce99c726aaa71039f4` (ContentAuth main `69907b5a` merged
 plus CI-only fixes; previously `203dc08d`, before that `5c186c07`). That older
-pin emits state version 2, so the required version-3 tests deliberately fail
-against it. No tests or capability gates are weakened to accommodate this hold.
+pin emits state version 2 and lacks the required revision probe, so Python
+disables trusted VSI before binding its operational ABI. Required qualification
+fails with missing-symbol/revision diagnostics rather than skipping. The preserved
+step2 review cdylib (`149f4b25...`) also lacks the new probe and cannot qualify
+this gate. No tests or capability gates are weakened to accommodate this hold.
 Final native integration/qualification and a full-SHA repin belong to a separate
 authorized step, not these Python-only review changes.
 
@@ -264,7 +283,7 @@ broadened here (in particular no speculative OWNER exception or fork secrets).
 Do NOT apply the maintainer `safe to test` label or run paired CI expecting it to
 pass until the final native revision is integrated and pinned in the separate
 authorized integration step. The unchanged older native pin and the new
-required state-v3 tests are intentionally incompatible. Only after integration
+revision-3 gate are intentionally incompatible. Only after integration
 should a maintainer review the head, apply the existing label to trigger the
 `labeled` event, and confirm required jobs actually ran. This task does not post
 labels, dispatch CI, or repin. A green workflow with skipped test jobs is not
