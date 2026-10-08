@@ -11,7 +11,9 @@
 # specific language governing permissions and limitations under
 # each license.
 
+import asyncio
 import gc
+import hashlib
 import inspect
 import os
 import io
@@ -21,6 +23,7 @@ import lzma
 import json
 import re
 import unittest
+from unittest.mock import patch
 import ctypes
 import warnings
 from cryptography.hazmat.primitives import hashes, serialization
@@ -64,7 +67,7 @@ ALTERNATIVE_INGREDIENT_TEST_FILE = os.path.join(FIXTURES_DIR, "cloud.jpg")
 
 def load_test_settings_json():
     """
-    Load default (legacy) trust configuration test settings from a
+    Load purpose-tagged trust configuration test settings from a
     JSON config file and return its content as JSON-compatible dict.
     The return value is used to load settings (thread_local) in tests.
 
@@ -88,16 +91,27 @@ def load_test_settings_json():
 
 def parse_native_version():
     """
-    Parse the expected native SDK version from c2pa-native-version.txt.
+    Parse the expected native SDK version.
+
+    Reads c2pa-rs-preflight-ref.txt instead of c2pa-native-version.txt when
+    C2PA_PREFLIGHT_RUN is set: that flag is set only by
+    test-c2pa-rs-source-build.yml's own "Run tests" step, because the
+    presence of c2pa-rs-preflight-ref.txt in the checked-out tree isn't by
+    itself proof of anything -- an ordinary build.yml run on a branch that
+    happens to carry that file (e.g. this PR) still downloads and installs
+    the real pinned release, not the preflight ref.
 
     Returns:
         str: The semantic version string (e.g. "0.85.2").
     """
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    version_path = os.path.join(repo_root, 'c2pa-native-version.txt')
-    with open(version_path, 'r') as f:
+    if os.environ.get('C2PA_PREFLIGHT_RUN'):
+        path = os.path.join(repo_root, 'c2pa-rs-preflight-ref.txt')
+    else:
+        path = os.path.join(repo_root, 'c2pa-native-version.txt')
+    with open(path, 'r') as f:
         raw = f.read().strip()
-    # Strip the "c2pa-v" prefix to get the bare semantic version.
+    # Strip the "c2pa-v" / "c2pa-rc-v" prefix to get the bare semantic version.
     return raw.split('v', 1)[1] if 'v' in raw else raw
 
 
@@ -3508,7 +3522,7 @@ class TestBuilderWithSigner(unittest.TestCase):
         # Test adding another ingredient
         ingredient_json = '{"test": "ingredient2"}'
         with open(self.testPath2, 'rb') as f:
-            builder.add_ingredient(ingredient_json, "image/png", f)
+            builder.add_ingredient(ingredient_json, "image/jpeg", f)
 
         builder.close()
 
@@ -3528,7 +3542,7 @@ class TestBuilderWithSigner(unittest.TestCase):
         # Test adding another ingredient with a JSON string
         ingredient_json = '{"test": "ingredient2"}'
         with open(self.testPath2, 'rb') as f:
-            builder.add_ingredient(ingredient_json, "image/png", f)
+            builder.add_ingredient(ingredient_json, "image/jpeg", f)
 
         builder.close()
 
@@ -3557,7 +3571,7 @@ class TestBuilderWithSigner(unittest.TestCase):
 
         ingredient_json = '{"test": "ingredient2"}'
         with open(self.testPath2, 'rb') as f:
-            builder.add_ingredient(ingredient_json, "image/png", f)
+            builder.add_ingredient(ingredient_json, "image/jpeg", f)
 
         builder.close()
 
@@ -3615,9 +3629,16 @@ class TestBuilderWithSigner(unittest.TestCase):
 
         ingredient_json = '{"test": "ingredient2"}'
         with open(self.testPath2, 'rb') as f:
-            builder.add_ingredient(ingredient_json, "image/png", f)
+            builder.add_ingredient(ingredient_json, "image/jpeg", f)
 
         builder.close()
+
+    def test_builder_add_ingredient_rejects_mismatched_format(self):
+        # Unlike Reader autodetection, ingredient parsing requires the real MIME.
+        with Builder(self.manifestDefinition) as builder:
+            with open(self.testPath2, "rb") as source:
+                with self.assertRaisesRegex(Error, "invalid header"):
+                    builder.add_ingredient({}, "image/png", source)
 
     def test_builder_sign_with_ingredient(self):
         builder = Builder.from_json(self.manifestDefinition)
@@ -6634,6 +6655,56 @@ class TestSettings(TestContextAPIs):
         self.assertIs(result, settings)
         settings.close()
 
+    def test_typed_trust_fixture_preserves_legacy_memberships(self):
+        trust = load_test_settings_json()["trust"]
+        self.assertEqual(set(trust), {"anchors", "trust_config"})
+        self.assertEqual(
+            {entry["trust_kind"] for entry in trust["anchors"]},
+            {"manifest", "tsa"},
+        )
+        self.assertEqual(len(trust["anchors"]), 2)
+        # Digests pin the original nine-certificate bundle and EKU policy.
+        for entry in trust["anchors"]:
+            self.assertEqual(set(entry), {"trust_kind", "trust_uri", "trust_anchors"})
+            self.assertEqual(
+                hashlib.sha256(entry["trust_anchors"].encode()).hexdigest(),
+                "f3de5e4ea3213319eedc5e3890f0ff615bf0e754323ffd20dcca8a3f1c5ab921",
+            )
+        self.assertEqual(
+            hashlib.sha256(trust["trust_config"].encode()).hexdigest(),
+            "174983a609d76784c4ef5e2621740bf32fb615f88412d94f4fc26670365a9b81",
+        )
+
+    def test_settings_typed_trust_purposes_do_not_authorize_other_roles(self):
+        trust = load_test_settings_json()["trust"]
+        for kind in ("manifest", "cawg", "tsa"):
+            with self.subTest(kind=kind):
+                entry = dict(trust["anchors"][0], trust_kind=kind)
+                config = {"trust": {"anchors": [entry], "trust_config": trust["trust_config"]}}
+                with Settings() as settings:
+                    self.assertIs(settings.update(config), settings)
+                    with Context(settings) as ctx, Reader(DEFAULT_TEST_FILE, context=ctx) as reader:
+                        self.assertEqual(
+                            reader.get_validation_state(),
+                            "Trusted" if kind == "manifest" else "Valid",
+                        )
+
+    def test_settings_trust_updates_are_additive_and_removal_needs_fresh_context(self):
+        config = load_test_settings_json()
+        with Settings.from_dict(config) as settings, Context(settings) as original:
+            # Neither an empty update nor a changed entry with the same URI
+            # replaces the previously authorized certificates.
+            settings.update({"trust": {"anchors": []}})
+            entries = [dict(entry, trust_anchors="") for entry in config["trust"]["anchors"]]
+            settings.update(json.dumps({"trust": {"anchors": entries}}))
+            with Context(settings) as updated:
+                with Settings.from_dict({"trust": {"anchors": []}}) as fresh:
+                    with Context(fresh) as removed:
+                        for ctx, expected in ((original, "Trusted"), (updated, "Trusted"), (removed, "Valid")):
+                            with self.subTest(expected=expected, context=ctx):
+                                with Reader(DEFAULT_TEST_FILE, context=ctx) as reader:
+                                    self.assertEqual(reader.get_validation_state(), expected)
+
     def test_settings_is_valid_after_close(self):
         settings = Settings()
         settings.close()
@@ -7087,6 +7158,47 @@ class TestDynamicAssertions(TestContextAPIs):
                 builder.sign(signer, "image/jpeg", source, io.BytesIO())
 
         self.assertIs(raised.exception, failure)
+
+    def test_base_exceptions_from_callbacks_are_reraised_during_builder_signing(self):
+        # KeyboardInterrupt/SystemExit/CancelledError must not escape into
+        # ctypes (where they are ignored); the original object is re-raised.
+        with open(os.path.join(FIXTURES_DIR, "es256_certs.pem"), "rb") as f:
+            certs = f.read()
+        for make in (lambda: KeyboardInterrupt("stop"), lambda: SystemExit(3),
+                     lambda: asyncio.CancelledError("cancelled")):
+            for which in ("dynamic", "claim"):
+                failure = make()
+                with self.subTest(error=type(failure).__name__, callback=which):
+                    def fail(*_):
+                        raise failure
+                    if which == "claim":
+                        signer = Signer.from_callback(fail, SigningAlg.ES256, certs, None)
+                    else:
+                        signer = self._make_signer()
+                        signer.add_dynamic_assertion(
+                            fail, label="com.example.interrupt", reserve_size=64)
+                    self.addCleanup(signer.close)
+                    builder = Builder(self.test_manifest)
+                    with open(DEFAULT_TEST_FILE, "rb") as source:
+                        with self.assertRaises(type(failure)) as raised:
+                            builder.sign(signer, "image/jpeg", source, io.BytesIO())
+                    self.assertIs(raised.exception, failure)
+
+    def test_ordinary_claim_signer_exception_is_still_reported_as_c2pa_error(self):
+        # Pre-existing Builder behavior for Exception subclasses is unchanged.
+        with open(os.path.join(FIXTURES_DIR, "es256_certs.pem"), "rb") as f:
+            certs = f.read()
+
+        def fail(_):
+            raise RuntimeError("remote signer unavailable")
+        signer = Signer.from_callback(fail, SigningAlg.ES256, certs, None)
+        self.addCleanup(signer.close)
+        builder = Builder(self.test_manifest)
+        with open(DEFAULT_TEST_FILE, "rb") as source:
+            with self.assertRaises(Error) as raised:
+                builder.sign(signer, "image/jpeg", source, io.BytesIO())
+        self.assertNotIsInstance(raised.exception, RuntimeError)
+        self.assertIsInstance(signer._callback_cb._error_state.exception, RuntimeError)
 
     def test_closed_and_uninitialized_resources(self):
         signer = self._make_signer()
@@ -7819,6 +7931,23 @@ class TestLiveVideoVsiSession(TestContextAPIs):
             self.assertIsNone(session.active_manifest_id)
             self.assertEqual(session.next_sequence_number, 1)
 
+    def test_callback_base_exceptions_keep_identity(self):
+        context = self._make_context()
+        self.addCleanup(context.close)
+        private_key, kid, created_at, _ = self._callback_session_material()
+        for failure in (KeyboardInterrupt("stop"), SystemExit(3),
+                        asyncio.CancelledError("cancelled")):
+            with self.subTest(error=type(failure).__name__):
+                def callback(*_):
+                    raise failure
+                with self._make_callback_session(
+                    context, callback, private_key, kid, created_at,
+                ) as session:
+                    with self.assertRaises(type(failure)) as raised:
+                        session.sign_init_segment(self.init_segment)
+                    self.assertIs(raised.exception, failure)
+                    self.assertIsNone(session.active_manifest_id)
+
     def test_callback_recovery_does_not_sign_and_resumes(self):
         context = self._make_context()
         self.addCleanup(context.close)
@@ -8082,6 +8211,36 @@ class TestLiveVideoVsiSession(TestContextAPIs):
             with self.assertRaises(CallbackFailure) as raised:
                 session.sign_init_segment(self.init_segment)
         self.assertIs(raised.exception, failure)
+
+    def test_dynamic_assertion_and_claim_base_exceptions_during_init_signing(self):
+        with open(os.path.join(FIXTURES_DIR, "es256_certs.pem"), "rb") as f:
+            certs = f.read()
+        with open(os.path.join(FIXTURES_DIR, "es256_private.key"), "rb") as f:
+            key = f.read()
+        for which in ("dynamic", "claim"):
+            for failure in (KeyboardInterrupt("stop"), SystemExit(3),
+                            asyncio.CancelledError("cancelled")):
+                with self.subTest(callback=which, error=type(failure).__name__):
+                    def fail(*_):
+                        raise failure
+                    if which == "claim":
+                        signer = Signer.from_callback(fail, SigningAlg.ES256, certs, None)
+                    else:
+                        signer = Signer.from_info(C2paSignerInfo(b"es256", certs, key, None))
+                        signer.add_dynamic_assertion(
+                            fail, label="com.example.live-interrupt", reserve_size=64)
+                    settings = Settings()
+                    settings.set("verify.verify_trust", "false")
+                    try:
+                        context = Context(settings=settings, signer=signer)
+                    finally:
+                        settings.close()
+                    self.addCleanup(context.close)
+                    with self._make_session(context) as session:
+                        context.close()
+                        with self.assertRaises(type(failure)) as raised:
+                            session.sign_init_segment(self.init_segment)
+                    self.assertIs(raised.exception, failure)
 
 
 class TestReaderWithContext(TestContextAPIs):
@@ -9599,7 +9758,8 @@ class TestManagedResourceLifecycle(unittest.TestCase):
             c2pa_module._lib.c2pa_builder_from_json = real_json
 
     def test_context_build_null_return_frees_builder(self):
-        # Set a pre-consume tag in the error slot to mock a pointer rejection.
+        # Build is consume-first. A registry tag without a parseable address is
+        # ambiguous there, so the builder is released by the guarded free.
         settings = Settings()
         c2pa_module._lib.c2pa_error_set_last(
             b"UntrackedPointer: mocked pre-consume rejection")
@@ -9662,6 +9822,154 @@ class TestManagedResourceLifecycle(unittest.TestCase):
         self.assertEqual(self.freed, [])
         self.assertIsNone(res._handle)
         self.assertEqual(res._lifecycle_state, LifecycleState.CLOSED)
+
+    def test_consume_first_integer_handle_rejection_retains_own_handle(self):
+        for tag in ("UntrackedPointer", "WrongPointerType"):
+            with self.subTest(tag=tag):
+                res = self._FakeHandleResource()
+                res._activate(0xCAFE)
+                self.freed.clear()
+                error = f"Other: {tag}: 0xcafe"
+                with patch.object(c2pa_module, "_read_native_error", return_value=error):
+                    with self.assertRaises(Error) as caught:
+                        res._consume_and_swap(
+                            lambda h: None, "swap failed: {}", consumes_first=True)
+                self.assertIn(error, str(caught.exception))
+                self.assertEqual(res._handle_value(), 0xCAFE)
+                self.assertTrue(res.is_valid)
+                self.assertEqual(self.freed, [])
+                res.close()
+                res.close()
+                self.assertEqual(self.freed, [0xCAFE])
+
+    def test_consume_first_integer_handle_rejection_closes_other_handle(self):
+        for tag in ("UntrackedPointer", "WrongPointerType"):
+            with self.subTest(tag=tag):
+                res = self._FakeHandleResource()
+                res._activate(0xCAFE)
+                self.freed.clear()
+                error = f"Other: {tag}: 0xbeef"
+                with patch.object(c2pa_module, "_read_native_error", return_value=error):
+                    with self.assertRaises(Error) as caught:
+                        res._consume_and_swap(
+                            lambda h: None, "swap failed: {}", consumes_first=True)
+                self.assertIn(error, str(caught.exception))
+                self.assertIsNone(res._handle)
+                self.assertEqual(res._lifecycle_state, LifecycleState.CLOSED)
+                res.close()
+                self.assertEqual(self.freed, [])
+
+    def test_consume_first_unreadable_handle_uses_guarded_free(self):
+        res = self._FakeHandleResource()
+        handle = object()
+        res._activate(handle)
+        error = "Other: WrongPointerType: 0xbeef"
+        state = [error]
+
+        def free(pointer):
+            self.freed.append(pointer)
+            state[0] = "Other: UntrackedPointer: cleanup error"
+
+        with patch.object(c2pa_module, "_read_native_error", side_effect=lambda: state[0]), \
+                patch.object(ManagedResource, "_free_native_ptr", side_effect=free):
+            self.assertIsNone(res._handle_value())
+            with self.assertRaises(Error) as caught:
+                res._consume_into(
+                    lambda h: None, "build failed: {}", consumes_first=True)
+        self.assertIn(error, str(caught.exception))
+        self.assertNotIn("cleanup error", str(caught.exception))
+        self.assertEqual(state[0], "Other: UntrackedPointer: cleanup error")
+        self.assertEqual(res._lifecycle_state, LifecycleState.CLOSED)
+        res.close()
+        self.assertEqual(self.freed, [handle])
+
+    def test_handle_value_accepts_pointer_integer_and_unreadable_handles(self):
+        class Unreadable:
+            def __bool__(self):
+                raise ValueError("unreadable handle")
+
+        res = self._FakeHandleResource()
+        for handle, expected in [(0xCAFE, 0xCAFE),
+                                 (ctypes.c_void_p(0xCAFE), 0xCAFE),
+                                 (ctypes.POINTER(c2pa_module.C2paReader)(), None),
+                                 (None, None), (object(), None), (Unreadable(), None)]:
+            with self.subTest(handle=type(handle).__name__):
+                res._handle = handle
+                self.assertEqual(res._handle_value(), expected)
+        res._handle = None
+
+    def test_handle_value_reads_non_null_native_pointer(self):
+        self._use_real_frees()
+        with open(os.path.join(FIXTURES_DIR, "dashinit.mp4"), "rb") as init:
+            with Reader("video/mp4", init) as reader:
+                self.assertTrue(reader._handle)
+                # Cast reads the pointer value, not the native object's memory.
+                expected = ctypes.cast(reader._handle, ctypes.c_void_p).value
+                self.assertEqual(reader._handle_value(), expected)
+                self.assertTrue(reader.json())
+
+    def test_consume_first_addressless_rejection_preserves_error(self):
+        for tag in ("UntrackedPointer", "WrongPointerType", "PointerInUse", "WrongWrapperKind"):
+            with self.subTest(tag=tag):
+                res = self._FakeHandleResource()
+                res._activate(0xCAFE)
+                self.freed.clear()
+                error = f"Other: {tag}: rejection without an address"
+                state = [error]
+
+                def free(pointer):
+                    self.freed.append(pointer)
+                    state[0] = "Other: UntrackedPointer: cleanup error"
+
+                with patch.object(c2pa_module, "_read_native_error", side_effect=lambda: state[0]), \
+                        patch.object(ManagedResource, "_free_native_ptr", side_effect=free):
+                    with self.assertRaises(Error) as caught:
+                        res._consume_no_replacement(
+                            lambda h: -1, "set failed: {}", consumes_first=True)
+                self.assertIn(error, str(caught.exception))
+                self.assertEqual(state[0], "Other: UntrackedPointer: cleanup error")
+                self.assertEqual(res._lifecycle_state, LifecycleState.CLOSED)
+                res.close()
+                self.assertEqual(self.freed, [0xCAFE])
+
+    def test_validate_first_registry_rejections_retain_handle(self):
+        for error in ("Other: UntrackedPointer: 0xcafe",
+                      "Other: WrongPointerType: 0xbeef",
+                      "Other: PointerInUse: exclusive use",
+                      "Other: WrongWrapperKind: shared wrapper"):
+            with self.subTest(error=error):
+                res = self._FakeHandleResource()
+                res._activate(0xCAFE)
+                self.freed.clear()
+                with patch.object(c2pa_module, "_read_native_error", return_value=error):
+                    with self.assertRaises(Error):
+                        res._consume_no_replacement(lambda h: -1, "set failed: {}")
+                self.assertTrue(res.is_valid)
+                self.assertEqual(self.freed, [])
+                res.close()
+                self.assertEqual(self.freed, [0xCAFE])
+
+    def test_stream_layout_is_opaque(self):
+        self.assertEqual(c2pa_module.C2paStream._fields_, [])
+
+    def test_payload_registry_tags_do_not_establish_ownership(self):
+        for consumes_first in (False, True):
+            for tag in ("UntrackedPointer", "WrongPointerType", "PointerInUse", "WrongWrapperKind"):
+                for prefix in ("Json", "Other"):
+                    with self.subTest(consumes_first=consumes_first, tag=tag, prefix=prefix):
+                        res = self._FakeHandleResource()
+                        res._activate(0xCAFE)
+                        self.freed.clear()
+                        error = f'{prefix}: invalid input "{tag}: 0xcafe"'
+                        with patch.object(c2pa_module, "_read_native_error", return_value=error):
+                            with self.assertRaises(Error) as caught:
+                                res._consume_into(
+                                    lambda h: None, "build failed: {}",
+                                    consumes_first=consumes_first)
+                        self.assertIn(error, str(caught.exception))
+                        self.assertEqual(res._lifecycle_state, LifecycleState.CLOSED)
+                        res.close()
+                        self.assertEqual(self.freed, [])
 
 
 class TestManagedResourceObjects(TestContextAPIs):
@@ -9809,14 +10117,12 @@ class TestManagedResourceObjects(TestContextAPIs):
         context = Context()
         self.addCleanup(context.close)
         builder = Builder(self.test_manifest, context=context)
-        original_handle = builder._handle
         original_stamp = builder._owner_pid
 
         result = builder.with_archive(self._make_archive())
 
         self.assertIs(result, builder, "with_archive should return self")
-        self.assertNotEqual(builder._handle, original_handle,
-                            "the native handle was not replaced")
+        self.assertTrue(builder._handle)
         self.assertEqual(builder._lifecycle_state, LifecycleState.ACTIVE)
         # The replacement came from this process, the stamp still applies.
         self.assertEqual(builder._owner_pid, original_stamp)
@@ -9832,15 +10138,13 @@ class TestManagedResourceObjects(TestContextAPIs):
         with open(init_path, "rb") as init:
             reader = Reader("video/mp4", init, context=context)
         self.addCleanup(reader.close)
-        original_handle = reader._handle
 
         # The Reader consumed the first handle, so the init stream is reopened.
         with open(init_path, "rb") as init, open(fragment_path, "rb") as frag:
             result = reader.with_fragment("video/mp4", init, frag)
 
         self.assertIs(result, reader, "with_fragment should return self")
-        self.assertNotEqual(reader._handle, original_handle,
-                            "the native handle was not replaced")
+        self.assertTrue(reader._handle)
         self.assertEqual(reader._lifecycle_state, LifecycleState.ACTIVE)
         self.assertEqual(reader._owner_pid, os.getpid())
 
@@ -10406,6 +10710,7 @@ class TestManagedResourceObjects(TestContextAPIs):
 
         with open(init_path, "rb") as init:
             reader = Reader("video/mp4", init)
+        retained_handle = reader._handle
 
         real_call = c2pa_module._lib.c2pa_reader_with_fragment
         c2pa_module._lib.c2pa_reader_with_fragment = (
@@ -10422,10 +10727,12 @@ class TestManagedResourceObjects(TestContextAPIs):
             c2pa_module._lib.c2pa_error_set_last(
                 b"Other: cleared by test teardown")
 
-        # The stale tag wins, so the handle is kept. Safe here (the mock
-        # consumed nothing), and the reader is still usable.
-        self.assertIsNotNone(reader._handle)
-        self.assertEqual(reader._lifecycle_state, LifecycleState.ACTIVE)
+        # The stale tag names another handle, so consume-first triage closes
+        # the reader without a free. The mock consumed nothing: the test must
+        # release the still-live handle that this unsupported failure leaked.
+        self.assertIsNone(reader._handle)
+        self.assertEqual(reader._lifecycle_state, LifecycleState.CLOSED)
+        self.assertEqual(c2pa_module._lib.c2pa_free(retained_handle), 0)
         reader.close()
 
     # Backfilling a pointer minted by a direct FFI call. Builder.from_archive

@@ -24,6 +24,31 @@ from c2pa import Settings, Context, ContextBuilder, ContextProvider
 
 All of `Builder`, `Reader`, `Signer`, `Context`, and `Settings` support context managers (the `with` statement) for automatic resource cleanup.
 
+## Trusted-processor VSI (unreleased functional API)
+
+`TrustedVsiSession` is separate from complete-buffer
+`LiveVideoVsiSession`. It requires the complete functional 0.92.0-dev native ABI
+and capability mask 63. Older libraries import normally but do not advertise
+trusted functionality; construction fails before inspecting arguments or
+invoking callbacks. These changes are not in immutable dev5 artifacts.
+
+Expert mode uses `sign_sig_structure(sig_structure: bytes, sequence_number: int)
+-> bytes`. The trusted processor supplies the uint32 sequence as metadata and
+owns media ordering, MFHD/VSI equality, and EMSG construction. Native validates
+canonical framing and signs the original bytes without decoding the opaque
+payload. The result is exactly 64 raw signature bytes, not a sequence result.
+Expert callback metadata has no event ID or exhaustion, even at UINT32_MAX.
+
+Composed mode reserves a full EMSG at the supplied sequence/time and finalizes
+it against the canonical BMFF hash. Init uses the same reserve/finalize split
+for full UUID boxes. Explicit public-state export/import preserves pending
+reservations; preflight validates without key use or state mutation. Native
+owns all state validation and cryptography, while the coordinator owns durable
+operation identities and provider retry enforcement.
+
+See the [Python contract](trusted-vsi-python-contract.md) for exact constructor
+options, mode names, callback ownership, error behavior, and qualification commands.
+
 ## Define manifest JSON
 
 The Python library works with both file-based and stream-based operations.
@@ -319,6 +344,15 @@ Recovery remains artifact-driven and does not invoke the configured clock.
 
 The Castlabs native fork can sign and validate DASH/HLS-style fragmented BMFF file sets. Check the native capability before using these file-based APIs:
 
+The glob-aware signing and exclusive-output guarantees below are verified with
+the paired Castlabs `0.92.0-dev` native including #17. `has_fragmented_files()`
+checks export presence, not that semantic contract. Older native lineages may
+accept only literal init paths or have different overwrite semantics; older
+Castlabs builds (including stable `0.80` releases) may contain backports. No
+blanket pre-`0.92` rejection or fallback is imposed by this wrapper. Check the
+exact native implementation/provenance before relying on these guarantees with
+a different library.
+
 ```py
 from pathlib import Path
 
@@ -346,7 +380,37 @@ with Reader.from_fragmented_files(
     print(reader.json())
 ```
 
-`asset_path` must be one literal existing initialization-segment file; only `fragments_glob` is a glob. A native sign attempt closes the single-use `Builder` but borrows and leaves the explicit `Signer` active. The returned manifest buffer is copied into Python-owned `bytes` and released natively.
+`asset_path` is an init path or native glob matching one or more initialization
+segments. For segmented ABR, use e.g. `asset_path="renditions/*/init.mp4"` with
+`fragments_glob="segment-*.m4s"`. The native operation signs all matched
+renditions with **one shared manifest**, with a separate Merkle map and media
+selectors for each rendition. `fragments_glob` is evaluated relative to each
+init's parent, including subdirectories; output flattens fragment subdirectories
+under `<output_dir>/<init-parent-name>/`. Init parent directory names must be
+distinct and each matched init must have a named parent directory (e.g.
+`video/init.mp4`, not bare `init.mp4`). This input shape differs from
+`Builder.sign_ladder`, which accepts single-file fragmented MP4 renditions, not
+separate inits and media segments.
+
+Paths use native glob syntax even for a single init; escape literal
+metacharacters with bracket expressions (e.g. `[[]` for `[`). Matched init parent
+paths must not contain literal glob metacharacters, because native reuses them
+in fragment globs. Native rejects malformed or empty-match globs, output name
+collisions, and existing rendition output directories before writing. Use fresh,
+exclusively owned destinations outside input globs, and do not modify inputs or
+outputs concurrently. Reservation or signing errors can leave empty or partial
+outputs; remove only newly created files you positively own, never sources or
+preexisting destinations. The C ABI reserves directories/inits exclusively; the
+lower-level Rust SDK's allowance for existing non-source output inits is **not**
+the Python/C ABI contract.
+
+Python validates text/path-like input types, UTF-8, nonempty paths and NULs;
+invalid UTF-8 raises `C2paError.Encoding`, while empty/NUL paths raise `ValueError`.
+Native validates glob syntax, matches and layouts. A native sign attempt
+(including native validation failure) closes the single-use `Builder` but borrows
+and leaves the explicit `Signer` active. Python preflight failures remain
+non-consuming. The returned shared manifest buffer is copied into Python-owned
+`bytes` and released natively.
 
 Pass an active `Context` to `Reader.from_fragmented_files()` to use explicit verification and trust settings. Omitting `context` preserves the legacy thread-local settings behavior. The reader requires at least one explicit fragment path and retains the supplied Context and callback references until the reader closes.
 

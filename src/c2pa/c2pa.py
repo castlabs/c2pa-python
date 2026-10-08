@@ -11,12 +11,13 @@
 # specific language governing permissions and limitations under
 # each license.
 
-# Version: 0.37.8.dev5
+# Version: 0.37.13.dev0
 
 import ctypes
 import enum
 import json
 import logging
+import re
 import sys
 import os
 import threading
@@ -24,6 +25,8 @@ import warnings
 import weakref
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union, Callable, Any, overload
 import io
@@ -125,6 +128,61 @@ _LIVE_VIDEO_VSI_MFHD_PROBE_FUNCTIONS = (
     'c2pa_live_video_moof_sequence_number',
 )
 
+# Optional trusted-processor prehashed VSI API. The native ABI is being
+# developed independently, so every symbol remains optional and the Python
+# surface fails closed unless the exact contract revision, version, mask and
+# complete symbol set match. Only stateless probes are safe before that gate.
+_TRUSTED_VSI_CONTRACT_REVISION_FUNCTIONS = (
+    'c2pa_live_video_trusted_vsi_contract_revision',
+)
+_TRUSTED_VSI_CAPABILITIES_FUNCTIONS = (
+    'c2pa_live_video_trusted_vsi_capabilities',
+)
+_TRUSTED_VSI_CREATE_FUNCTIONS = (
+    'c2pa_live_video_trusted_vsi_session_create_callback_v1',
+)
+_TRUSTED_VSI_SPLIT_INIT_FUNCTIONS = (
+    'c2pa_live_video_trusted_vsi_session_reserve_init_uuid',
+    'c2pa_live_video_trusted_vsi_session_reserved_manifest_id',
+    'c2pa_live_video_trusted_vsi_session_finalize_init_uuid',
+    'c2pa_live_video_trusted_vsi_session_commit_init_uuid',
+)
+_TRUSTED_VSI_EXPERT_SIG_STRUCTURE_FUNCTIONS = (
+    'c2pa_live_video_trusted_vsi_session_sign_sig_structure',
+)
+_TRUSTED_VSI_COMPOSED_MEDIA_FUNCTIONS = (
+    'c2pa_live_video_trusted_vsi_session_reserve_media_emsg',
+    'c2pa_live_video_trusted_vsi_session_finalize_media_emsg',
+)
+_TRUSTED_VSI_RECOVERY_FUNCTIONS = (
+    'c2pa_live_video_trusted_vsi_session_export_state',
+    'c2pa_live_video_trusted_vsi_session_import_state',
+)
+_TRUSTED_VSI_STATUS_FUNCTIONS = (
+    'c2pa_live_video_trusted_vsi_session_status_v1',
+)
+_TRUSTED_VSI_PREFLIGHT_FUNCTIONS = (
+    'c2pa_live_video_trusted_vsi_session_preflight',
+    'c2pa_live_video_trusted_vsi_validate_input',
+    'c2pa_live_video_trusted_vsi_hash_template',
+)
+_TRUSTED_VSI_FUNCTIONS = (
+    _TRUSTED_VSI_CONTRACT_REVISION_FUNCTIONS
+    + _TRUSTED_VSI_CAPABILITIES_FUNCTIONS + _TRUSTED_VSI_CREATE_FUNCTIONS
+    + _TRUSTED_VSI_SPLIT_INIT_FUNCTIONS + _TRUSTED_VSI_EXPERT_SIG_STRUCTURE_FUNCTIONS
+    + _TRUSTED_VSI_COMPOSED_MEDIA_FUNCTIONS + _TRUSTED_VSI_RECOVERY_FUNCTIONS
+    + _TRUSTED_VSI_STATUS_FUNCTIONS + _TRUSTED_VSI_PREFLIGHT_FUNCTIONS
+)
+
+_TRUSTED_VSI_CAP_SPLIT_INIT = 1 << 0
+_TRUSTED_VSI_CAP_EXPERT_SIG_STRUCTURE = 1 << 1
+_TRUSTED_VSI_CAP_COMPOSED_MEDIA = 1 << 2
+_TRUSTED_VSI_CAP_RECOVERY = 1 << 3
+_TRUSTED_VSI_CAP_SIGNING_CONTEXT_V1 = 1 << 4
+_TRUSTED_VSI_CAP_FULL_UINT32_SEQUENCE = 1 << 5
+_TRUSTED_VSI_REQUIRED_CAPABILITIES = 63
+_TRUSTED_VSI_REQUIRED_CONTRACT_REVISION = 3
+
 # Castlabs dynamic-assertion extension. Keep this optional so the package can
 # still be imported with standard upstream native libraries.
 _DYNAMIC_ASSERTION_FUNCTIONS = (
@@ -222,6 +280,42 @@ _LIVE_VIDEO_VSI_EXPLICIT_TIME_AVAILABLE = all(
 _LIVE_VIDEO_VSI_MFHD_PROBE_AVAILABLE = all(
     hasattr(_lib, name) for name in _LIVE_VIDEO_VSI_MFHD_PROBE_FUNCTIONS
 )
+_TRUSTED_VSI_CAPABILITIES_FUNCTION_AVAILABLE = all(
+    hasattr(_lib, name) for name in _TRUSTED_VSI_CAPABILITIES_FUNCTIONS
+)
+_TRUSTED_VSI_CREATE_AVAILABLE = all(
+    hasattr(_lib, name) for name in _TRUSTED_VSI_CREATE_FUNCTIONS
+)
+_TRUSTED_VSI_SPLIT_INIT_AVAILABLE = all(
+    hasattr(_lib, name) for name in _TRUSTED_VSI_SPLIT_INIT_FUNCTIONS
+)
+_TRUSTED_VSI_EXPERT_SIG_STRUCTURE_AVAILABLE = all(
+    hasattr(_lib, name) for name in _TRUSTED_VSI_EXPERT_SIG_STRUCTURE_FUNCTIONS
+)
+_TRUSTED_VSI_COMPOSED_MEDIA_AVAILABLE = all(
+    hasattr(_lib, name) for name in _TRUSTED_VSI_COMPOSED_MEDIA_FUNCTIONS
+)
+_TRUSTED_VSI_RECOVERY_AVAILABLE = all(
+    hasattr(_lib, name) for name in _TRUSTED_VSI_RECOVERY_FUNCTIONS
+)
+_TRUSTED_VSI_STATUS_AVAILABLE = all(
+    hasattr(_lib, name) for name in _TRUSTED_VSI_STATUS_FUNCTIONS
+)
+_TRUSTED_VSI_CAPABILITIES = 0
+_TRUSTED_VSI_CONTRACT_REVISION = 0
+_TRUSTED_VSI_ABI_AVAILABLE = all(hasattr(_lib, name) for name in _TRUSTED_VSI_FUNCTIONS)
+_TRUSTED_VSI_VERSION_MATCHES = False
+# Required SDK release line, not contract identity. The revision probe gates the
+# trusted-VSI contract; qualification pins the native commit separately.
+_TRUSTED_VSI_NATIVE_VERSION = "0.92.0-dev"
+
+
+def _trusted_vsi_version_matches(native_version: bytes) -> bool:
+    """Return whether c2pa_version() names the required SDK release line."""
+    expected = b"c2pa-rs/" + _TRUSTED_VSI_NATIVE_VERSION.encode("ascii")
+    return expected in native_version.split()
+
+
 _DYNAMIC_ASSERTIONS_AVAILABLE = all(
     hasattr(_lib, name) for name in _DYNAMIC_ASSERTION_FUNCTIONS
 )
@@ -310,8 +404,12 @@ class ManagedResource:
         the handle without returning a replacement: the new owner frees it,
         so this does not.
       - Call `_release_handle()` when a consuming FFI call fails with ownership
-        unknown: it frees eagerly (guarded), then closes. `_consume_and_swap`
-        uses it on that failure path.
+        unknown: it closes and requests a guarded free. `_consume_and_swap`
+        uses it on that failure path; admitted calls defer physical cleanup.
+      - Use `_native_call()` around borrowed signing FFI calls that must survive
+        callback-initiated close, also guarding any explicitly borrowed Signer.
+        This is not generic thread safety: unguarded operations (Reader calls,
+        with_archive, recover, etc.) and close must be externally serialized.
       - Override `_release()` to free class-specific resources
         (streams, caches, callbacks, etc.), called before the
         native pointer is freed.
@@ -334,6 +432,9 @@ class ManagedResource:
     def __init__(self):
         self._lifecycle_state = LifecycleState.UNINITIALIZED
         self._handle = None
+        self._call_lock = threading.RLock()
+        self._active_calls = 0
+        self._pending_teardown = None
         record_owner_pid(self)
 
     @staticmethod
@@ -389,7 +490,7 @@ class ManagedResource:
             )
 
     def _teardown(self, free_handle: bool):
-        """Close the object: run _release, optionally free the handle, null it.
+        """Close logically; release/null/free after admitted calls drain, if any.
         free_handle=False (consumed) frees nothing, the new owner needs to free.
         """
         if is_foreign_process(self):
@@ -397,10 +498,28 @@ class ManagedResource:
             self._lifecycle_state = LifecycleState.CLOSED
             return
 
-        self._lifecycle_state = LifecycleState.CLOSED
-        self._safe_release()
+        with getattr(self, '_call_lock', nullcontext()):
+            if self._lifecycle_state == LifecycleState.CLOSED:
+                return
+            self._lifecycle_state = LifecycleState.CLOSED
+            if getattr(self, '_active_calls', 0):
+                self._pending_teardown = free_handle
+                return
+            handle = self._handle
+        self._finish_teardown(handle, free_handle)
 
-        handle, self._handle = self._handle, None
+    def _finish_teardown(self, handle, free_handle):
+        if is_foreign_process(self):
+            self._handle = None
+            return
+        # _release clears these attributes/lists. Retain the actual ctypes
+        # thunks, not just their error states, until native destruction returns.
+        callback_pins = [getattr(self, name, None) for name in (
+            '_callback_cb', '_signer_callback_cb', '_vsi_callback',
+            '_trusted_vsi_callback')]
+        callback_pins.extend(list(getattr(self, '_dynamic_assertion_cbs', ())))
+        self._safe_release()
+        self._handle = None
         if free_handle and handle:
             try:
                 ManagedResource._free_native_ptr(handle)
@@ -408,13 +527,47 @@ class ManagedResource:
                 logger.error("Failed to free native %s resources",
                              type(self).__name__, exc_info=True)
 
+    @contextmanager
+    def _native_call(self):
+        """Admit a borrowed native call; close is logical, not cancellation.
+
+        No lock is held across native code or user callbacks. This guards the
+        selected signing paths, not all resource methods or concurrent native
+        operations. Unguarded calls and close require external serialization.
+        Foreign-PID resources are rejected before touching an inherited lock;
+        create worker-owned signers/sessions in the worker. This admission rule
+        is deliberately limited to guarded calls, not an SDK-wide fork ban.
+        """
+        if is_foreign_process(self):
+            raise C2paError("Native resources cannot be used after fork")
+        with self._call_lock:
+            self._ensure_valid_state()
+            self._active_calls += 1
+        try:
+            yield
+        finally:
+            teardown = None
+            if is_foreign_process(self):
+                self._cleanup_resources()
+            else:
+                with self._call_lock:
+                    self._active_calls -= 1
+                    if not self._active_calls and self._pending_teardown is not None:
+                        teardown = (self._handle, self._pending_teardown)
+                        self._pending_teardown = None
+            if teardown is not None:
+                self._finish_teardown(*teardown)
+
     def _release_handle(self):
-        """Free this handle, then close the object. Used only where ownership is
-        unknown (a guarded free is a real free if ours, a no-op if not).
+        """Request guarded free/close when ownership is unknown.
+
+        Admitted calls defer physical cleanup. Already-CLOSED resources retain
+        their pending cleanup decision, handle and pins until the guard drains.
         """
         if self._lifecycle_state != LifecycleState.ACTIVE:
-            self._handle = None
-            self._lifecycle_state = LifecycleState.CLOSED
+            if self._lifecycle_state != LifecycleState.CLOSED:
+                self._handle = None
+                self._lifecycle_state = LifecycleState.CLOSED
             return
         self._teardown(free_handle=True)
 
@@ -491,9 +644,11 @@ class ManagedResource:
         self._handle = new_handle
 
     # Errors set by native lib, hinting at the cause of the error
-    # These errors here means the pointer got somehow rejected by the lib,
-    # so it is still ours to deal with.
+    # The rejected handle may be this resource or another argument.
     _PRE_CONSUME_ERROR_TAGS = ("UntrackedPointer:", "WrongPointerType:")
+    _ADDRESSLESS_REJECTION_TAGS = ("PointerInUse:", "WrongWrapperKind:")
+    _REJECTED_HANDLE_RE = re.compile(
+        r"(?:UntrackedPointer|WrongPointerType):\s*(0x[0-9a-fA-F]+)\b")
 
     def _invoke_consume(self, ffi_call, error_message):
         """Run an FFI call that consumes this handle, returning its raw result.
@@ -524,11 +679,24 @@ class ManagedResource:
             self._release_handle()
             raise C2paError(error_message.format(e)) from e
 
-    def _raise_consume_failure(self, error_message):
+    def _handle_value(self):
+        """Read the handle value without dereferencing native memory."""
+        try:
+            handle = self._handle
+            if not handle:
+                return None
+            if isinstance(handle, int):
+                return handle
+            return ctypes.c_void_p.from_buffer(handle).value
+        except Exception:
+            # An unfamiliar representation cannot establish ownership.
+            return None
+
+    def _raise_consume_failure(self, error_message, *, consumes_first=False):
         """Raise the error from an FFI handler consuming call.
 
-        The native error is read before any free so a free's own
-        pointer-tracking error cannot overwrite it: the native error slot is
+        The native error is copied before any free so the raised exception
+        preserves it even if cleanup changes the native error slot. The slot is
         sticky and thread-local and the SDK does not clear it before the call,
         so this trusts that the failing native path set its own error.
 
@@ -539,28 +707,56 @@ class ManagedResource:
         with another one and, because that substitute carries a pre-consume
         tag, invert the retain/consume decision made below.
 
+        Validate-first calls retain the resource on any registry rejection.
+        Consume-first calls retain it only when the rejected address matches
+        its handle. A different known address means it was consumed; an absent
+        address or unreadable handle value needs a guarded free and close.
+        Address-less registry rejections are safe to clean up with the newer
+        opaque registry and are not emitted by stock 0.91.0. Release removes
+        the registry entry; outstanding guards can defer the actual drop.
+
         Args:
             error_message: Format string with one placeholder, used when the
                 native layer offers no error of its own.
+            consumes_first: Whether native takes this handle before validating
+                its other arguments.
 
         Raises:
             C2paError: Always; typed by the native error when there is one.
         """
         error = _read_native_error()
         if error:
-            if any(tag in error
-                   for tag in ManagedResource._PRE_CONSUME_ERROR_TAGS):
+            # Stock wraps registry errors in Other; tags quoted inside another
+            # error's payload are not evidence of handle rejection.
+            rejection = error.removeprefix("Other: ")
+            rejected = rejection.startswith(
+                self._PRE_CONSUME_ERROR_TAGS + self._ADDRESSLESS_REJECTION_TAGS)
+            if rejected and not consumes_first:
                 logger.warning(
-                    "%s: native call rejected the handle before taking "
+                    "%s: native call rejected an argument before taking "
                     "ownership (%s); handle retained",
                     type(self).__name__,
                     error)
                 _raise_typed_c2pa_error(error)
 
+            if rejected:
+                match = self._REJECTED_HANDLE_RE.match(rejection)
+                managed = self._handle_value()
+                if match and managed is not None:
+                    if int(match.group(1), 16) == managed:
+                        logger.warning(
+                            "%s: native call rejected the managed handle "
+                            "(%s); handle retained", type(self).__name__, error)
+                        _raise_typed_c2pa_error(error)
+                    self._teardown(free_handle=False)
+                else:
+                    self._release_handle()
+                _raise_typed_c2pa_error(error)
+
             # A non-tag error means the native side took ownership then failed,
-            # dropping the value itself: mark consumed, do not free (a free here
-            # would be a guarded no-op that dirties the error slot and races a
-            # recycled address in other threads).
+            # dropping the value itself: mark consumed, do not free. An extra
+            # free can dirty the error slot and, on stock native, race a reused
+            # address in another thread.
             self._teardown(free_handle=False)
             _raise_typed_c2pa_error(error)
 
@@ -568,7 +764,7 @@ class ManagedResource:
         self._release_handle()
         raise C2paError(error_message.format("Unknown error"))
 
-    def _consume_and_swap(self, ffi_call, error_message):
+    def _consume_and_swap(self, ffi_call, error_message, *, consumes_first=False):
         """Run an FFI call that consumes this handle and returns a replacement.
         On success the native lib consumed the handle and returned a new one,
         which we swap in. A null return is a failure.
@@ -577,9 +773,10 @@ class ManagedResource:
         if new_ptr:
             self._swap_handle(new_ptr)
             return
-        self._raise_consume_failure(error_message)
+        self._raise_consume_failure(error_message, consumes_first=consumes_first)
 
-    def _consume_no_replacement(self, ffi_call, error_message):
+    def _consume_no_replacement(self, ffi_call, error_message, *,
+                                consumes_first=False):
         """Run an FFI call that consumes this handle on success, when the native
         call returns a status code (0 = success) rather than a replacement
         handle. A non-zero status is a failure routed to
@@ -589,9 +786,9 @@ class ManagedResource:
         if result == 0:
             self._teardown(free_handle=False)
             return
-        self._raise_consume_failure(error_message)
+        self._raise_consume_failure(error_message, consumes_first=consumes_first)
 
-    def _consume_into(self, ffi_call, error_message):
+    def _consume_into(self, ffi_call, error_message, *, consumes_first=False):
         """Run an FFI call that consumes this handle and returns a *different*
         object's pointer. On success this handle is consumed (mark, don't free)
         and the new pointer is returned for the caller to own. A null return is
@@ -601,7 +798,7 @@ class ManagedResource:
         if result:
             self._teardown(free_handle=False)
             return result
-        self._raise_consume_failure(error_message)
+        self._raise_consume_failure(error_message, consumes_first=consumes_first)
 
     @classmethod
     def _wrap_native_handle(cls, handle):
@@ -659,7 +856,7 @@ class ManagedResource:
         )
 
     def close(self) -> None:
-        """Release the resource (idempotent, never raises)."""
+        """Close logically; admitted calls defer physical release (idempotent)."""
         self._cleanup_resources()
 
     def __enter__(self):
@@ -733,6 +930,46 @@ LiveVideoVsiSignCallback = ctypes.CFUNCTYPE(
     ctypes.POINTER(ctypes.c_ubyte),
     ctypes.c_size_t,
 )
+class C2paLiveVideoTrustedVsiSigningContextV1(ctypes.Structure):
+    """Version-one native trusted-VSI callback context."""
+
+    _fields_ = [
+        ("purpose", ctypes.c_uint32),
+        ("sequence_number", ctypes.c_uint32),
+        ("has_sequence_number", ctypes.c_bool),
+        ("event_id", ctypes.c_uint32),
+        ("has_event_id", ctypes.c_bool),
+        ("exhaust_after_sign", ctypes.c_bool),
+    ]
+
+
+class C2paLiveVideoTrustedVsiStatusV1(ctypes.Structure):
+    """Native public status for a trusted prehashed VSI session."""
+
+    _fields_ = [
+        ("init_uuid_committed", ctypes.c_bool),
+        ("init_uuid_pending", ctypes.c_bool),
+        ("media_emsg_pending", ctypes.c_bool),
+        ("has_next_sequence_number", ctypes.c_bool),
+        ("next_sequence_number", ctypes.c_uint32),
+        ("has_next_event_id", ctypes.c_bool),
+        ("next_event_id", ctypes.c_uint32),
+        ("exhausted", ctypes.c_bool),
+        ("has_exhaustion_reason", ctypes.c_bool),
+        ("blocked", ctypes.c_bool),
+        ("exhaustion_reason", ctypes.c_uint32),
+    ]
+
+
+TrustedVsiSignCallbackV1 = ctypes.CFUNCTYPE(
+    ctypes.c_ssize_t,
+    ctypes.c_void_p,
+    ctypes.POINTER(C2paLiveVideoTrustedVsiSigningContextV1),
+    ctypes.POINTER(ctypes.c_ubyte),
+    ctypes.c_size_t,
+    ctypes.POINTER(ctypes.c_ubyte),
+    ctypes.c_size_t,
+)
 
 
 class StreamContext(ctypes.Structure):
@@ -746,40 +983,13 @@ class C2paSigner(ctypes.Structure):
 
 
 class C2paStream(ctypes.Structure):
-    """A C2paStream is a Rust Read/Write/Seek stream that can be created in C.
+    """Opaque native stream handle.
 
-    This class represents a low-level stream interface that bridges Python
-    and Rust/C code. It implements the Rust Read/Write/Seek traits in C,
-    allowing for efficient data transfer between Python and the C2PA library
-    without unnecessary copying.
-
-    The stream is used for various operations including:
-    - Reading manifest data from files
-    - Writing signed content to files
-    - Handling binary resources
-    - Managing ingredient data
-
-    The structure contains function pointers that implement stream operations:
-    - reader: Function to read data from the stream
-    - seeker: Function to change the stream position
-    - writer: Function to write data to the stream
-    - flusher: Function to flush any buffered data
-
-    This is a critical component for performance as it allows direct memory
-    access between Python and the C2PA library without intermediate copies.
+    Python only passes this pointer back to native and never reads its fields.
+    This works with both stock 0.91.0's C-layout stream and newer opaque handles.
+    Stream retains the callbacks separately for their required lifetime.
     """
-    _fields_ = [
-        # Opaque context pointer for the stream
-        ("context", ctypes.POINTER(StreamContext)),
-        # Function to read data from the stream
-        ("reader", ReadCallback),
-        # Function to change stream position
-        ("seeker", SeekCallback),
-        # Function to write data to the stream
-        ("writer", WriteCallback),
-        # Function to flush buffered data
-        ("flusher", FlushCallback),
-    ]
+    _fields_ = []
 
 
 def _read_native_error() -> Optional[str]:
@@ -897,6 +1107,11 @@ class C2paContext(ctypes.Structure):
 
 class C2paLiveVideoVsiSigner(ctypes.Structure):
     """Opaque structure for a live-video VSI signing session."""
+    _fields_ = []  # Empty as it's opaque in the C API
+
+
+class C2paLiveVideoTrustedVsiSession(ctypes.Structure):
+    """Opaque structure for a trusted prehashed live-video VSI session."""
     _fields_ = []  # Empty as it's opaque in the C API
 
 # Helper function to set function prototypes
@@ -1271,6 +1486,167 @@ if _LIVE_VIDEO_VSI_MFHD_PROBE_AVAILABLE:
         ctypes.c_int
     )
 
+# Bind/call only safe, stateless probes before admitting the operational ABI.
+# Older contracts reused symbols and SDK versions with incompatible semantics.
+if hasattr(_lib, 'c2pa_live_video_trusted_vsi_contract_revision'):
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_contract_revision,
+        [],
+        ctypes.c_uint32,
+    )
+    _TRUSTED_VSI_CONTRACT_REVISION = int(
+        _lib.c2pa_live_video_trusted_vsi_contract_revision())
+if _TRUSTED_VSI_CAPABILITIES_FUNCTION_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_capabilities,
+        [],
+        ctypes.c_uint64,
+    )
+if (_TRUSTED_VSI_ABI_AVAILABLE
+        and _TRUSTED_VSI_CONTRACT_REVISION == _TRUSTED_VSI_REQUIRED_CONTRACT_REVISION):
+    native_version_ptr = _lib.c2pa_version()
+    if native_version_ptr:
+        try:
+            _TRUSTED_VSI_VERSION_MATCHES = _trusted_vsi_version_matches(
+                ctypes.string_at(native_version_ptr))
+        finally:
+            _lib.c2pa_string_free(native_version_ptr)
+    if _TRUSTED_VSI_VERSION_MATCHES:
+        _TRUSTED_VSI_CAPABILITIES = int(_lib.c2pa_live_video_trusted_vsi_capabilities())
+_TRUSTED_VSI_ABI_AVAILABLE = (
+    _TRUSTED_VSI_ABI_AVAILABLE
+    and _TRUSTED_VSI_CONTRACT_REVISION == _TRUSTED_VSI_REQUIRED_CONTRACT_REVISION
+    and _TRUSTED_VSI_VERSION_MATCHES
+    and _TRUSTED_VSI_CAPABILITIES == _TRUSTED_VSI_REQUIRED_CAPABILITIES
+)
+if _TRUSTED_VSI_ABI_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_create_callback_v1,
+        [ctypes.POINTER(C2paContext),
+         ctypes.c_char_p,
+         ctypes.c_int,
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t,
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t,
+         ctypes.c_uint64,
+         ctypes.c_char_p,
+         ctypes.c_uint64,
+         ctypes.c_char_p,
+         ctypes.c_void_p,
+         TrustedVsiSignCallbackV1],
+        ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
+    )
+if _TRUSTED_VSI_ABI_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_reserve_init_uuid,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
+         ctypes.c_char_p,
+         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
+        ctypes.c_int64,
+    )
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_reserved_manifest_id,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession)],
+        ctypes.c_void_p,
+    )
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_finalize_init_uuid,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t,
+         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
+        ctypes.c_int64,
+    )
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_commit_init_uuid,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession)],
+        ctypes.c_int,
+    )
+if _TRUSTED_VSI_ABI_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_sign_sig_structure,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t,
+         ctypes.c_uint32,
+         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
+        ctypes.c_int64,
+    )
+if _TRUSTED_VSI_ABI_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_reserve_media_emsg,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
+         ctypes.c_uint32,
+         ctypes.c_int64,
+         ctypes.c_uint32,
+         ctypes.c_uint32,
+         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
+         ctypes.POINTER(C2paLiveVideoTrustedVsiSigningContextV1)],
+        ctypes.c_int64,
+    )
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_finalize_media_emsg,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t,
+         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
+        ctypes.c_int64,
+    )
+if _TRUSTED_VSI_ABI_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_export_state,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
+         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
+        ctypes.c_int64,
+    )
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_import_state,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
+         ctypes.POINTER(ctypes.c_ubyte),
+         ctypes.c_size_t],
+        ctypes.c_int,
+    )
+if _TRUSTED_VSI_ABI_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_status_v1,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession),
+         ctypes.POINTER(C2paLiveVideoTrustedVsiStatusV1)],
+        ctypes.c_int,
+    )
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_session_preflight,
+        [ctypes.POINTER(C2paLiveVideoTrustedVsiSession), ctypes.c_uint32,
+         ctypes.POINTER(ctypes.c_ubyte), ctypes.c_size_t, ctypes.c_uint32,
+         ctypes.c_int64, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_char_p],
+        ctypes.c_int,
+    )
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_validate_input,
+        [ctypes.c_uint32, ctypes.c_int, ctypes.POINTER(ctypes.c_ubyte), ctypes.c_size_t],
+        ctypes.c_int,
+    )
+    _setup_function(
+        _lib.c2pa_live_video_trusted_vsi_hash_template,
+        [ctypes.c_uint32, ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
+        ctypes.c_int64,
+    )
+
+
+# Optional capability: older native libraries still support ordinary signing.
+_HAS_SIGN_LADDER = hasattr(_lib, "c2pa_builder_sign_ladder")
+if _HAS_SIGN_LADDER:
+    _setup_function(
+        _lib.c2pa_builder_sign_ladder,
+        [ctypes.POINTER(C2paBuilder),
+         ctypes.POINTER(C2paSigner),
+         ctypes.POINTER(ctypes.c_char_p),
+         ctypes.POINTER(ctypes.c_char_p),
+         ctypes.c_size_t,
+         ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))],
+        ctypes.c_int64
+    )
+
 
 class C2paError(Exception):
     """Exception raised for C2PA errors.
@@ -1533,6 +1909,35 @@ def _raise_typed_c2pa_error(error_str: str) -> None:
             raise C2paError.WrongPointerType(error_str)
     # If no recognized error type, raise base C2paError
     raise C2paError(error_str)
+
+
+def _claim_signer_error_state(callback_cb):
+    """Return the thread-local error slot pinned on a claim-signer callback."""
+    return getattr(callback_cb, '_error_state', None)
+
+
+def _reraise_callback_errors(states, interrupt_states=()):
+    """Re-raise the first stored callback exception with its identity intact.
+
+    ``states`` re-raise any stored exception. ``interrupt_states`` (claim signers
+    on pre-existing Builder/complete-buffer paths, whose ordinary exceptions stay
+    reported as C2paError) only re-raise non-``Exception`` BaseExceptions such as
+    KeyboardInterrupt, SystemExit and asyncio.CancelledError.
+    """
+    for state in states:
+        error = getattr(state, 'exception', None)
+        if error is not None:
+            raise error
+    for state in interrupt_states:
+        error = getattr(state, 'exception', None)
+        if error is not None and not isinstance(error, Exception):
+            raise error
+
+
+def _clear_callback_errors(states):
+    for state in states:
+        if state is not None:
+            state.exception = None
 
 
 def _check_ffi_operation_result(
@@ -1806,8 +2211,13 @@ class Settings(ManagedResource):
         self, data: Union[str, dict],
     ) -> 'Settings':
         """Update current configuration from a JSON string or dict.
-        If the updated string overwrite an existing settings value,
-        the last setting value set for that property wins.
+
+        Scalar properties use the last value set. With native SDK 0.91,
+        trust.anchors entries are merged and deduplicated, not replaced:
+        an empty list does not remove existing anchors. Use purpose-tagged
+        entries (trust_kind: manifest, cawg, or tsa). To remove or replace
+        trust, create fresh Settings and a new Context with the complete
+        intended configuration; existing contexts keep their configuration.
 
         Args:
             data: A JSON string or dict with configuration to merge.
@@ -1955,7 +2365,8 @@ class Context(ManagedResource, ContextProvider):
 
                 context_ptr = nb._consume_into(
                     lambda h: _lib.c2pa_context_builder_build(h),
-                    "Failed to build Context: {}")
+                    "Failed to build Context: {}",
+                    consumes_first=True)
 
             self._activate(context_ptr)
 
@@ -2025,6 +2436,109 @@ class Context(ManagedResource, ContextProvider):
         return self._handle
 
 
+@dataclass(frozen=True)
+class VsiSigningContextV1:
+    """Purpose-bound context supplied to a trusted VSI signing callback."""
+
+    purpose: str
+    sequence_number: Optional[int] = None
+    event_id: Optional[int] = None
+    exhaust_after_sign: bool = False
+
+
+@dataclass(frozen=True)
+class TrustedVsiMediaEmsgReservation:
+    """Complete placeholder EMSG box and its pinned media facts.
+
+    ``signing_context`` is the V1 context the finalize callback will receive
+    (supplied sequence, allocated event ID, terminal ``exhaust_after_sign``).
+    """
+
+    placeholder_emsg_box: bytes
+    signing_context: VsiSigningContextV1
+    signing_time_unix_seconds: int
+    timescale: int
+    event_duration: int
+
+    @property
+    def sequence_number(self) -> int:
+        return self.signing_context.sequence_number
+
+    @property
+    def event_id(self) -> int:
+        return self.signing_context.event_id
+
+
+@dataclass(frozen=True)
+class TrustedVsiStatus:
+    """Public state snapshot for a trusted prehashed VSI session."""
+
+    init_uuid_committed: bool
+    init_uuid_pending: bool
+    media_emsg_pending: bool
+    next_sequence_number: Optional[int]
+    next_event_id: Optional[int]
+    exhausted: bool
+    exhaustion_reason: Optional[str] = None
+    blocked: bool = False
+
+
+def _has_trusted_vsi_capability(bit: int, symbols_available: bool = True) -> bool:
+    return (
+        _TRUSTED_VSI_ABI_AVAILABLE
+        and _TRUSTED_VSI_CONTRACT_REVISION == _TRUSTED_VSI_REQUIRED_CONTRACT_REVISION
+        and _TRUSTED_VSI_VERSION_MATCHES
+        and _TRUSTED_VSI_CAPABILITIES == _TRUSTED_VSI_REQUIRED_CAPABILITIES
+        and symbols_available
+        and bool(_TRUSTED_VSI_CAPABILITIES & bit)
+    )
+
+
+def has_live_video_trusted_vsi_split_init() -> bool:
+    """Return whether split-init complete-UUID operations are available."""
+    return _has_trusted_vsi_capability(
+        _TRUSTED_VSI_CAP_SPLIT_INIT,
+        _TRUSTED_VSI_SPLIT_INIT_AVAILABLE,
+    )
+
+
+def has_live_video_trusted_vsi_expert_sig_structure() -> bool:
+    """Return whether exact expert COSE Sig_structure signing is available."""
+    return _has_trusted_vsi_capability(
+        _TRUSTED_VSI_CAP_EXPERT_SIG_STRUCTURE,
+        _TRUSTED_VSI_EXPERT_SIG_STRUCTURE_AVAILABLE,
+    )
+
+
+def has_live_video_trusted_vsi_composed_emsg() -> bool:
+    """Return whether signer-composed complete-EMSG operations are available."""
+    return _has_trusted_vsi_capability(
+        _TRUSTED_VSI_CAP_COMPOSED_MEDIA,
+        _TRUSTED_VSI_COMPOSED_MEDIA_AVAILABLE,
+    )
+
+
+def has_live_video_trusted_vsi_recovery() -> bool:
+    """Return whether trusted prehashed VSI recovery is available."""
+    return _has_trusted_vsi_capability(
+        _TRUSTED_VSI_CAP_RECOVERY,
+        _TRUSTED_VSI_RECOVERY_AVAILABLE,
+    )
+
+
+def has_live_video_trusted_vsi_signing_context_v1() -> bool:
+    """Return whether version-1 purpose-bound callback contexts are available."""
+    return _has_trusted_vsi_capability(_TRUSTED_VSI_CAP_SIGNING_CONTEXT_V1)
+
+
+def has_live_video_trusted_vsi_full_uint32_exhaustion() -> bool:
+    """Return whether composed VSI exhausts safely at uint32 max.
+
+    Expert mode has no sequence counter or exhaustion state.
+    """
+    return _has_trusted_vsi_capability(_TRUSTED_VSI_CAP_FULL_UINT32_SEQUENCE)
+
+
 def has_live_video_vsi() -> bool:
     """Return whether the loaded native library provides live-video VSI."""
     return _LIVE_VIDEO_VSI_AVAILABLE
@@ -2092,6 +2606,327 @@ def has_fragmented_files() -> bool:
         and _FRAGMENTED_READER_AVAILABLE
         and _FRAGMENTED_CONTEXT_READER_AVAILABLE
     )
+
+
+class TrustedVsiOperation(enum.IntEnum):
+    RESERVE_INIT = 0
+    FINALIZE_INIT = 1
+    COMMIT_INIT = 2
+    EXPERT_SIGN = 3
+    RESERVE_MEDIA = 4
+    FINALIZE_MEDIA = 5
+
+
+class TrustedVsiInputKind(enum.IntEnum):
+    INIT_HASH = 0
+    SIG_STRUCTURE = 1
+    MEDIA_HASH = 2
+
+
+def _require_trusted_vsi():
+    if not has_live_video_trusted_vsi_signing_context_v1():
+        raise C2paError.NotSupported(
+            f"Functional trusted VSI requires the complete {_TRUSTED_VSI_NATIVE_VERSION} native ABI "
+            "with contract revision 3 and capability mask 63; the loaded library is unavailable")
+
+
+def _trusted_vsi_integer(value, name, maximum=2**32 - 1, minimum=0):
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
+def _trusted_vsi_algorithm(algorithm):
+    if isinstance(algorithm, str):
+        try:
+            algorithm = {"es256": C2paSigningAlg.ES256,
+                         "ed25519": C2paSigningAlg.ED25519,
+                         "eddsa": C2paSigningAlg.ED25519}[algorithm.lower().replace("-", "")]
+        except KeyError as error:
+            raise ValueError("algorithm must be ES256 or Ed25519") from error
+    if not isinstance(algorithm, C2paSigningAlg):
+        raise TypeError("algorithm must be a C2paSigningAlg or str")
+    if algorithm not in (C2paSigningAlg.ES256, C2paSigningAlg.ED25519):
+        raise ValueError("algorithm must be ES256 or Ed25519")
+    return algorithm
+
+
+def _trusted_vsi_output(call):
+    output = ctypes.POINTER(ctypes.c_ubyte)()
+    try:
+        length = call(ctypes.byref(output))
+        _check_ffi_operation_result(length, "Trusted VSI operation failed", check=lambda r: r < 0)
+        if not output:
+            if length == 0:
+                return b""
+            raise C2paError("Trusted VSI native output pointer is null")
+        return ctypes.string_at(output, length)
+    finally:
+        if output:
+            ManagedResource._free_native_ptr(output)
+
+
+def validate_trusted_vsi_input(kind: TrustedVsiInputKind,
+                               algorithm: Union[C2paSigningAlg, str], data: bytes) -> None:
+    """Native canonical-input validation without a session or signing callback."""
+    _require_trusted_vsi()
+    kind = TrustedVsiInputKind(_trusted_vsi_integer(kind, "kind", 2))
+    algorithm = _trusted_vsi_algorithm(algorithm)
+    array = LiveVideoVsiSession._segment_array(data, "data")
+    _check_ffi_operation_result(
+        _lib.c2pa_live_video_trusted_vsi_validate_input(kind, algorithm, array, len(data)),
+        "Invalid trusted VSI input", check=lambda r: r != 0)
+
+
+def trusted_vsi_hash_template(kind: TrustedVsiInputKind) -> bytes:
+    """Return the native canonical zero-digest init/media BMFF hash template."""
+    _require_trusted_vsi()
+    kind = TrustedVsiInputKind(_trusted_vsi_integer(kind, "kind", 2))
+    return _trusted_vsi_output(lambda output: _lib.c2pa_live_video_trusted_vsi_hash_template(kind, output))
+
+
+class TrustedVsiSession(ManagedResource):
+    """Mode-pinned trusted-processor session; externally serialize its calls.
+
+    The caller owns Context. Native retains it and Python separately pins all
+    callbacks so closing the caller's Context cannot invalidate the session.
+    Import requires a new session with the same public configuration/options.
+    """
+
+    def __init__(self, context: 'Context', manifest_json: Union[str, dict],
+                 algorithm: Union[C2paSigningAlg, str], public_cose_key: bytes,
+                 kid: bytes, min_sequence_number: int, created_at: str,
+                 validity_period_secs: int,
+                 callback: Callable[[VsiSigningContextV1, bytes], bytes], *,
+                 mode: str, reservation_nonce: str,
+                 signing_time_unix_seconds: int, sequence_max: Optional[int] = None):
+        _require_trusted_vsi()
+        super().__init__()
+        self._init_attrs()
+        if not isinstance(manifest_json, (str, dict)):
+            raise TypeError("manifest_json must be a str or dict")
+        manifest_bytes = _to_utf8_bytes(manifest_json, "manifest_json")
+        if not manifest_bytes or b'\0' in manifest_bytes:
+            raise ValueError("manifest_json must be nonempty and contain no NUL")
+        if not isinstance(context, Context):
+            raise TypeError("context must be a Context")
+        context._ensure_valid_state()
+        if not context.has_signer:
+            raise C2paError("TrustedVsiSession requires a Context with an explicit signer")
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+        algorithm = _trusted_vsi_algorithm(algorithm)
+        public_key_array = LiveVideoVsiSession._segment_array(public_cose_key, "public_cose_key")
+        kid_array = LiveVideoVsiSession._segment_array(kid, "kid")
+        _trusted_vsi_integer(min_sequence_number, "min_sequence_number")
+        _trusted_vsi_integer(validity_period_secs, "validity_period_secs", 2**64 - 1, 1)
+        created_at_bytes = self._text(created_at, "created_at")
+        if not isinstance(mode, str):
+            raise TypeError("mode must be a str")
+        if mode not in ("expert_sig_structure", "signer_composed_emsg"):
+            raise ValueError("mode must be expert_sig_structure or signer_composed_emsg")
+        if not isinstance(reservation_nonce, str):
+            raise TypeError("reservation_nonce must be a str")
+        if len(reservation_nonce) != 32 or any(c not in "0123456789abcdef" for c in reservation_nonce):
+            raise ValueError("reservation_nonce must contain 32 lowercase hex characters")
+        _trusted_vsi_integer(signing_time_unix_seconds, "signing_time_unix_seconds", 2**63 - 1, -(2**63))
+        if sequence_max is not None:
+            _trusted_vsi_integer(sequence_max, "sequence_max", minimum=min_sequence_number)
+        options = json.dumps(dict(mode=mode, reservation_nonce=reservation_nonce,
+                                  signing_time_unix_seconds=signing_time_unix_seconds,
+                                  sequence_max=sequence_max)).encode()
+        error_state = threading.local()
+        error_state.exception = None
+
+        def wrapped_callback(user_data, native_context, tbs, tbs_len, signature, capacity):
+            error_state.exception = None
+            try:
+                if not native_context or not tbs or not tbs_len or not signature or capacity < 64:
+                    raise C2paError("Invalid trusted VSI callback buffers")
+                signing_context = TrustedVsiSession._signing_context(native_context.contents)
+                result = callback(signing_context, ctypes.string_at(tbs, tbs_len))
+                if not isinstance(result, bytes):
+                    raise TypeError("Trusted VSI callback must return bytes")
+                if len(result) != 64:
+                    raise ValueError("Trusted VSI callback must return exactly 64 signature bytes")
+                ctypes.memmove(signature, result, 64)
+                return 64
+            except BaseException as error:
+                error_state.exception = error
+                return -1
+
+        callback_cb = TrustedVsiSignCallbackV1(wrapped_callback)
+        self._context = context
+        self._signer_callback_cb = context._signer_callback_cb
+        self._dynamic_assertion_cbs = list(context._dynamic_assertion_cbs)
+        self._trusted_vsi_callback = (callback_cb, error_state, callback)
+        self._create_and_activate(
+            lambda: _lib.c2pa_live_video_trusted_vsi_session_create_callback_v1(
+                context.execution_context, manifest_bytes, algorithm, public_key_array,
+                len(public_cose_key), kid_array, len(kid), min_sequence_number,
+                created_at_bytes, validity_period_secs, options, None, callback_cb),
+            "Failed to create trusted VSI session")
+
+    @classmethod
+    def from_callback(cls, context, manifest_json, algorithm, public_cose_key, kid,
+                      min_sequence_number, created_at, validity_period_secs, callback, *,
+                      mode, reservation_nonce, signing_time_unix_seconds, sequence_max=None):
+        """Create a session with the same signature and ownership as the constructor."""
+        _require_trusted_vsi()
+        return cls(context, manifest_json, algorithm, public_cose_key, kid,
+                   min_sequence_number, created_at, validity_period_secs, callback, mode=mode,
+                   reservation_nonce=reservation_nonce, signing_time_unix_seconds=signing_time_unix_seconds,
+                   sequence_max=sequence_max)
+
+    def _init_attrs(self):
+        super()._init_attrs()
+        self._context = None
+        self._signer_callback_cb = None
+        self._dynamic_assertion_cbs = []
+        self._trusted_vsi_callback = None
+
+    def _release(self):
+        self._context = None
+        self._signer_callback_cb = None
+        self._dynamic_assertion_cbs.clear()
+        self._trusted_vsi_callback = None
+
+    @staticmethod
+    def _text(value, name):
+        if not isinstance(value, str):
+            raise TypeError(f"{name} must be a str")
+        if not value or '\0' in value:
+            raise ValueError(f"{name} must be nonempty and contain no NUL")
+        return _to_utf8_bytes(value, name)
+
+    @staticmethod
+    def _signing_context(native):
+        if native.purpose == 0:
+            if native.has_sequence_number or native.has_event_id or native.exhaust_after_sign:
+                raise C2paError("Invalid signer_binding context")
+            return VsiSigningContextV1("signer_binding")
+        if native.purpose != 1 or not native.has_sequence_number:
+            raise C2paError("Invalid trusted VSI signing context")
+        return VsiSigningContextV1("vsi", native.sequence_number,
+                                   native.event_id if native.has_event_id else None,
+                                   native.exhaust_after_sign)
+
+    def _call(self, function, *args):
+        states = [state for _, state, _ in self._dynamic_assertion_cbs]
+        if self._trusted_vsi_callback is not None:
+            states.append(self._trusted_vsi_callback[1])
+        claim_state = _claim_signer_error_state(self._signer_callback_cb)
+        if claim_state is not None:
+            states.append(claim_state)
+        _clear_callback_errors(states)
+        with self._native_call():
+            result = function(self._handle, *args)
+        if result < 0:
+            _reraise_callback_errors(states)
+        _check_ffi_operation_result(result, "Trusted VSI operation failed", check=lambda r: r < 0)
+        return result
+
+    def reserve_init_uuid(self, format: str = "video/mp4") -> bytes:
+        """Return the complete placeholder UUID box; repeat calls return the same
+        frozen reservation. No signing or DynamicAssertion content callbacks run."""
+        self._ensure_valid_state()
+        format_bytes = self._text(format, "format")
+        return _trusted_vsi_output(lambda output: self._call(
+            _lib.c2pa_live_video_trusted_vsi_session_reserve_init_uuid, format_bytes, output))
+
+    def reserved_manifest_id(self) -> str:
+        self._ensure_valid_state()
+        with self._native_call():
+            pointer = _lib.c2pa_live_video_trusted_vsi_session_reserved_manifest_id(self._handle)
+        _check_ffi_operation_result(pointer, "No reserved trusted VSI manifest ID")
+        try:
+            return ctypes.string_at(pointer).decode('utf-8')
+        finally:
+            _lib.c2pa_string_free(pointer)
+
+    def finalize_init_uuid(self, canonical_hash: bytes) -> bytes:
+        self._ensure_valid_state()
+        array = LiveVideoVsiSession._segment_array(canonical_hash, "canonical_hash")
+        return _trusted_vsi_output(lambda output: self._call(
+            _lib.c2pa_live_video_trusted_vsi_session_finalize_init_uuid, array, len(canonical_hash), output))
+
+    def commit_init_uuid(self) -> None:
+        """Activate durable coordinator init state, not a public publication ACK."""
+        self._ensure_valid_state()
+        self._call(_lib.c2pa_live_video_trusted_vsi_session_commit_init_uuid)
+
+    def sign_sig_structure(self, sig_structure: bytes, sequence_number: int) -> bytes:
+        """Sign original expert bytes with supplied sequence metadata, never a counter."""
+        self._ensure_valid_state()
+        _trusted_vsi_integer(sequence_number, "sequence_number")
+        array = LiveVideoVsiSession._segment_array(sig_structure, "sig_structure")
+        return _trusted_vsi_output(lambda output: self._call(
+            _lib.c2pa_live_video_trusted_vsi_session_sign_sig_structure,
+            array, len(sig_structure), sequence_number, output))
+
+    def reserve_media_emsg_at(self, sequence_number: int, signing_time_unix_seconds: int,
+                              timescale: int, event_duration: int) -> TrustedVsiMediaEmsgReservation:
+        self._ensure_valid_state()
+        _trusted_vsi_integer(sequence_number, "sequence_number")
+        _trusted_vsi_integer(signing_time_unix_seconds, "signing_time_unix_seconds", 2**63 - 1, -(2**63))
+        _trusted_vsi_integer(timescale, "timescale", minimum=1)
+        _trusted_vsi_integer(event_duration, "event_duration", minimum=1)
+        context = C2paLiveVideoTrustedVsiSigningContextV1()
+        data = _trusted_vsi_output(lambda output: self._call(
+            _lib.c2pa_live_video_trusted_vsi_session_reserve_media_emsg, sequence_number,
+            signing_time_unix_seconds, timescale, event_duration, output, ctypes.byref(context)))
+        return TrustedVsiMediaEmsgReservation(data, self._signing_context(context),
+                                               signing_time_unix_seconds, timescale, event_duration)
+
+    def finalize_media_emsg(self, canonical_hash: bytes) -> bytes:
+        self._ensure_valid_state()
+        array = LiveVideoVsiSession._segment_array(canonical_hash, "canonical_hash")
+        return _trusted_vsi_output(lambda output: self._call(
+            _lib.c2pa_live_video_trusted_vsi_session_finalize_media_emsg, array, len(canonical_hash), output))
+
+    def export_state(self) -> bytes:
+        """Export exact versioned public state, including pending reservations."""
+        self._ensure_valid_state()
+        return _trusted_vsi_output(lambda output: self._call(
+            _lib.c2pa_live_video_trusted_vsi_session_export_state, output))
+
+    def import_state(self, state: bytes) -> None:
+        """Import into a new session with matching config, options, and claim signer."""
+        self._ensure_valid_state()
+        array = LiveVideoVsiSession._segment_array(state, "state")
+        self._call(_lib.c2pa_live_video_trusted_vsi_session_import_state, array, len(state))
+
+    def preflight(self, operation: TrustedVsiOperation, data: bytes = b"", *,
+                  sequence_number: int = 0, iat: int = 0, timescale: int = 0,
+                  event_duration: int = 0, format: str = "video/mp4") -> None:
+        """Validate state and input without mutation, reservation, or callbacks."""
+        self._ensure_valid_state()
+        operation = TrustedVsiOperation(_trusted_vsi_integer(operation, "operation", 5))
+        if not isinstance(data, bytes):
+            raise TypeError("data must be bytes")
+        array = LiveVideoVsiSession._segment_array(data, "data") if data else None
+        _trusted_vsi_integer(sequence_number, "sequence_number")
+        _trusted_vsi_integer(iat, "iat", 2**63 - 1, -(2**63))
+        _trusted_vsi_integer(timescale, "timescale")
+        _trusted_vsi_integer(event_duration, "event_duration")
+        self._call(_lib.c2pa_live_video_trusted_vsi_session_preflight, operation,
+                   array, len(data), sequence_number, iat, timescale, event_duration,
+                   self._text(format, "format"))
+
+    def status(self) -> TrustedVsiStatus:
+        self._ensure_valid_state()
+        native = C2paLiveVideoTrustedVsiStatusV1()
+        self._call(_lib.c2pa_live_video_trusted_vsi_session_status_v1, ctypes.byref(native))
+        reasons = {1: "sequence_max", 2: "event_id_max", 3: "legacy_sentinel"}
+        if native.has_exhaustion_reason and native.exhaustion_reason not in reasons:
+            raise C2paError("Unknown trusted VSI exhaustion reason")
+        return TrustedVsiStatus(native.init_uuid_committed, native.init_uuid_pending,
+            native.media_emsg_pending, native.next_sequence_number if native.has_next_sequence_number else None,
+            native.next_event_id if native.has_next_event_id else None, native.exhausted,
+            reasons[native.exhaustion_reason] if native.has_exhaustion_reason else None,
+            blocked=native.blocked)
 
 
 class LiveVideoVsiSession(ManagedResource):
@@ -2353,7 +3188,7 @@ class LiveVideoVsiSession(ManagedResource):
                         "VSI callback must return exactly 64 signature bytes")
                 ctypes.memmove(signature, result, len(result))
                 return len(result)
-            except Exception as error:
+            except BaseException as error:
                 error_state.exception = error
                 logger.error(
                     "Error in live-video VSI %s callback: %s",
@@ -2432,22 +3267,17 @@ class LiveVideoVsiSession(ManagedResource):
         return (ctypes.c_ubyte * len(segment)).from_buffer_copy(segment)
 
     def _copy_signed_output(self, ffi_call, error_message: str) -> bytes:
+        states = [state for _, state, _ in self._dynamic_assertion_cbs]
         if self._vsi_callback is not None:
-            self._vsi_callback[1].exception = None
-        for _, error_state, _ in self._dynamic_assertion_cbs:
-            error_state.exception = None
+            states.insert(0, self._vsi_callback[1])
+        claim_state = _claim_signer_error_state(self._signer_callback_cb)
+        _clear_callback_errors(states + [claim_state])
         output = ctypes.POINTER(ctypes.c_ubyte)()
-        length = ffi_call(ctypes.byref(output))
+        with self._native_call():
+            length = ffi_call(ctypes.byref(output))
         if length < 0:
-            if self._vsi_callback is not None:
-                callback_error = getattr(
-                    self._vsi_callback[1], 'exception', None)
-                if callback_error is not None:
-                    raise callback_error
-            for _, error_state, _ in self._dynamic_assertion_cbs:
-                callback_error = getattr(error_state, 'exception', None)
-                if callback_error is not None:
-                    raise callback_error
+            _reraise_callback_errors(
+                states, [claim_state] if claim_state is not None else [])
         _check_ffi_operation_result(
             length, error_message, check=lambda result: result < 0)
 
@@ -3593,7 +4423,8 @@ class Reader(ManagedResource):
                             len(manifest_data),
                         )
                     ),
-                    Reader._ERROR_MESSAGES['reader_error'])
+                    Reader._ERROR_MESSAGES['reader_error'],
+                    consumes_first=True)
             else:
                 # Consume reader with stream
                 self._consume_and_swap(
@@ -3601,7 +4432,8 @@ class Reader(ManagedResource):
                         handle, format_arg,
                         self._own_stream._stream,
                     ),
-                    Reader._ERROR_MESSAGES['reader_error'])
+                    Reader._ERROR_MESSAGES['reader_error'],
+                    consumes_first=True)
         except Exception:
             self._close_streams()
             raise
@@ -3714,7 +4546,8 @@ class Reader(ManagedResource):
                     main_obj._stream,
                     frag_obj._stream,
                 ),
-                Reader._ERROR_MESSAGES['fragment_error'])
+                Reader._ERROR_MESSAGES['fragment_error'],
+                consumes_first=True)
 
         # Invalidate caches: processing a new BMFF fragment updates the native
         # reader's state, which can change the manifest data it returns.
@@ -4038,6 +4871,11 @@ class Signer(ManagedResource):
                 )
             )
 
+        # Retained on the ctypes callback itself so Context consumption and
+        # session borrowing preserve the original Python exception state.
+        callback_error_state = threading.local()
+        callback_error_state.exception = None
+
         # Create a wrapper callback that handles errors and memory management
         def wrapped_callback(
                 context,
@@ -4045,6 +4883,7 @@ class Signer(ManagedResource):
                 data_len,
                 signed_bytes_ptr,
                 signed_len):
+            callback_error_state.exception = None
             # Returns -1 on error as it is what the native code expects.
             # The reason is that otherwise we ping-pong errors
             # between native code and Python code,
@@ -4089,7 +4928,11 @@ class Signer(ManagedResource):
 
                 # Native code expects the signed len to be returned, we oblige
                 return actual_len
-            except Exception as e:
+            except BaseException as e:
+                # Store every original exception (including KeyboardInterrupt,
+                # SystemExit and CancelledError) so callers can re-raise it;
+                # an exception escaping into ctypes would be discarded.
+                callback_error_state.exception = e
                 logger.error(
                     cls._ERROR_MESSAGES['callback_error'].format(
                         str(e)))
@@ -4111,6 +4954,7 @@ class Signer(ManagedResource):
 
         # Create the callback object using the callback function
         callback_cb = SignerCallback(wrapped_callback)
+        callback_cb._error_state = callback_error_state
 
         # Create the signer with the wrapped callback
         signer_ptr = _lib.c2pa_signer_create(
@@ -4292,7 +5136,9 @@ class Signer(ManagedResource):
                 if result_size:
                     ctypes.memmove(out_data, result, result_size)
                 return result_size
-            except Exception as error:
+            except BaseException as error:
+                # See Signer.from_callback: never let an exception escape into
+                # ctypes, where it is ignored and the original is lost.
                 error_state.exception = error
                 logger.error(
                     "Error in dynamic assertion callback for '%s': %s",
@@ -4503,7 +5349,8 @@ class Builder(ManagedResource):
         self._consume_and_swap(
             lambda handle: _lib.c2pa_builder_with_definition(
                 handle, json_str),
-            Builder._ERROR_MESSAGES['builder_error'])
+            Builder._ERROR_MESSAGES['builder_error'],
+            consumes_first=True)
 
     def _init_attrs(self):
         super()._init_attrs()
@@ -4794,7 +5641,8 @@ class Builder(ManagedResource):
             self._consume_and_swap(
                 lambda handle: _lib.c2pa_builder_with_archive(
                     handle, stream_obj._stream),
-                Builder._ERROR_MESSAGES['archive_load_error'])
+                Builder._ERROR_MESSAGES['archive_load_error'],
+                consumes_first=True)
 
         return self
 
@@ -4829,7 +5677,7 @@ class Builder(ManagedResource):
         self._ensure_valid_state()
 
         if signer is not None:
-            if not hasattr(signer, '_handle') or not signer._handle:
+            if not hasattr(signer, '_handle') or not signer.is_valid:
                 raise C2paError("Invalid or closed signer")
 
         dynamic_assertion_cbs = list(
@@ -4837,8 +5685,11 @@ class Builder(ManagedResource):
             if signer is not None
             else self._dynamic_assertion_cbs
         )
-        for _, error_state, _ in dynamic_assertion_cbs:
-            error_state.exception = None
+        claim_state = _claim_signer_error_state(
+            signer._callback_cb if signer is not None
+            else self._signer_callback_cb)
+        da_states = [state for _, state, _ in dynamic_assertion_cbs]
+        _clear_callback_errors(da_states + [claim_state])
 
         # allow_autodetect=False, so this never returns None (raises instead).
         format_arg = _format_ffi_arg(
@@ -4846,36 +5697,39 @@ class Builder(ManagedResource):
         manifest_bytes_ptr = ctypes.POINTER(ctypes.c_ubyte)()
 
         try:
-            if signer is not None:
-                result = _lib.c2pa_builder_sign(
-                    self._handle,
-                    format_arg,
-                    source_stream._stream,
-                    dest_stream._stream,
-                    signer._handle,
-                    ctypes.byref(manifest_bytes_ptr)
-                )
-            else:
-                result = _lib.c2pa_builder_sign_context(
-                    self._handle,
-                    format_arg,
-                    source_stream._stream,
-                    dest_stream._stream,
-                    ctypes.byref(manifest_bytes_ptr),
-                )
-            # Sign borrows the Builder without taking ownership.
-            # Closing here ensures resources clean up,
-            # and single use/single sign done by a Builder.
-            self.close()
+            with self._native_call(), signer._native_call() if signer is not None else nullcontext():
+                try:
+                    if signer is not None:
+                        result = _lib.c2pa_builder_sign(
+                            self._handle,
+                            format_arg,
+                            source_stream._stream,
+                            dest_stream._stream,
+                            signer._handle,
+                            ctypes.byref(manifest_bytes_ptr)
+                        )
+                    else:
+                        result = _lib.c2pa_builder_sign_context(
+                            self._handle,
+                            format_arg,
+                            source_stream._stream,
+                            dest_stream._stream,
+                            ctypes.byref(manifest_bytes_ptr),
+                        )
+                finally:
+                    # Close logically inside the borrows; physical teardown runs
+                    # as the guards drain after the native call has returned.
+                    self.close()
         except Exception as e:
-            self.close()
             raise C2paError(f"Error during signing: {e}") from e
+        finally:
+            # Admission can fail after preflight if the borrowed Signer closes.
+            # Match the other signing paths without consuming preflight errors.
+            self.close()
 
         if result < 0:
-            for _, error_state, _ in dynamic_assertion_cbs:
-                callback_error = getattr(error_state, 'exception', None)
-                if callback_error is not None:
-                    raise callback_error
+            _reraise_callback_errors(
+                da_states, [claim_state] if claim_state is not None else [])
 
         _check_ffi_operation_result(
             result,
@@ -5036,17 +5890,29 @@ class Builder(ManagedResource):
     ) -> bytes:
         """Sign a fragmented BMFF file set and return its manifest bytes.
 
-        The native library writes signed files below
-        ``<output_dir>/<asset-parent-name>/``. This compatibility API accepts
-        one literal existing initialization segment and an explicit Signer.
+        With the paired glob-aware Castlabs 0.92.0-dev native including #17,
+        the native library writes signed files below
+        ``<output_dir>/<init-parent-name>/``. An init path or glob selects one
+        or more renditions, all signed with one shared manifest and an explicit
+        Signer. Native code validates globs and output collisions and refuses
+        existing rendition output directories. Use fresh, exclusively owned
+        outputs outside the input globs; failures may leave partial outputs.
+        These glob/output guarantees are verified for that pairing. Export
+        presence alone does not establish them for older native lineages, which
+        may be literal-only or have different overwrite semantics. Older builds
+        may contain backports; no version cutoff is imposed here.
         Like :meth:`sign`, an attempted native signing operation closes this
         single-use Builder while leaving the borrowed Signer active.
 
         Args:
             signer: Active Signer borrowed for this operation.
-            asset_path: Literal path to an existing initialization segment.
-            fragments_glob: Fragment filename glob relative to the asset's
-                parent directory.
+            asset_path: Init path or glob matching one or more initialization
+                segments, each with a named parent directory (e.g.
+                ``video/init.mp4``, not bare ``init.mp4``). Parent directory names
+                must be distinct. Paths use native glob syntax even for a single
+                init in the paired native.
+            fragments_glob: Fragment glob relative to each init's parent
+                directory. Fragment subdirectories are flattened in output.
             output_dir: Root directory for the nested signed output.
 
         Returns:
@@ -5055,9 +5921,9 @@ class Builder(ManagedResource):
         Raises:
             C2paError.NotSupported: If the native API is unavailable.
             TypeError: If signer or path inputs have invalid types.
-            ValueError: If a path is empty, contains a NUL character, or
-                ``asset_path`` is not one literal existing file.
-            C2paError: If signing fails.
+            ValueError: If a path is empty or contains a NUL character.
+            C2paError.Encoding: If a path cannot be encoded as UTF-8.
+            C2paError: If native glob/layout validation or signing fails.
         """
         self._ensure_valid_state()
         if not isinstance(signer, Signer):
@@ -5070,42 +5936,35 @@ class Builder(ManagedResource):
                 "file_io feature"
             )
 
-        asset_path_str, asset_path_bytes = _encode_path(
+        _, asset_path_bytes = _encode_path(
             asset_path, "asset_path")
         _, fragments_glob_bytes = _encode_path(
             fragments_glob, "fragments_glob")
         _, output_dir_bytes = _encode_path(output_dir, "output_dir")
-        if any(character in asset_path_str for character in "*?[]"):
-            raise ValueError(
-                "asset_path must be one literal initialization-segment path")
-        if not Path(asset_path_str).is_file():
-            raise ValueError(
-                "asset_path must identify an existing regular file")
-
         dynamic_assertion_cbs = list(signer._dynamic_assertion_cbs)
-        for _, error_state, _ in dynamic_assertion_cbs:
-            error_state.exception = None
+        claim_state = _claim_signer_error_state(signer._callback_cb)
+        da_states = [state for _, state, _ in dynamic_assertion_cbs]
+        _clear_callback_errors(da_states + [claim_state])
 
         manifest_bytes_ptr = ctypes.POINTER(ctypes.c_ubyte)()
         try:
             try:
-                result = _lib.c2pa_builder_sign_fragmented(
-                    self._handle,
-                    signer._handle,
-                    asset_path_bytes,
-                    fragments_glob_bytes,
-                    output_dir_bytes,
-                    ctypes.byref(manifest_bytes_ptr),
-                )
+                with self._native_call(), signer._native_call():
+                    result = _lib.c2pa_builder_sign_fragmented(
+                        self._handle,
+                        signer._handle,
+                        asset_path_bytes,
+                        fragments_glob_bytes,
+                        output_dir_bytes,
+                        ctypes.byref(manifest_bytes_ptr),
+                    )
             except Exception as error:
                 raise C2paError(
                     f"Error during fragmented signing: {error}") from error
 
             if result < 0:
-                for _, error_state, _ in dynamic_assertion_cbs:
-                    callback_error = getattr(error_state, 'exception', None)
-                    if callback_error is not None:
-                        raise callback_error
+                _reraise_callback_errors(
+                    da_states, [claim_state] if claim_state is not None else [])
 
             _check_ffi_operation_result(
                 result,
@@ -5124,8 +5983,123 @@ class Builder(ManagedResource):
             # closes after an attempted sign; Signer remains caller-owned.
             self.close()
             if manifest_bytes_ptr:
-                ManagedResource._free_native_ptr(manifest_bytes_ptr)
+                # A cleanup failure must not replace the original callback or
+                # native exception (or a successful result).
+                try:
+                    ManagedResource._free_native_ptr(manifest_bytes_ptr)
+                except Exception:
+                    logger.error(
+                        "Failed to release native manifest bytes memory")
                 manifest_bytes_ptr = ctypes.POINTER(ctypes.c_ubyte)()
+
+    def sign_ladder(
+        self,
+        signer: Signer,
+        sources: list[Union[str, Path]],
+        dests: list[Union[str, Path]],
+    ) -> bytes:
+        """Sign single-file fragmented MP4 renditions with one shared manifest.
+
+        Each source must contain its own initialization and media fragments,
+        with one track per file. This is not an init-segment-plus-fragments
+        API. Sources must not already contain a C2PA manifest. Destinations
+        correspond to sources in order; they must be distinct, must not exist,
+        and their parent directories must exist. Native code validates the file
+        layout and path overlap and refuses to overwrite existing destinations.
+        Errors may leave partial outputs. Delete only newly created files you
+        positively own, never sources or preexisting destinations. Prefer a
+        fresh, exclusively owned staging directory for every operation.
+
+        Like :py:meth:`sign`, an attempted native signing call closes this
+        Builder on success or failure. Preflight errors (including unavailable
+        native capability) leave it usable. The signer is borrowed and remains
+        usable. A context signer is not used by this method.
+
+        Args:
+            signer: An explicit, active Signer (from info or a callback).
+            sources: List of 1 to 256 UTF-8 paths, one per rendition.
+            dests: Equally sized list of corresponding output paths.
+
+        Returns:
+            The manifest bytes embedded in every output rendition.
+
+        Raises:
+            C2paError.NotSupported: If the native library lacks ladder signing.
+            C2paError.Encoding: If a path is invalid UTF-8 or contains NUL.
+            C2paError: If inputs are invalid, signing fails, or copying the
+                returned manifest fails.
+        """
+        self._ensure_valid_state()
+        if not _HAS_SIGN_LADDER:
+            raise C2paError.NotSupported(
+                "This native library does not export c2pa_builder_sign_ladder; "
+                "use a native library with single-file ladder signing support.")
+        if not isinstance(signer, Signer):
+            raise C2paError("An explicit Signer is required for ladder signing")
+        signer._ensure_valid_state()
+        if not isinstance(sources, list) or not isinstance(dests, list):
+            raise C2paError("sources and dests must be lists of paths")
+        if len(sources) != len(dests):
+            raise C2paError("sources and dests must have the same length")
+        if not 1 <= len(sources) <= 256:
+            raise C2paError("A ladder requires 1 to 256 renditions")
+
+        # Retain both the encoded strings and ordered pointer arrays until
+        # the borrowed native call returns.
+        encoded_paths = []
+        for paths in (sources, dests):
+            encoded = []
+            for path in paths:
+                try:
+                    text = os.fspath(path)
+                    if not isinstance(text, str) or "\0" in text:
+                        raise ValueError("paths must be strings without NUL")
+                    encoded.append(text.encode("utf-8"))
+                except (TypeError, ValueError) as e:
+                    raise C2paError.Encoding(
+                        f"Invalid ladder path: {e}") from e
+            encoded_paths.append(encoded)
+        count = len(sources)
+        source_array = (ctypes.c_char_p * count)(*encoded_paths[0])
+        dest_array = (ctypes.c_char_p * count)(*encoded_paths[1])
+        manifest_bytes_ptr = ctypes.POINTER(ctypes.c_ubyte)()
+
+        # Pin the explicit signer's callbacks for the borrowed native call and
+        # drop error state left by an earlier operation, as sign_fragmented does.
+        dynamic_assertion_cbs = list(signer._dynamic_assertion_cbs)
+        claim_state = _claim_signer_error_state(signer._callback_cb)
+        da_states = [state for _, state, _ in dynamic_assertion_cbs]
+        _clear_callback_errors(da_states + [claim_state])
+
+        try:
+            try:
+                with self._native_call(), signer._native_call():
+                    result = _lib.c2pa_builder_sign_ladder(
+                        self._handle, signer._handle, source_array, dest_array,
+                        count, ctypes.byref(manifest_bytes_ptr))
+            except Exception as e:
+                raise C2paError(f"Error during ladder signing: {e}") from e
+            if result < 0:
+                # Dynamic-assertion exceptions keep their identity; claim-signer
+                # callbacks only propagate interrupts (KeyboardInterrupt, ...).
+                _reraise_callback_errors(
+                    da_states, [claim_state] if claim_state is not None else [])
+            _check_ffi_operation_result(
+                result, "Error during ladder signing", check=lambda r: r < 0)
+            if result <= 0 or not manifest_bytes_ptr:
+                raise C2paError("Ladder signing returned no manifest bytes")
+            try:
+                return ctypes.string_at(manifest_bytes_ptr, result)
+            except Exception as e:
+                raise C2paError(f"Error during ladder signing: {e}") from e
+        finally:
+            if manifest_bytes_ptr:
+                try:
+                    ManagedResource._free_native_ptr(manifest_bytes_ptr)
+                except Exception:
+                    logger.error("Failed to release native manifest bytes memory")
+            # Native code borrows both handles. Free our builder, not the signer.
+            self.close()
 
     @overload
     def sign_file(
@@ -5383,6 +6357,14 @@ __all__ = [
     'Builder',
     'Signer',
     'LiveVideoVsiSession',
+    'TrustedVsiSession',
+    'VsiSigningContextV1',
+    'TrustedVsiOperation',
+    'TrustedVsiInputKind',
+    'validate_trusted_vsi_input',
+    'trusted_vsi_hash_template',
+    'TrustedVsiMediaEmsgReservation',
+    'TrustedVsiStatus',
     'has_dynamic_assertions',
     'has_fragmented_files',
     'has_live_video_vsi',
@@ -5390,6 +6372,12 @@ __all__ = [
     'has_live_video_vsi_explicit_time',
     'has_live_video_vsi_mfhd_probe',
     'has_live_video_vsi_recovery',
+    'has_live_video_trusted_vsi_split_init',
+    'has_live_video_trusted_vsi_expert_sig_structure',
+    'has_live_video_trusted_vsi_composed_emsg',
+    'has_live_video_trusted_vsi_recovery',
+    'has_live_video_trusted_vsi_signing_context_v1',
+    'has_live_video_trusted_vsi_full_uint32_exhaustion',
     'moof_sequence_number',
     'load_settings',
     'format_embeddable',

@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import gc
 import json
+import os
 import tempfile
 import unittest
 import weakref
@@ -137,8 +138,8 @@ class FragmentedTestCase(unittest.TestCase):
             None,
         )
 
-    def _prepare_input(self, root: Path) -> tuple[Path, Path]:
-        input_dir = root / "input"
+    def _prepare_input(self, root: Path, name: str = "input") -> tuple[Path, Path]:
+        input_dir = root / name
         input_dir.mkdir()
         init_path = input_dir / "init.mp4"
         with open(FIXTURES_DIR / "dashinit.mp4", "rb") as file:
@@ -225,11 +226,174 @@ class TestFragmentedCapability(FragmentedTestCase):
             context.close()
 
 
+class TestFragmentedCapabilityRequired(unittest.TestCase):
+    def test_required_fragmented_capability_is_present(self):
+        if os.environ.get("C2PA_REQUIRE_FRAGMENTED_FILES") != "1":
+            self.skipTest("C2PA_REQUIRE_FRAGMENTED_FILES is not set")
+        self.assertTrue(
+            has_fragmented_files(),
+            "C2PA_REQUIRE_FRAGMENTED_FILES=1 but the loaded native library "
+            "lacks the fragmented BMFF file APIs")
+
+
 @unittest.skipUnless(
     has_fragmented_files(),
     "native library does not provide fragmented BMFF file APIs",
 )
 class TestFragmentedFiles(FragmentedTestCase):
+    def test_init_glob_signs_two_renditions_with_one_manifest_and_selectors(self):
+        import pytest
+
+        try:
+            cbor2 = pytest.importorskip(
+                "cbor2", reason="Merkle selector checks require the cbor2 dev dependency")
+        except pytest.skip.Exception:
+            if os.environ.get("C2PA_REQUIRE_FRAGMENTED_FILES") == "1":
+                pytest.fail(
+                    "C2PA_REQUIRE_FRAGMENTED_FILES=1 requires cbor2 for Merkle "
+                    "selector checks; install requirements-dev.txt")
+            raise
+
+        signer = self._make_signer()
+        self.addCleanup(signer.close)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            inits = []
+            fragments = []
+            for index in range(2):
+                # Distinct parent names match the segmented ABR caller's staging.
+                init, fragment = self._prepare_input(root, f"rendition-{index}")
+                # Different media bytes make cross-rendition selection observable.
+                media = bytearray(fragment.read_bytes())
+                media[-1] ^= index
+                fragment.write_bytes(media)
+                inits.append(init)
+                fragments.append(fragment)
+            sources = {path: path.read_bytes() for path in inits + fragments}
+            output = root / "signed"
+            builder = Builder(_manifest_definition())
+            manifest = builder.sign_fragmented(
+                signer=signer,
+                asset_path=root / "rendition-*" / "init.mp4",
+                fragments_glob=Path("segment-*.m4s"),
+                output_dir=output,
+            )
+            self.assertGreater(len(manifest), 0)
+            self.assertFalse(builder.is_valid)
+            self.assertTrue(signer.is_valid)
+            self.assertEqual(
+                sorted(path.name for path in output.iterdir()),
+                ["rendition-0", "rendition-1"],
+            )
+            selectors = []
+            reports = []
+            signed_fragments = []
+            for init, fragment in zip(inits, fragments):
+                signed_dir = output / init.parent.name
+                signed_init = signed_dir / init.name
+                signed_fragment = signed_dir / fragment.name
+                signed_fragments.append(signed_fragment)
+                self.assertEqual(
+                    sorted(path.name for path in signed_dir.iterdir()),
+                    [init.name, fragment.name],
+                )
+                # Exact returned JUMBF bytes must occur in BOTH init segments.
+                self.assertIn(manifest, signed_init.read_bytes())
+                media = signed_fragment.read_bytes()
+                offset = 0
+                fragment_selectors = []
+                # These tiny fixture outputs use nonzero 32-bit box sizes and
+                # 8-byte headers; the UUID offsets below assume that layout.
+                while offset < len(media):
+                    size = int.from_bytes(media[offset:offset + 4], "big")
+                    self.assertGreaterEqual(size, 8)
+                    self.assertLessEqual(offset + size, len(media))
+                    box = media[offset:offset + size]
+                    if box[4:8] == b"uuid" and box[28:35] == b"merkle\0":
+                        merkle = cbor2.loads(box[35:])
+                        fragment_selectors.append(
+                            (merkle["uniqueId"], merkle["localId"]))
+                    offset += size
+                self.assertEqual(len(fragment_selectors), 1)
+                selectors.extend(fragment_selectors)
+                with Reader.from_fragmented_files(
+                    signed_init, [signed_fragment],
+                ) as reader:
+                    self.assertEqual(reader.get_validation_state(), "Valid")
+                    report = json.loads(reader.json())
+                    reports.append(report["manifests"][report["active_manifest"]])
+            self.assertEqual(selectors, [(1, 1), (2, 2)])
+            self.assertEqual(reports[0], reports[1])
+            bmff = next(assertion["data"] for assertion in reports[0]["assertions"]
+                        if assertion["label"].startswith("c2pa.hash.bmff"))
+            self.assertEqual(
+                [(entry["uniqueId"], entry["localId"]) for entry in bmff["merkle"]],
+                selectors,
+            )
+            # Keep rendition 1's selector but replace its media with rendition 2's.
+            wrong_media = bytearray(signed_fragments[0].read_bytes())
+            wrong_media[-1] ^= 1
+            signed_fragments[0].write_bytes(wrong_media)
+            with Reader.from_fragmented_files(
+                output / inits[0].parent.name / inits[0].name,
+                [signed_fragments[0]],
+            ) as reader:
+                self.assertEqual(reader.get_validation_state(), "Invalid")
+            self.assertEqual({path: path.read_bytes() for path in sources}, sources)
+
+    def test_init_glob_preserves_existing_destinations_including_source_directory(self):
+        signer = self._make_signer()
+        self.addCleanup(signer.close)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            init, fragment = self._prepare_input(root)
+            sources = {path: path.read_bytes() for path in (init, fragment)}
+            output = root / "output"
+            destination = output / init.parent.name
+            destination.mkdir(parents=True)
+            sentinel = destination / init.name
+            sentinel.write_bytes(b"do not overwrite")
+            # The source-directory case fails at the C ABI's existing-directory
+            # preflight, before the SDK's filesystem identity checks.
+            for target in (output, root):
+                with self.subTest(output=target):
+                    builder = Builder(_manifest_definition())
+                    with self.assertRaisesRegex(C2paError, "already exists"):
+                        builder.sign_fragmented(
+                            signer=signer,
+                            asset_path=root / "*" / "init.mp4",
+                            fragments_glob="segment-*.m4s",
+                            output_dir=target,
+                        )
+                    self.assertFalse(builder.is_valid)
+                    self.assertTrue(signer.is_valid)
+                    self.assertEqual(sentinel.read_bytes(), b"do not overwrite")
+                    self.assertEqual(list(destination.iterdir()), [sentinel])
+                    self.assertEqual(
+                        {path: path.read_bytes() for path in sources}, sources)
+
+    def test_native_rejects_invalid_and_unmatched_globs_without_outputs(self):
+        signer = self._make_signer()
+        self.addCleanup(signer.close)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            init, _ = self._prepare_input(root)
+            for asset, fragments, message in (
+                (root / "[", "segment-*.m4s", "Invalid glob pattern"),
+                (root / "*" / "missing*.mp4", "segment-*.m4s", "No init segments"),
+                (root / "missing-init.mp4", "segment-*.m4s", "No init segments"),
+                (init, "[", "Invalid glob pattern"),
+                (init, "missing*.m4s", "No fragments"),
+            ):
+                with self.subTest(asset=asset, fragments=fragments):
+                    output = root / "output"
+                    builder = Builder(_manifest_definition())
+                    with self.assertRaisesRegex(C2paError, message):
+                        builder.sign_fragmented(signer, asset, fragments, output)
+                    self.assertFalse(output.exists())
+                    self.assertFalse(builder.is_valid)
+                    self.assertTrue(signer.is_valid)
+
     def test_successful_sign_and_legacy_read_round_trip(self):
         signer = self._make_signer()
         self.addCleanup(signer.close)
@@ -342,11 +506,6 @@ class TestFragmentedFiles(FragmentedTestCase):
             with self.subTest(asset_path=value):
                 with self.assertRaises((TypeError, ValueError)):
                     builder.sign_fragmented(signer, value, "*.m4s", "out")
-        with self.assertRaises(ValueError):
-            builder.sign_fragmented(signer, "*.mp4", "*.m4s", "out")
-        with self.assertRaises(ValueError):
-            builder.sign_fragmented(
-                signer, "missing-init.mp4", "*.m4s", "out")
         self.assertTrue(builder.is_valid)
         self.assertTrue(signer.is_valid)
 
@@ -534,6 +693,61 @@ class TestFragmentedFiles(FragmentedTestCase):
         self.assertEqual(len(free_calls), 2)
         self.assertFalse(builder.is_valid)
         self.assertTrue(signer.is_valid)
+
+    def test_output_free_failure_does_not_replace_callback_exception(self):
+        class CallbackFailure(RuntimeError):
+            pass
+
+        failure = CallbackFailure("fragmented dynamic assertion failed")
+        signer = self._make_signer()
+        self.addCleanup(signer.close)
+        state = type("State", (), {"exception": None})()
+        signer._dynamic_assertion_cbs.append((object(), state, object()))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            init_path, _ = self._prepare_input(root)
+            builder = Builder(_manifest_definition())
+            builder_handle = builder._handle
+            output_buffer = (ctypes.c_ubyte * 4)(1, 2, 3, 4)
+            output_address = ctypes.addressof(output_buffer)
+            real_call = c2pa_module._lib.c2pa_builder_sign_fragmented
+            real_free = ManagedResource._free_native_ptr
+
+            def failed_call(*args):
+                output = ctypes.cast(
+                    args[-1],
+                    ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
+                )
+                output[0] = ctypes.cast(
+                    output_buffer, ctypes.POINTER(ctypes.c_ubyte))
+                state.exception = failure
+                return -1
+
+            def failing_free(pointer):
+                if ctypes.cast(pointer, ctypes.c_void_p).value == output_address:
+                    raise RuntimeError("free failed")
+                return real_free(pointer)
+
+            c2pa_module._lib.c2pa_builder_sign_fragmented = failed_call
+            ManagedResource._free_native_ptr = staticmethod(failing_free)
+            try:
+                with self.assertLogs("c2pa", level="ERROR") as logs:
+                    with self.assertRaises(CallbackFailure) as raised:
+                        builder.sign_fragmented(
+                            signer, init_path, "segment-*.m4s",
+                            root / "output")
+            finally:
+                c2pa_module._lib.c2pa_builder_sign_fragmented = real_call
+                ManagedResource._free_native_ptr = real_free
+
+        self.assertIs(raised.exception, failure)
+        self.assertTrue(any(
+            "Failed to release native manifest bytes memory" in line
+            for line in logs.output))
+        self.assertIsNone(builder._handle)
+        self.assertFalse(builder.is_valid)
+        self.assertTrue(signer.is_valid)
+        del builder_handle
 
 
 if __name__ == "__main__":

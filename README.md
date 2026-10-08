@@ -24,6 +24,7 @@ If you want to view the documentation in GitHub, see:
 - [Supported formats](https://github.com/contentauth/c2pa-rs/blob/main/docs/supported-formats.md)
 - [Configuring the SDK using `Context` and `Settings`](docs/context-settings.md)
 - [Using Builder intents](docs/intents.md) to ensure spec-compliant manifests
+- [Signing single-file fragmented MP4 ladders](docs/ladder-signing.md)
 - Using [working stores and archives](docs/working-stores.md)
 - Selectively constructing manifests by [filtering actions and ingredients](docs/selective-manifests.md)
 - [Diagram of public classes in the Python library and their relationships](docs/class-diagram.md)
@@ -84,7 +85,7 @@ make build-from-source C2PA_RS_PATH=$C2PA_RS_PATH EXTRA_BUILD_ARGS="--debug"
 When running the tests against an unreleased source build whose SDK version differs from `c2pa-native-version.txt`, explicitly provide the expected source version:
 
 ```sh
-C2PA_SOURCE_BUILD_VERSION=0.91.0-dev python3 tests/test_unit_tests.py
+C2PA_SOURCE_BUILD_VERSION=0.92.0-dev python3 tests/test_unit_tests.py
 ```
 
 The version test validates the loaded library against this value. When the variable is unset, it continues to validate downloaded release artifacts against `c2pa-native-version.txt`.
@@ -99,6 +100,50 @@ make build-from-source C2PA_RS_PATH=$C2PA_RS_PATH
 ```
 
 ## Castlabs VSI prerelease process
+
+### Unreleased trusted-processor API qualification
+
+The [trusted-processor target API](docs/usage.md#trusted-processor-vsi-unreleased-disabled)
+is disabled and separate from complete-buffer VSI and immutable dev5. Expert
+signing accepts only exact `Sig_structure` bytes and targets a frozen
+`TrustedVsiSignResult` (64-byte signature, uint32 sequence, optional inclusive
+maximum). Every trusted probe remains false, import makes no native trusted
+capability call, and session construction/operations fail before side effects.
+
+`build.yml` runs baseline-gated tests against its upstream downloaded native
+library (`-k "not paired"`). Separately, both it and the dedicated workflow use
+[`trusted-vsi-paired.yml`](.github/workflows/trusted-vsi-paired.yml) for isolated
+Linux/Windows source builds and the full focused `tests/test_trusted_vsi_api.py`
+with `C2PA_TRUSTED_VSI_ABI_REQUIRED=1`. Missing reduced ABI symbols fail rather
+than skip. The paired Rust source is pinned to
+`castlabs/c2pa-rs@cee86aae03887b5a0dddcd765a39e96360963bb0`; the job logs resolved
+Python/Rust SHAs. This disabled-scaffold qualification pin is separate from
+immutable dev5 release inputs and is not release-artifact evidence.
+
+For the dedicated workflow, manually select the trusted-API workflow revision,
+set `trusted_vsi_only=true`, and supply its full Python `source_sha`. This path
+skips **all** dev5 prepare/build/test/publish jobs. The reusable job builds only
+an isolated native library and source-import metadata, never stages a release
+native, builds/uploads a wheel, or publishes anything. Ordinary dev5 dispatch
+and tag behavior, native pins, evidence, and release identity remain unchanged.
+Do not package this new ABI under a dev5 artifact name.
+
+To test a locally built paired native without reinstalling the Python package:
+
+```sh
+PYTHONPATH="$PWD/src" \
+C2PA_LIBRARY_NAME=/absolute/path/to/paired-c2pa-rs/target/debug/libc2pa_c.so \
+C2PA_SOURCE_BUILD_VERSION=0.92.0-dev \
+C2PA_TRUSTED_VSI_ABI_REQUIRED=1 \
+python -m pytest -q tests/test_trusted_vsi_api.py -ra
+```
+
+For an old native library, omit the required-ABI variable for honest local
+skips, or use `-k "not paired"` for baseline-only coverage. Neither is paired
+qualification. A fresh source checkout also needs distribution metadata for
+imports (`python setup.py egg_info`, without a native download or wheel build).
+
+### Immutable dev5 process
 
 The dedicated [`Castlabs VSI prerelease`](.github/workflows/castlabs-vsi-release.yml) workflow builds version `0.37.8.dev5` for Linux x86-64 and Windows x86-64. It does not call `scripts/download_artifacts.py`: both native libraries are compiled with Cargo `--locked` and `CARGO_BUILD_JOBS=1` from the exact [Castlabs c2pa-rs](https://github.com/castlabs/c2pa-rs) commit in [`release/castlabs-vsi-inputs.lock.json`](release/castlabs-vsi-inputs.lock.json). The lock also fixes the Rust 1.88.0 toolchain coordinated with c2pa-rs qualification, checksum-verified rustup installers, no-default-feature set, target set, and the Linux manylinux container digest. The legacy `build.yml` explicitly excludes `castlabs-v*` tag pushes and guards its jobs and PyPI publisher against manual dispatch on those tags; the dedicated workflow alone owns them. Ordinary non-Castlabs tag releases retain the legacy behavior, while manual legacy publication additionally requires `refs/heads/main` and a final `X.Y.Z` package version.
 

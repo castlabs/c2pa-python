@@ -1,5 +1,36 @@
 # Release notes
 
+## Unreleased: functional trusted-processor VSI API
+
+- Replaces the unshipped counter/result scaffold with
+  `TrustedVsiSession.sign_sig_structure(sig_structure, sequence_number)
+  -> bytes`. Expert mode signs supplied sequence metadata without allocating a
+  sequence or keeping a media journal. `TrustedVsiSignResult` is removed.
+- Renames the unshipped `TrustedVsiPrehashedSession` to `TrustedVsiSession`
+  with the native contract's argument order (`context` first, `callback` after
+  `validity_period_secs`); `reserve_init_uuid()` returns the UUID box bytes and
+  `TrustedVsiInitUuidReservation` is removed. No aliases.
+- Adds mode-pinned init/composed reserve/finalize, side-effect-free preflight,
+  canonical input validation/hash templates, and explicit state export/import.
+  The old unshipped `recover(init_uuid, previous_emsg)` is removed without alias.
+- Pins claim/VSI/DA callbacks across context consumption, explicit close and
+  state import; preserves original callback exceptions and native errors.
+- Capability probes require the exact functional symbol set, native version,
+  and complete capability mask. Older native libraries fail closed.
+- Adds non-publishing Linux/Windows source and installed-wheel qualification.
+  Functional artifacts use the unreleased source identity `0.37.13.dev0`
+  (historically staged as `0.37.9.dev0` against native `3569fb86`). Immutable
+  dev5 release facts, pins and artifact names remain unchanged. Functional
+  native qualification is required, never an optional skip.
+- Pairs with the consolidated native `0.92.0-dev`
+  (`castlabs/c2pa-rs@6b506352`, Rust 1.96.0) and integrates single-file ladder
+  signing (`Builder.sign_ladder`). Ladder signing now propagates
+  DynamicAssertion and claim-signer interrupt exceptions like the other Builder
+  paths. Consume-first FFI calls (Reader/Builder `with_*`) no longer treat a
+  registry rejection of another argument as proof the managed handle was
+  retained, and registry tags are recognized only as the error prefix (a tag
+  quoted inside another error's payload no longer establishes ownership).
+
 ## Version 0.37.8.dev5
 
 ### Breaking changes
