@@ -3,11 +3,12 @@
 Status: integrated, unreleased PR4 review changes requiring native trusted-VSI
 contract revision 3 (state version 3 and typed expert VSI payloads), following
 `c2pa-rs`
-`docs/trusted-vsi-native-contract.md`. The Python identity is `0.37.13.dev1`,
+`docs/trusted-vsi-native-contract.md`. The Python identity is `0.37.13.dev2`,
 prepared as the Castlabs VSI prerelease on native
-`3328b2b440fd07d9f857cbefa3c6d565093425de`; immutable dev5 release inputs and
+`afd6fffe5a066e0b5b1a14f3f8c7ac189e7f0c95`; immutable dev5 release inputs and
 artifacts are unchanged. The paired source workflow pins the same native commit
-(previously `a6d4cdcc05638ee8dd0afce7fa5c850d7031a80c`) for revision-3
+(previously `3328b2b440fd07d9f857cbefa3c6d565093425de` for the unpublished
+0.37.13.dev1 and `a6d4cdcc05638ee8dd0afce7fa5c850d7031a80c` before it) for revision-3
 qualification. Select a reviewed local library with
 `C2PA_LIBRARY_NAME` for integration tests. Version `0.92.0-dev` and mask 63 do not establish contract
 identity; Python now requires the explicit native contract-revision probe.
@@ -243,14 +244,14 @@ CBOR, BMFF or validation results.
 <empty-dir>` first requires all probes true against that library, then builds a
 NON-PUBLISHING wheel and sdist in a temporary staging copy with
 `FUNCTIONAL_BUILD_VERSION` (default: the checkout's source identity
-`0.37.13.dev1`; rejects `0.37.8.*`, dev5, release versions and anything older
-than the source identity, including `0.37.13.dev0` and the historical
+`0.37.13.dev2`; rejects `0.37.8.*`, dev5, release versions and anything older
+than the source identity, including `0.37.13.dev1`, `0.37.13.dev0` and the historical
 `0.37.9.dev0`). `C2PA_SOURCE_BUILD_VERSION=0.92.0-dev` identifies the native
 library only. The release lock and tooling now match this source
-(`castlabs-v0.37.13.dev1`); the immutable dev5 release remains historical.
+(`castlabs-v0.37.13.dev2`); the immutable dev5 release remains historical.
 
 `scripts/qualify_trusted_vsi_functional.py --wheel <whl> --venv <new-dir>
---version 0.37.13.dev1` installs the wheel into an isolated venv, strips
+--version 0.37.13.dev2` installs the wheel into an isolated venv, strips
 `PYTHONPATH`/`C2PA_LIBRARY_NAME`, and runs `test_trusted_vsi_api.py`,
 `test_fragmented_files.py`, `test_sign_ladder.py`,
 `test_native_ownership.py` and `test_native_ownership_opaque.py` with `C2PA_TRUSTED_VSI_ABI_REQUIRED=1`,
@@ -263,8 +264,8 @@ Paired tests require the full native library and FAIL under
 `C2PA_TRUSTED_VSI_ABI_REQUIRED=1` (all Linux/Windows qualification jobs); they
 skip only in ad-hoc local runs. `.github/workflows/trusted-vsi-paired.yml`
 builds the native with Rust 1.96.0 from castlabs/c2pa-rs
-`3328b2b440fd07d9f857cbefa3c6d565093425de`, the same commit as the
-`castlabs-v0.37.13.dev1` release lock (trusted contract revision 3, mask 63,
+`afd6fffe5a066e0b5b1a14f3f8c7ac189e7f0c95`, the same commit as the
+`castlabs-v0.37.13.dev2` release lock (trusted contract revision 3, mask 63,
 offset-aware fragment exports). It sets `C2PA_FRAGMENT_OFFSET_REQUIRED=1`, so a
 native library without the fragment-offset probe fails rather than skips. Older
 pins (`6b506352`, `203dc08d`, `5c186c07`) emitted state version 2 and lacked the
