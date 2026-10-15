@@ -11,7 +11,7 @@
 # specific language governing permissions and limitations under
 # each license.
 
-# Version: 0.37.13.dev1
+# Version: 0.37.13.dev2
 
 import ctypes
 import enum
@@ -4843,8 +4843,9 @@ class Reader(ManagedResource):
     def crjson(self) -> str:
         """Get the manifest store as a crJSON string.
 
-        crJSON is a standardized JSON format for C2PA manifest data. This
-        call yields empty JSON ("{}") when there are no Content Credentials.
+        crJSON is a standardized JSON format for C2PA manifest data. The
+        native export is checked: exporter failures raise instead of
+        returning an empty ``{}`` document.
 
         Returns:
             The manifest store as a crJSON string.

@@ -30,7 +30,7 @@
     "package": {
       "type": "object", "additionalProperties": false,
       "required": ["name", "version"],
-      "properties": {"name": {"const": "c2pa-python"}, "version": {"const": "0.37.13.dev1"}}
+      "properties": {"name": {"const": "c2pa-python"}, "version": {"const": "0.37.13.dev2"}}
     },
     "pythonSource": {
       "type": "object", "additionalProperties": false,
@@ -39,7 +39,7 @@
         "repository": {"const": "castlabs/c2pa-python"},
         "url": {"const": "https://github.com/castlabs/c2pa-python.git"},
         "releaseBranch": {"const": "feat/trusted-vsi-functional"},
-        "releaseTag": {"const": "castlabs-v0.37.13.dev1"}
+        "releaseTag": {"const": "castlabs-v0.37.13.dev2"}
       }
     },
     "rustSource": {
@@ -48,7 +48,7 @@
       "properties": {
         "repository": {"const": "castlabs/c2pa-rs"},
         "url": {"const": "https://github.com/castlabs/c2pa-rs.git"},
-        "commit": {"const": "3328b2b440fd07d9f857cbefa3c6d565093425de"},
+        "commit": {"const": "afd6fffe5a066e0b5b1a14f3f8c7ac189e7f0c95"},
         "version": {"const": "0.92.0-dev"},
         "cargoLockSha256": {"const": "f7022b3e05c2dc2080946064b386b293b29c3a60ca9daf344e1b4e3fc398c370"}
       }

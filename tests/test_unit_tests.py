@@ -11181,5 +11181,57 @@ class TestErrorsStillRaiseAfterCleanup(unittest.TestCase):
             c2pa_module.ed25519_sign(b"", "not a key")
 
 
+# Validation time and crJSON 2.4 exist only in the Castlabs source-built native
+# (C2PA_SOURCE_BUILD_VERSION set by the paired/release jobs), not in the upstream
+# prebuilt library that build.yml downloads.
+_CASTLABS_SOURCE_NATIVE = bool(os.environ.get("C2PA_SOURCE_BUILD_VERSION"))
+
+
+class TestConformanceValidationSettings(unittest.TestCase):
+    """Native caller-controlled validation time and checked crJSON."""
+
+    @unittest.skipUnless(_CASTLABS_SOURCE_NATIVE, "requires the Castlabs source-built native")
+    def test_invalid_validation_time_is_rejected(self):
+        with self.assertRaises(Exception):
+            Context.from_dict({"verify": {"validation_time": "2027-01-15 08:00:00"}})
+
+    @unittest.skipUnless(_CASTLABS_SOURCE_NATIVE, "requires the Castlabs source-built native")
+    def test_validation_time_is_reported_in_crjson(self):
+        context = Context.from_dict({
+            "verify": {"validation_time": "2027-01-15T10:00:00+02:00"},
+        })
+        fixture = os.path.join(FIXTURES_DIR, "C.jpg")
+        with open(fixture, "rb") as stream:
+            reader = Reader("image/jpeg", stream, context=context)
+            document = json.loads(reader.crjson())
+        results = document["manifests"][0]["validationResults"]
+        self.assertEqual(results["validationTime"], "2027-01-15T08:00:00Z")
+        # crJSON 2.4: the validator version, and no post-2.4 manifest fields.
+        self.assertEqual(results["specVersion"], "2.4.0")
+        for manifest in document["manifests"]:
+            self.assertNotIn("isUpdateManifest", manifest)
+            self.assertNotIn("isCompressedManifest", manifest)
+
+    def test_crjson_null_export_raises_native_error(self):
+        # The checked native export returns NULL plus an error instead of "{}".
+        with Reader(DEFAULT_TEST_FILE) as reader:
+            with patch.object(c2pa_module._lib, "c2pa_reader_crjson",
+                              return_value=None), \
+                    patch.object(c2pa_module, "_read_native_error",
+                                 return_value="Other: crJSON export failed"):
+                with self.assertRaises(Error) as raised:
+                    reader.crjson()
+            self.assertIn("crJSON export failed", str(raised.exception))
+
+    def test_crjson_null_export_without_native_error_raises(self):
+        with Reader(DEFAULT_TEST_FILE) as reader:
+            with patch.object(c2pa_module._lib, "c2pa_reader_crjson",
+                              return_value=None), \
+                    patch.object(c2pa_module, "_read_native_error",
+                                 return_value=None):
+                with self.assertRaises(Error):
+                    reader.crjson()
+
+
 if __name__ == '__main__':
     unittest.main(warnings='ignore')

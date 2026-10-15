@@ -50,10 +50,10 @@ def _posix_bash() -> str:
 
 def test_prerelease_version_is_consistent():
     # The release identity is consistent across the tooling, lock and source,
-    # so validate-sources accepts this checkout under the 0.37.13.dev1 lock.
-    assert release.RELEASE_VERSION == "0.37.13.dev1"
-    assert release.RELEASE_TAG == "castlabs-v0.37.13.dev1"
-    assert release.load_lock()["package"]["version"] == "0.37.13.dev1"
+    # so validate-sources accepts this checkout under the 0.37.13.dev2 lock.
+    assert release.RELEASE_VERSION == "0.37.13.dev2"
+    assert release.RELEASE_TAG == "castlabs-v0.37.13.dev2"
+    assert release.load_lock()["package"]["version"] == "0.37.13.dev2"
     source = release.project_version(ROOT)
     assert source == release.RELEASE_VERSION
     first_line = (
@@ -68,7 +68,7 @@ def test_release_lock_and_schemas_are_valid_json():
     assert lock["rustSource"]["commit"] == release.RUST_COMMIT
     assert lock["rustSource"]["cargoLockSha256"] == release.CARGO_LOCK_SHA256
     assert lock["rustToolchain"]["channel"] == "1.96.0"
-    assert release.RUST_COMMIT == "3328b2b440fd07d9f857cbefa3c6d565093425de"
+    assert release.RUST_COMMIT == "afd6fffe5a066e0b5b1a14f3f8c7ac189e7f0c95"
     assert release.CARGO_LOCK_SHA256 == (
         "f7022b3e05c2dc2080946064b386b293b29c3a60ca9daf344e1b4e3fc398c370"
     )
@@ -195,7 +195,7 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
         in release_workflow
     )
     assert (
-        "c2pa_python-0.37.13.dev1-py3-none-manylinux_2_28_x86_64.whl" in release_workflow
+        "c2pa_python-0.37.13.dev2-py3-none-manylinux_2_28_x86_64.whl" in release_workflow
     )
     assert release_workflow.count("verify-wheel-native") == 2
     assert release_workflow.index("--only-plat --plat manylinux_2_28_x86_64") < (
@@ -246,7 +246,7 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
         "python3 -m pytest -q c2pa-python/tests/test_castlabs_release_tooling.py"
         in (release_workflow)
     )
-    assert "if: github.ref == 'refs/tags/castlabs-v0.37.13.dev1'" in release_workflow
+    assert "if: github.ref == 'refs/tags/castlabs-v0.37.13.dev2'" in release_workflow
     assert "-F draft=true -F prerelease=true" in release_workflow
     assert "--clobber" not in release_workflow
     assert "repos/castlabs/c2pa-python/releases" in release_workflow
@@ -320,9 +320,9 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
         in pypi_workflow
     )
     assert '--signer-digest "$SOURCE_SHA"' in pypi_workflow
-    assert "--source-ref refs/tags/castlabs-v0.37.13.dev1" in pypi_workflow
+    assert "--source-ref refs/tags/castlabs-v0.37.13.dev2" in pypi_workflow
     assert '--source-digest "$SOURCE_SHA"' in pypi_workflow
-    assert "pypi.org/pypi/c2pa-python/0.37.13.dev1/json" in pypi_workflow
+    assert "pypi.org/pypi/c2pa-python/0.37.13.dev2/json" in pypi_workflow
     assert "pypi-plan" in pypi_workflow
     assert "packages-dir: publish-dist/" in pypi_workflow
     assert "if: steps.pypi.outputs.upload == 'true'" in pypi_workflow
@@ -351,7 +351,7 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
     assert "manual legacy publishing accepts final X.Y.Z versions only" in (
         legacy_release
     )
-    assert 'test "$VERSION" != 0.37.13.dev1' not in legacy_workflow
+    assert 'test "$VERSION" != 0.37.13.dev2' not in legacy_workflow
     assert legacy_workflow.count("final X.Y.Z versions only") == 2
     assert "tests/test_castlabs_release_tooling.py" in legacy_workflow
     shell_helpers_start = release_workflow.index("          download_existing() {")
@@ -381,8 +381,22 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
     assert smoke_gate in smoke
     assert smoke.index(smoke_gate) < smoke.index("from c2pa import")
     assert release_workflow.count('CASTLABS_RELEASE_SMOKE_REQUIRED: "1"') == 2
-    assert release_workflow.count("CASTLABS_RELEASE_EXPECTED_VERSION: 0.37.13.dev1") == 2
+    assert release_workflow.count("CASTLABS_RELEASE_EXPECTED_VERSION: 0.37.13.dev2") == 2
     assert release_workflow.count("C2PA_SOURCE_BUILD_VERSION: 0.92.0-dev") == 2
+    # pytest is not a wheel runtime dependency: both clean installed-wheel
+    # environments install it after the wheel, before running pytest.
+    linux_install = '"${RUNNER_TEMP}/wheel-test/bin/python" -m pip install release-out/*.whl\n'
+    linux_pytest = '"${RUNNER_TEMP}/wheel-test/bin/python" -m pip install pytest==8.4.1\n'
+    windows_install = '& "$env:RUNNER_TEMP\\wheel-test\\Scripts\\python.exe" -m pip install $wheel\n'
+    windows_pytest = '& "$env:RUNNER_TEMP\\wheel-test\\Scripts\\python.exe" -m pip install pytest==8.4.1\n'
+    for install, pytest_install, run in (
+        (linux_install, linux_pytest, '"${RUNNER_TEMP}/wheel-test/bin/python" -m pytest'),
+        (windows_install, windows_pytest, '& "$env:RUNNER_TEMP\\wheel-test\\Scripts\\python.exe" -m pytest'),
+    ):
+        assert release_workflow.count(pytest_install) == 1
+        assert (release_workflow.index(install)
+                < release_workflow.index(pytest_install)
+                < release_workflow.index(run))
     # The pinned native exports offset-aware fragment verification.
     assert '"fragment at offset": has_fragment_at_offset,' in smoke
     assert "pytest.skip(" in smoke
@@ -431,6 +445,9 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
     assert "castlabs-v0.37.8.dev3" not in pypi_workflow
     assert "castlabs-v0.37.8.dev4" not in release_workflow
     assert "castlabs-v0.37.8.dev4" not in pypi_workflow
+    # The unpublished dev1 tag is never a trigger, gate or source ref again.
+    assert "0.37.13.dev1" not in release_workflow
+    assert "0.37.13.dev1" not in pypi_workflow
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "failed prerelease workflow run `34030865864`" in readme
     assert "No dev1 draft or GitHub release was created" in readme
@@ -447,7 +464,8 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
     release_notes = (ROOT / "docs" / "release-notes.md").read_text(
         encoding="utf-8"
     )
-    assert "## Version 0.37.13.dev1" in release_notes
+    assert "## Version 0.37.13.dev2" in release_notes
+    assert "### 0.37.13.dev1 (not released)" in release_notes
     assert "Dev4 and earlier accepted\n  undersized callback outputs" in release_notes
     assert "breaking strictness\n  change" in release_notes
 
@@ -642,7 +660,7 @@ def test_safe_extract_round_trip_and_rejects_links():
 def test_wheel_inspection_rejects_unsafe_and_multiple_native_members():
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
-        wheel = root / "c2pa_python-0.37.13.dev1-py3-none-win_amd64.whl"
+        wheel = root / "c2pa_python-0.37.13.dev2-py3-none-win_amd64.whl"
         with zipfile.ZipFile(wheel, "w") as archive:
             archive.writestr("c2pa/libs/first.dll", b"one")
             archive.writestr("c2pa/libs/second.dll", b"two")
@@ -653,7 +671,7 @@ def test_wheel_inspection_rejects_unsafe_and_multiple_native_members():
         else:
             raise AssertionError("accepted wheel with multiple native libraries")
 
-        unsafe = root / "c2pa_python-0.37.13.dev1-py3-none-manylinux_2_28_x86_64.whl"
+        unsafe = root / "c2pa_python-0.37.13.dev2-py3-none-manylinux_2_28_x86_64.whl"
         with zipfile.ZipFile(unsafe, "w") as archive:
             archive.writestr("../libc2pa_c.so", b"unsafe")
         try:
