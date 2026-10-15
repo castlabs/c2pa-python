@@ -34,6 +34,7 @@ from c2pa import (
     Settings,
     Signer,
     has_dynamic_assertions,
+    has_fragment_at_offset,
     has_fragmented_files,
     has_live_video_vsi,
     has_live_video_vsi_callbacks,
@@ -45,10 +46,11 @@ from c2pa import (
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
-EXPECTED_VERSION = os.environ.get("CASTLABS_RELEASE_EXPECTED_VERSION", "0.37.8.dev5")
+EXPECTED_VERSION = os.environ.get("CASTLABS_RELEASE_EXPECTED_VERSION", "0.37.13.dev1")
 REQUIRED_CAPABILITIES = {
     "dynamic assertions": has_dynamic_assertions,
     "fragmented files": has_fragmented_files,
+    "fragment at offset": has_fragment_at_offset,
     "live-video VSI": has_live_video_vsi,
     "VSI callbacks": has_live_video_vsi_callbacks,
     "VSI recovery": has_live_video_vsi_recovery,

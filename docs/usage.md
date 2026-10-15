@@ -414,6 +414,53 @@ non-consuming. The returned shared manifest buffer is copied into Python-owned
 
 Pass an active `Context` to `Reader.from_fragmented_files()` to use explicit verification and trust settings. Omitting `context` preserves the legacy thread-local settings behavior. The reader requires at least one explicit fragment path and retains the supplied Context and callback references until the reader closes.
 
+## Byte-range fragments of single-file fragmented MP4
+
+A single-file fragmented MP4 signed with fragment Merkle bindings hashes
+absolute root-box offsets, so one byte-range slice of it (for example an HLS
+`EXT-X-BYTERANGE` segment) verifies only at the offset where it sat in the
+original file. Check `has_fragment_at_offset()` first; it requires both native
+exports (`c2pa_reader_with_fragment_at_offset`,
+`c2pa_reader_fragment_at_offset_supported`) and a true probe, independent of
+the trusted VSI revision/capability mask. The probe is called on first use,
+never at import.
+
+```py
+import io
+from c2pa import Reader, has_fragment_at_offset
+
+if not has_fragment_at_offset():
+    raise RuntimeError("loaded native library cannot verify fragments at an offset")
+
+# init_bytes: every byte before the first C2PA `merkle` uuid box.
+# segment: from a `merkle` uuid box up to the next one (or end of file),
+# found at absolute offset `segment_offset` in the signed file.
+with Reader.from_fragment_at_offset(
+    "video/mp4",
+    io.BytesIO(init_bytes),
+    io.BytesIO(segment),
+    segment_offset,
+    context=verification_context,
+) as reader:
+    print(reader.get_validation_state())  # "Trusted" with matching trust anchors
+```
+
+A wrong cut, or the right cut at the wrong offset, does not raise: the reader
+reports validation state `Invalid` with `assertion.bmffHash.mismatch`. The
+offset is caller-supplied; it proves the bytes belong to the Merkle leaf they
+name, not where they were fetched from. `fragment_offset=0` matches
+`with_fragment()`.
+
+Python validates the format (a non-empty `str`; no auto-detection), offset (an `int` in `0..2**64-1`, `bool`
+rejected), stream-likeness, and that the two streams are distinct objects
+before any native call; unavailable native support raises
+`C2paError.NotSupported` with no side effects. Settings and trust come from
+`context`; without one, a fresh default Context (default SDK settings, no
+custom trust anchors) is used. `Reader.with_fragment_at_offset()` applies the
+same operation to an existing reader (create it with a Context): like
+`with_fragment()`, the native call consumes the underlying reader on success
+and failure, so a native failure closes that Reader.
+
 ## File-based operation
 
 ### Read and validate C2PA data

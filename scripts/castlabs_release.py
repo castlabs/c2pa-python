@@ -26,23 +26,25 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / "release" / "castlabs-vsi-inputs.lock.json"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-RELEASE_VERSION = "0.37.8.dev5"
-RUST_COMMIT = "9b80687f386f2b373fd1ac9c705d8e61a07b608e"
-CARGO_LOCK_SHA256 = "c4554b8fd3a1d3a1dc00482546750a40b06d0e5a86c9e66f4830c63fbd0df70f"
-RUST_TOOLCHAIN = "1.88.0"
+RELEASE_VERSION = "0.37.13.dev1"
+RUST_COMMIT = "3328b2b440fd07d9f857cbefa3c6d565093425de"
+CARGO_LOCK_SHA256 = "f7022b3e05c2dc2080946064b386b293b29c3a60ca9daf344e1b4e3fc398c370"
+RUST_TOOLCHAIN = "1.96.0"
 MANYLINUX_IMAGE = "quay.io/pypa/manylinux_2_28_x86_64"
 MANYLINUX_DIGEST = (
     "sha256:0d9c2a66a745961947a8cecbe217ca0a7ee7a5849ba2517f20f9581d18444977"
 )
-RELEASE_TAG = "castlabs-v0.37.8.dev5"
+RELEASE_TAG = "castlabs-v0.37.13.dev1"
 RELEASE_NAME = f"Castlabs c2pa-python {RELEASE_VERSION} (VSI)"
 RELEASE_BODY_MARKER = f"castlabs-vsi-release:{RELEASE_VERSION}"
 RELEASE_IDENTITY_TEXT = f"Castlabs c2pa-python {RELEASE_VERSION} immutable prerelease"
 RELEASE_BODY = (
     f"{RELEASE_BODY_MARKER}\n\n"
-    f"{RELEASE_IDENTITY_TEXT}. Successor to immutable dev4; enforces exact "
-    "DynamicAssertion callback sizing for every signing path. See the attached "
-    "schema-2 evidence and SHA-256 sidecars."
+    f"{RELEASE_IDENTITY_TEXT}. Trusted-processor VSI line (native contract "
+    "revision 3, capability mask 63) on castlabs/c2pa-rs 3328b2b4 (0.92.0-dev, "
+    "Rust 1.96.0): offset-aware single-file fMP4 fragment verification, default "
+    "EKU trust-policy fix and patched event-listener/rustls/quinn-proto. See "
+    "the attached schema-2 evidence and SHA-256 sidecars."
 )
 
 
@@ -218,12 +220,12 @@ def validate_lock(lock: dict[str, Any]) -> None:
     if set(lock) != required or lock.get("schemaVersion") != 1:
         fail("release lock does not match schema version 1")
     if lock["package"] != {"name": "c2pa-python", "version": RELEASE_VERSION}:
-        fail("release lock package identity is not 0.37.8.dev5")
+        fail("release lock package identity is not 0.37.13.dev1")
     if lock["pythonSource"] != {
         "repository": "castlabs/c2pa-python",
         "url": "https://github.com/castlabs/c2pa-python.git",
-        "releaseBranch": "feat/live-video-vsi",
-        "releaseTag": "castlabs-v0.37.8.dev5",
+        "releaseBranch": "feat/trusted-vsi-functional",
+        "releaseTag": "castlabs-v0.37.13.dev1",
     }:
         fail("unexpected c2pa-python release source policy")
     rust = lock["rustSource"]
@@ -231,7 +233,7 @@ def validate_lock(lock: dict[str, Any]) -> None:
         "repository": "castlabs/c2pa-rs",
         "url": "https://github.com/castlabs/c2pa-rs.git",
         "commit": RUST_COMMIT,
-        "version": "0.91.0-dev",
+        "version": "0.92.0-dev",
         "cargoLockSha256": CARGO_LOCK_SHA256,
     }:
         fail("unexpected c2pa-rs release source policy")

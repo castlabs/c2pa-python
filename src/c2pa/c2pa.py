@@ -11,7 +11,7 @@
 # specific language governing permissions and limitations under
 # each license.
 
-# Version: 0.37.13.dev0
+# Version: 0.37.13.dev1
 
 import ctypes
 import enum
@@ -200,6 +200,14 @@ _FRAGMENTED_READER_FUNCTIONS = (
 _FRAGMENTED_CONTEXT_READER_FUNCTIONS = (
     'c2pa_reader_from_fragmented_files_context',
 )
+# Castlabs offset-aware single-file fragment verification. Optional so older
+# native libraries still import; admitted only when the stateless probe also
+# reports support.
+_FRAGMENT_AT_OFFSET_FUNCTIONS = (
+    'c2pa_reader_with_fragment_at_offset',
+    'c2pa_reader_fragment_at_offset_supported',
+)
+_FRAGMENT_OFFSET_MAX = 2**64 - 1
 
 
 def _validate_library_exports(lib):
@@ -328,6 +336,12 @@ _FRAGMENTED_READER_AVAILABLE = all(
 _FRAGMENTED_CONTEXT_READER_AVAILABLE = all(
     hasattr(_lib, name) for name in _FRAGMENTED_CONTEXT_READER_FUNCTIONS
 )
+_FRAGMENT_AT_OFFSET_SYMBOLS_AVAILABLE = all(
+    hasattr(_lib, name) for name in _FRAGMENT_AT_OFFSET_FUNCTIONS
+)
+# Cached result of c2pa_reader_fragment_at_offset_supported(); None until
+# has_fragment_at_offset() first runs. Import never calls the probe.
+_FRAGMENT_AT_OFFSET_PROBE = None
 
 
 class C2paSeekMode(enum.IntEnum):
@@ -1359,6 +1373,19 @@ _setup_function(
      ctypes.POINTER(C2paStream), ctypes.POINTER(C2paStream)],
     ctypes.POINTER(C2paReader)
 )
+if _FRAGMENT_AT_OFFSET_SYMBOLS_AVAILABLE:
+    _setup_function(
+        _lib.c2pa_reader_with_fragment_at_offset,
+        [ctypes.POINTER(C2paReader), ctypes.c_char_p,
+         ctypes.POINTER(C2paStream), ctypes.POINTER(C2paStream),
+         ctypes.c_uint64],
+        ctypes.POINTER(C2paReader)
+    )
+    _setup_function(
+        _lib.c2pa_reader_fragment_at_offset_supported,
+        [],
+        ctypes.c_bool
+    )
 _setup_function(
     _lib.c2pa_builder_from_context,
     [ctypes.POINTER(C2paContext)],
@@ -2606,6 +2633,61 @@ def has_fragmented_files() -> bool:
         and _FRAGMENTED_READER_AVAILABLE
         and _FRAGMENTED_CONTEXT_READER_AVAILABLE
     )
+
+
+def has_fragment_at_offset() -> bool:
+    """Return whether offset-aware single-file fragment verification works.
+
+    Requires both ``c2pa_reader_with_fragment_at_offset`` and
+    ``c2pa_reader_fragment_at_offset_supported`` exports, and the probe must
+    report ``True``. Independent of the trusted VSI revision and capability
+    mask. The stateless probe is called on first use (never at import) and
+    its result is cached.
+    """
+    global _FRAGMENT_AT_OFFSET_PROBE
+    if not _FRAGMENT_AT_OFFSET_SYMBOLS_AVAILABLE:
+        return False
+    if _FRAGMENT_AT_OFFSET_PROBE is None:
+        _FRAGMENT_AT_OFFSET_PROBE = bool(
+            _lib.c2pa_reader_fragment_at_offset_supported())
+    return _FRAGMENT_AT_OFFSET_PROBE
+
+
+def _require_fragment_at_offset():
+    if not has_fragment_at_offset():
+        raise C2paError.NotSupported(
+            "Offset-aware fragment verification is unavailable in the loaded "
+            "native library; it requires the Castlabs c2pa-rs fork exporting "
+            "c2pa_reader_with_fragment_at_offset")
+
+
+def _validate_fragment_at_offset_args(format, stream, fragment_stream,
+                                      fragment_offset):
+    """Validate offset-aware fragment arguments without touching native code.
+
+    Returns the native format argument and the offset.
+    """
+    if not isinstance(format, str):
+        raise TypeError("format must be a str (MIME type)")
+    if not format.strip():
+        # Native fragment loading cannot auto-detect the container.
+        raise ValueError("format must be a non-empty MIME type")
+    if "\0" in format:
+        raise ValueError("format must not contain a NUL character")
+    if isinstance(fragment_offset, bool) or not isinstance(
+            fragment_offset, int):
+        raise TypeError("fragment_offset must be an integer")
+    if not 0 <= fragment_offset <= _FRAGMENT_OFFSET_MAX:
+        raise ValueError(
+            f"fragment_offset must be between 0 and {_FRAGMENT_OFFSET_MAX}")
+    if not Stream.is_read_stream(stream):
+        raise TypeError("stream must be a stream-like object")
+    if not Stream.is_read_stream(fragment_stream):
+        raise TypeError("fragment_stream must be a stream-like object")
+    if stream is fragment_stream:
+        raise ValueError(
+            "stream and fragment_stream must be distinct stream objects")
+    return _format_ffi_arg(_encode_format(format, "Reader")), fragment_offset
 
 
 class TrustedVsiOperation(enum.IntEnum):
@@ -4202,6 +4284,91 @@ class Reader(ManagedResource):
             context, '_dynamic_assertion_cbs', ()))
         return reader
 
+    @classmethod
+    def from_fragment_at_offset(
+        cls,
+        format: str,
+        init_stream: Any,
+        fragment_stream: Any,
+        fragment_offset: int,
+        context: Optional['ContextProvider'] = None,
+    ) -> 'Reader':
+        """Create a Reader verifying one byte-range fragment of a single-file
+        fragmented MP4 at its absolute offset.
+
+        See :meth:`with_fragment_at_offset` for the cut rules and result
+        semantics: a wrong cut or offset yields a Reader whose validation
+        state is ``Invalid`` with ``assertion.bmffHash.mismatch``, not an
+        exception.
+
+        Args:
+            format: Non-empty MIME type (e.g. "video/mp4").
+            init_stream: Stream-like object with every byte before the first
+                C2PA ``merkle`` uuid box.
+            fragment_stream: Stream-like object with the fragment bytes; must
+                be a different object from ``init_stream``.
+            fragment_offset: Absolute byte offset of the fragment's first byte
+                in the original asset (0 to 2**64-1).
+            context: Optional active ContextProvider supplying verification
+                and trust settings. When omitted, a fresh default Context is
+                used (default SDK settings, no custom trust anchors).
+
+        Returns:
+            A Reader owning the configured native handle.
+
+        Raises:
+            C2paError.NotSupported: If the loaded native library lacks the
+                API. Raised before arguments are inspected or any native
+                object is created.
+            TypeError, ValueError: For invalid arguments, before any native
+                call.
+            C2paError: If the native reader cannot be created (for example
+                when the init stream carries no manifest).
+        """
+        _require_fragment_at_offset()
+        format_arg, offset = _validate_fragment_at_offset_args(
+            format, init_stream, fragment_stream, fragment_offset)
+        if context is not None:
+            if not isinstance(context, ContextProvider):
+                raise TypeError("context must implement ContextProvider")
+            if not context.is_valid:
+                raise C2paError("Context is not valid")
+
+        owned_context = Context() if context is None else None
+        active_context = context if context is not None else owned_context
+        try:
+            reader_ptr = _lib.c2pa_reader_from_context(
+                active_context.execution_context)
+            _check_ffi_operation_result(
+                reader_ptr, Reader._ERROR_MESSAGES['reader_error'])
+            try:
+                reader = cls._wrap_native_handle(reader_ptr)
+            except Exception:
+                ManagedResource._free_native_ptr(reader_ptr)
+                raise
+
+            if context is not None:
+                # The native Reader shares the Context; pin the Python
+                # Context and its callback state for the same lifetime.
+                reader._context = context
+                reader._signer_callback_cb = getattr(
+                    context, '_signer_callback_cb', None)
+                reader._dynamic_assertion_cbs = list(getattr(
+                    context, '_dynamic_assertion_cbs', ()))
+
+            try:
+                reader._apply_fragment_at_offset(
+                    format_arg, init_stream, fragment_stream, offset)
+            except Exception:
+                reader.close()
+                raise
+            return reader
+        finally:
+            # A default Context carries no Python callbacks; the native
+            # Reader keeps its own reference, so it can be released here.
+            if owned_context is not None:
+                owned_context.close()
+
     @overload
     def __init__(
         self,
@@ -4557,6 +4724,73 @@ class Reader(ManagedResource):
         self._manifest_data_cache = None
 
         return self
+
+    def with_fragment_at_offset(self, format: str, stream,
+                                fragment_stream,
+                                fragment_offset: int) -> "Reader":
+        """Verify one byte-range fragment of a single-file fragmented MP4.
+
+        A single-file fragmented MP4 signed with fragment Merkle bindings
+        hashes absolute root-box offsets, so a byte-range slice of it (for
+        example an HLS ``EXT-X-BYTERANGE`` segment) only verifies at the
+        offset where it sat in the original file. ``stream`` holds every byte
+        before the first C2PA ``merkle`` uuid box; ``fragment_stream`` starts
+        at a ``merkle`` uuid box and ends right before the next one (or at the
+        end of the file). ``fragment_offset=0`` behaves like
+        :meth:`with_fragment`.
+
+        A wrong cut or offset does not raise: the reader reports
+        ``assertion.bmffHash.mismatch`` and validation state ``Invalid``. The
+        offset is caller-supplied; it proves the bytes belong to the Merkle
+        leaf they name, not where they were fetched from.
+
+        Settings and trust come from this reader, so create it with a
+        Context (or use :meth:`from_fragment_at_offset`).
+
+        Args:
+            format: Non-empty MIME type (e.g. "video/mp4").
+            stream: Stream-like object with the initialization bytes.
+            fragment_stream: Stream-like object with the fragment bytes; must
+                be a different object from ``stream``.
+            fragment_offset: Absolute byte offset of the fragment's first byte
+                in the original single-file asset (0 to 2**64-1).
+
+        Returns:
+            This reader instance, for method chaining.
+
+        Raises:
+            C2paError.NotSupported: If the loaded native library lacks the API
+                (this reader is left unchanged).
+            TypeError, ValueError: For invalid arguments (reader unchanged).
+            C2paError: If the native call fails. The native call consumes the
+                underlying reader on failure too, so this Reader is then
+                closed and cannot be reused.
+        """
+        _require_fragment_at_offset()
+        format_arg, offset = _validate_fragment_at_offset_args(
+            format, stream, fragment_stream, fragment_offset)
+        self._ensure_valid_state()
+        self._apply_fragment_at_offset(
+            format_arg, stream, fragment_stream, offset)
+        return self
+
+    def _apply_fragment_at_offset(self, format_arg, stream, fragment_stream,
+                                  offset):
+        with Stream(stream) as main_obj, Stream(fragment_stream) as frag_obj:
+            self._consume_and_swap(
+                lambda handle: _lib.c2pa_reader_with_fragment_at_offset(
+                    handle,
+                    format_arg,
+                    main_obj._stream,
+                    frag_obj._stream,
+                    offset,
+                ),
+                Reader._ERROR_MESSAGES['fragment_error'],
+                consumes_first=True)
+
+        # The native reader now holds a different store; drop stale caches.
+        self._manifest_json_str_cache = None
+        self._manifest_data_cache = None
 
     def json(self) -> str:
         """Get the manifest store as a JSON string.
@@ -6367,6 +6601,7 @@ __all__ = [
     'TrustedVsiStatus',
     'has_dynamic_assertions',
     'has_fragmented_files',
+    'has_fragment_at_offset',
     'has_live_video_vsi',
     'has_live_video_vsi_callbacks',
     'has_live_video_vsi_explicit_time',

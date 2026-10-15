@@ -49,15 +49,13 @@ def _posix_bash() -> str:
 
 
 def test_prerelease_version_is_consistent():
-    # The immutable dev5 release identity stays frozen in the tooling and lock.
-    assert release.RELEASE_VERSION == "0.37.8.dev5"
-    assert release.load_lock()["package"]["version"] == "0.37.8.dev5"
-    # This checkout is the unreleased consolidated functional source. Its
-    # identity is consistent and deliberately differs from dev5, so
-    # validate-sources refuses to release it under the dev5 lock.
+    # The release identity is consistent across the tooling, lock and source,
+    # so validate-sources accepts this checkout under the 0.37.13.dev1 lock.
+    assert release.RELEASE_VERSION == "0.37.13.dev1"
+    assert release.RELEASE_TAG == "castlabs-v0.37.13.dev1"
+    assert release.load_lock()["package"]["version"] == "0.37.13.dev1"
     source = release.project_version(ROOT)
-    assert source == "0.37.13.dev0"
-    assert source != release.RELEASE_VERSION
+    assert source == release.RELEASE_VERSION
     first_line = (
         (ROOT / "src" / "c2pa" / "c2pa.py").read_text(encoding="utf-8").splitlines()[13]
     )
@@ -69,7 +67,13 @@ def test_release_lock_and_schemas_are_valid_json():
     release.validate_lock(lock)
     assert lock["rustSource"]["commit"] == release.RUST_COMMIT
     assert lock["rustSource"]["cargoLockSha256"] == release.CARGO_LOCK_SHA256
-    assert lock["rustToolchain"]["channel"] == "1.88.0"
+    assert lock["rustToolchain"]["channel"] == "1.96.0"
+    assert release.RUST_COMMIT == "3328b2b440fd07d9f857cbefa3c6d565093425de"
+    assert release.CARGO_LOCK_SHA256 == (
+        "f7022b3e05c2dc2080946064b386b293b29c3a60ca9daf344e1b4e3fc398c370"
+    )
+    assert lock["rustSource"]["version"] == "0.92.0-dev"
+    assert lock["pythonSource"]["releaseBranch"] == "feat/trusted-vsi-functional"
     for name in (
         "castlabs-vsi-inputs.schema.json",
         "castlabs-release-evidence.schema.json",
@@ -88,7 +92,7 @@ def test_release_lock_and_schemas_are_valid_json():
         jsonschema.validate(lock, schema)
 
 
-def test_trusted_vsi_workflows_isolate_paired_abi_from_dev5():
+def test_trusted_vsi_workflows_isolate_paired_abi_from_release():
     workflow_dir = ROOT / ".github" / "workflows"
     paired = (workflow_dir / "trusted-vsi-paired.yml").read_text(encoding="utf-8")
     legacy = (workflow_dir / "build.yml").read_text(encoding="utf-8")
@@ -114,7 +118,11 @@ def test_trusted_vsi_workflows_isolate_paired_abi_from_dev5():
     # Paired native is pinned to a reviewed full SHA, never a moving branch.
     assert re.search(r"^\s+ref: [0-9a-f]{40}$", paired, re.MULTILINE)
     assert "ref: feat/" not in paired
-    assert "FUNCTIONAL_BUILD_VERSION: 0.37.13.dev0" in paired
+    assert f"FUNCTIONAL_BUILD_VERSION: {release.RELEASE_VERSION}" in paired
+    assert f"CASTLABS_RELEASE_EXPECTED_VERSION: {release.RELEASE_VERSION}" in paired
+    # The paired qualification uses the release-locked native commit.
+    assert f"ref: {release.RUST_COMMIT}" in paired
+    assert 'C2PA_FRAGMENT_OFFSET_REQUIRED: "1"' in paired
     assert "C2PA_SOURCE_BUILD_VERSION: 0.92.0-dev" in paired
     assert 'C2PA_REQUIRE_SIGN_LADDER: "1"' in paired
     assert 'C2PA_REQUIRE_FRAGMENTED_FILES: "1"' in paired
@@ -187,7 +195,7 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
         in release_workflow
     )
     assert (
-        "c2pa_python-0.37.8.dev5-py3-none-manylinux_2_28_x86_64.whl" in release_workflow
+        "c2pa_python-0.37.13.dev1-py3-none-manylinux_2_28_x86_64.whl" in release_workflow
     )
     assert release_workflow.count("verify-wheel-native") == 2
     assert release_workflow.index("--only-plat --plat manylinux_2_28_x86_64") < (
@@ -238,7 +246,7 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
         "python3 -m pytest -q c2pa-python/tests/test_castlabs_release_tooling.py"
         in (release_workflow)
     )
-    assert "if: github.ref == 'refs/tags/castlabs-v0.37.8.dev5'" in release_workflow
+    assert "if: github.ref == 'refs/tags/castlabs-v0.37.13.dev1'" in release_workflow
     assert "-F draft=true -F prerelease=true" in release_workflow
     assert "--clobber" not in release_workflow
     assert "repos/castlabs/c2pa-python/releases" in release_workflow
@@ -312,9 +320,9 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
         in pypi_workflow
     )
     assert '--signer-digest "$SOURCE_SHA"' in pypi_workflow
-    assert "--source-ref refs/tags/castlabs-v0.37.8.dev5" in pypi_workflow
+    assert "--source-ref refs/tags/castlabs-v0.37.13.dev1" in pypi_workflow
     assert '--source-digest "$SOURCE_SHA"' in pypi_workflow
-    assert "pypi.org/pypi/c2pa-python/0.37.8.dev5/json" in pypi_workflow
+    assert "pypi.org/pypi/c2pa-python/0.37.13.dev1/json" in pypi_workflow
     assert "pypi-plan" in pypi_workflow
     assert "packages-dir: publish-dist/" in pypi_workflow
     assert "if: steps.pypi.outputs.upload == 'true'" in pypi_workflow
@@ -343,7 +351,7 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
     assert "manual legacy publishing accepts final X.Y.Z versions only" in (
         legacy_release
     )
-    assert 'test "$VERSION" != 0.37.8.dev5' not in legacy_workflow
+    assert 'test "$VERSION" != 0.37.13.dev1' not in legacy_workflow
     assert legacy_workflow.count("final X.Y.Z versions only") == 2
     assert "tests/test_castlabs_release_tooling.py" in legacy_workflow
     shell_helpers_start = release_workflow.index("          download_existing() {")
@@ -373,7 +381,10 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
     assert smoke_gate in smoke
     assert smoke.index(smoke_gate) < smoke.index("from c2pa import")
     assert release_workflow.count('CASTLABS_RELEASE_SMOKE_REQUIRED: "1"') == 2
-    assert release_workflow.count("CASTLABS_RELEASE_EXPECTED_VERSION: 0.37.8.dev5") == 2
+    assert release_workflow.count("CASTLABS_RELEASE_EXPECTED_VERSION: 0.37.13.dev1") == 2
+    assert release_workflow.count("C2PA_SOURCE_BUILD_VERSION: 0.92.0-dev") == 2
+    # The pinned native exports offset-aware fragment verification.
+    assert '"fragment at offset": has_fragment_at_offset,' in smoke
     assert "pytest.skip(" in smoke
     assert "unittest.skip" not in smoke
     dynamic_start = smoke.index(
@@ -436,7 +447,7 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
     release_notes = (ROOT / "docs" / "release-notes.md").read_text(
         encoding="utf-8"
     )
-    assert "## Version 0.37.8.dev5" in release_notes
+    assert "## Version 0.37.13.dev1" in release_notes
     assert "Dev4 and earlier accepted\n  undersized callback outputs" in release_notes
     assert "breaking strictness\n  change" in release_notes
 
@@ -631,7 +642,7 @@ def test_safe_extract_round_trip_and_rejects_links():
 def test_wheel_inspection_rejects_unsafe_and_multiple_native_members():
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
-        wheel = root / "c2pa_python-0.37.8.dev5-py3-none-win_amd64.whl"
+        wheel = root / "c2pa_python-0.37.13.dev1-py3-none-win_amd64.whl"
         with zipfile.ZipFile(wheel, "w") as archive:
             archive.writestr("c2pa/libs/first.dll", b"one")
             archive.writestr("c2pa/libs/second.dll", b"two")
@@ -642,7 +653,7 @@ def test_wheel_inspection_rejects_unsafe_and_multiple_native_members():
         else:
             raise AssertionError("accepted wheel with multiple native libraries")
 
-        unsafe = root / "c2pa_python-0.37.8.dev5-py3-none-manylinux_2_28_x86_64.whl"
+        unsafe = root / "c2pa_python-0.37.13.dev1-py3-none-manylinux_2_28_x86_64.whl"
         with zipfile.ZipFile(unsafe, "w") as archive:
             archive.writestr("../libc2pa_c.so", b"unsafe")
         try:
@@ -1070,7 +1081,7 @@ def test_release_response_validators_cover_owned_empty_and_complete_states(tmp_p
         )
         == release_id
     )
-    for allowed_target in ("main", "feat/live-video-vsi", TEST_SOURCE_SHA):
+    for allowed_target in ("main", "feat/trusted-vsi-functional", TEST_SOURCE_SHA):
         target_response = copy.deepcopy(create_response)
         target_response["target_commitish"] = allowed_target
         assert (

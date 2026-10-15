@@ -3,10 +3,12 @@
 Status: integrated, unreleased PR4 review changes requiring native trusted-VSI
 contract revision 3 (state version 3 and typed expert VSI payloads), following
 `c2pa-rs`
-`docs/trusted-vsi-native-contract.md`. The Python identity is `0.37.13.dev0`;
-immutable dev5 release inputs and artifacts are unchanged. The paired source
-workflow pins native `a6d4cdcc05638ee8dd0afce7fa5c850d7031a80c` for the
-integrated revision-3 qualification batch. Select a reviewed local library with
+`docs/trusted-vsi-native-contract.md`. The Python identity is `0.37.13.dev1`,
+prepared as the Castlabs VSI prerelease on native
+`3328b2b440fd07d9f857cbefa3c6d565093425de`; immutable dev5 release inputs and
+artifacts are unchanged. The paired source workflow pins the same native commit
+(previously `a6d4cdcc05638ee8dd0afce7fa5c850d7031a80c`) for revision-3
+qualification. Select a reviewed local library with
 `C2PA_LIBRARY_NAME` for integration tests. Version `0.92.0-dev` and mask 63 do not establish contract
 identity; Python now requires the explicit native contract-revision probe.
 Local source and installed-wheel checks passed; hosted results must be recorded
@@ -241,14 +243,14 @@ CBOR, BMFF or validation results.
 <empty-dir>` first requires all probes true against that library, then builds a
 NON-PUBLISHING wheel and sdist in a temporary staging copy with
 `FUNCTIONAL_BUILD_VERSION` (default: the checkout's source identity
-`0.37.13.dev0`; rejects `0.37.8.*`, dev5, release versions and anything older
-than the source identity, including the historical `0.37.9.dev0`).
-`C2PA_SOURCE_BUILD_VERSION=0.92.0-dev` identifies the native library only. The
-immutable dev5 release lock and tooling are unchanged and refuse this source,
-whose `pyproject.toml` version differs from the lock.
+`0.37.13.dev1`; rejects `0.37.8.*`, dev5, release versions and anything older
+than the source identity, including `0.37.13.dev0` and the historical
+`0.37.9.dev0`). `C2PA_SOURCE_BUILD_VERSION=0.92.0-dev` identifies the native
+library only. The release lock and tooling now match this source
+(`castlabs-v0.37.13.dev1`); the immutable dev5 release remains historical.
 
 `scripts/qualify_trusted_vsi_functional.py --wheel <whl> --venv <new-dir>
---version 0.37.13.dev0` installs the wheel into an isolated venv, strips
+--version 0.37.13.dev1` installs the wheel into an isolated venv, strips
 `PYTHONPATH`/`C2PA_LIBRARY_NAME`, and runs `test_trusted_vsi_api.py`,
 `test_fragmented_files.py`, `test_sign_ladder.py`,
 `test_native_ownership.py` and `test_native_ownership_opaque.py` with `C2PA_TRUSTED_VSI_ABI_REQUIRED=1`,
@@ -260,16 +262,14 @@ rather than skip.
 Paired tests require the full native library and FAIL under
 `C2PA_TRUSTED_VSI_ABI_REQUIRED=1` (all Linux/Windows qualification jobs); they
 skip only in ad-hoc local runs. `.github/workflows/trusted-vsi-paired.yml`
-builds the native with Rust 1.96.0 from the reviewed consolidated commit
-`6b506352800c8225cf5564ce99c726aaa71039f4` (ContentAuth main `69907b5a` merged
-plus CI-only fixes; previously `203dc08d`, before that `5c186c07`). That older
-pin emits state version 2 and lacks the required revision probe, so Python
-disables trusted VSI before binding its operational ABI. Required qualification
-fails with missing-symbol/revision diagnostics rather than skipping. The preserved
-step2 review cdylib (`149f4b25...`) also lacks the new probe and cannot qualify
-this gate. No tests or capability gates are weakened to accommodate this hold.
-Final native integration/qualification and a full-SHA repin belong to a separate
-authorized step, not these Python-only review changes.
+builds the native with Rust 1.96.0 from castlabs/c2pa-rs
+`3328b2b440fd07d9f857cbefa3c6d565093425de`, the same commit as the
+`castlabs-v0.37.13.dev1` release lock (trusted contract revision 3, mask 63,
+offset-aware fragment exports). It sets `C2PA_FRAGMENT_OFFSET_REQUIRED=1`, so a
+native library without the fragment-offset probe fails rather than skips. Older
+pins (`6b506352`, `203dc08d`, `5c186c07`) emitted state version 2 and lacked the
+revision probe; they cannot qualify this gate. No tests or capability gates are
+weakened.
 
 ## PR4 CI Gate
 
