@@ -11181,13 +11181,21 @@ class TestErrorsStillRaiseAfterCleanup(unittest.TestCase):
             c2pa_module.ed25519_sign(b"", "not a key")
 
 
+# Validation time and crJSON 2.4 exist only in the Castlabs source-built native
+# (C2PA_SOURCE_BUILD_VERSION set by the paired/release jobs), not in the upstream
+# prebuilt library that build.yml downloads.
+_CASTLABS_SOURCE_NATIVE = bool(os.environ.get("C2PA_SOURCE_BUILD_VERSION"))
+
+
 class TestConformanceValidationSettings(unittest.TestCase):
     """Native caller-controlled validation time and checked crJSON."""
 
+    @unittest.skipUnless(_CASTLABS_SOURCE_NATIVE, "requires the Castlabs source-built native")
     def test_invalid_validation_time_is_rejected(self):
         with self.assertRaises(Exception):
             Context.from_dict({"verify": {"validation_time": "2027-01-15 08:00:00"}})
 
+    @unittest.skipUnless(_CASTLABS_SOURCE_NATIVE, "requires the Castlabs source-built native")
     def test_validation_time_is_reported_in_crjson(self):
         context = Context.from_dict({
             "verify": {"validation_time": "2027-01-15T10:00:00+02:00"},

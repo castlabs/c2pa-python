@@ -27,7 +27,8 @@ C2PA 2.4 line (`feat/conformance-validation-v02`, published as
   `manifest`/`tsa`/`cawg`) are always strict on this line: an anchor
   authorizes only its declared purpose. The conformance line's
   `verify.strict_trust_purposes` setting (and its non-strict fallback) does
-  not exist here.
+  not exist here: the key is accepted and silently ignored, so anchors must
+  carry the correct `trust_kind`.
 - The installed-wheel release tests install `pytest==8.4.1` after the wheel
   on Linux and Windows; pytest is no longer a runtime dependency of the wheel
   (upstream `4d909cf`).
