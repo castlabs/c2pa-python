@@ -34,9 +34,10 @@ jobs:
       C2PA_TRUSTED_VSI_FUNCTIONAL_REQUIRED: "1"
       C2PA_REQUIRE_SIGN_LADDER: "1"
       C2PA_REQUIRE_FRAGMENTED_FILES: "1"
-      FUNCTIONAL_BUILD_VERSION: 0.37.13.dev0
+      C2PA_FRAGMENT_OFFSET_REQUIRED: "1"
+      FUNCTIONAL_BUILD_VERSION: 0.37.13.dev1
       # The release smoke asserts the installed distribution version.
-      CASTLABS_RELEASE_EXPECTED_VERSION: 0.37.13.dev0
+      CASTLABS_RELEASE_EXPECTED_VERSION: 0.37.13.dev1
     steps:
       - name: Require a full Python source SHA
         shell: bash
@@ -50,9 +51,10 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: castlabs/c2pa-rs
-          # Integrated native review fixes plus the explicit revision-3 gate.
-          # Qualification-only source pairing; never an immutable dev5 input.
-          ref: a6d4cdcc05638ee8dd0afce7fa5c850d7031a80c
+          # Revision-3 trusted VSI plus offset-aware fragment verification:
+          # the same native commit the 0.37.13.dev1 release lock pins. This job
+          # is qualification-only and never produces release artifacts.
+          ref: 3328b2b440fd07d9f857cbefa3c6d565093425de
           path: paired-rust
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
@@ -94,7 +96,7 @@ jobs:
         shell: bash
         working-directory: python-source
         # The release smoke is required here (no module-level skip): it exercises
-        # dev5 capabilities against the paired functional native library.
+        # release capabilities against the paired functional native library.
         env:
           CASTLABS_RELEASE_SMOKE_REQUIRED: "1"
         run: python -m pytest -q -ra --ignore=tests/test_unit_tests_threaded.py -o faulthandler_timeout=120

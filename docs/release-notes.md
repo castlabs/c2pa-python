@@ -1,6 +1,36 @@
 # Release notes
 
-## Unreleased: offset-aware fragment verification
+## Version 0.37.13.dev1
+
+Castlabs VSI prerelease (tag `castlabs-v0.37.13.dev1`, released from
+`feat/trusted-vsi-functional`). It is the first release of the trusted-processor
+VSI line. The immutable `0.37.8.dev5` release inputs and artifacts
+(`feat/live-video-vsi`) stay unchanged.
+
+- Native `castlabs/c2pa-rs` `3328b2b440fd07d9f857cbefa3c6d565093425de`
+  (workspace `0.92.0-dev`, `Cargo.lock` SHA-256
+  `f7022b3e05c2dc2080946064b386b293b29c3a60ca9daf344e1b4e3fc398c370`), built
+  with Rust `1.96.0`. The previous line used `9b80687f` (`0.91.0-dev`, Rust
+  `1.88.0`).
+- Native trusted-processor VSI line at contract revision 3 with the complete
+  capability mask 63. The Python probes require the explicit revision-3 probe,
+  the exact functional symbol set and mask 63, and otherwise fail closed.
+- Dependency advisories fixed in the native lockfile: `event-listener` 5.4.2,
+  `rustls` 0.23.46 (RUSTSEC-2026-0346 to -0349) and `quinn-proto` 0.11.18
+  (RUSTSEC-2026-0338 to -0342).
+- Context trust policies keep the built-in default EKU allow-list. Before the
+  fix, `Store::from_context` cleared it, so `documentSigning`-only leaf
+  certificates failed with `signingCredential.invalid`. Default trust anchors
+  and private credentials are still not restored.
+- Offset-aware fragment verification for single-file fragmented MP4:
+  `has_fragment_at_offset()`, `Reader.from_fragment_at_offset()` and
+  `Reader.with_fragment_at_offset()` (details below). The release smoke now
+  requires `has_fragment_at_offset()`.
+- `c2pa-native-version.txt` stays `c2pa-v0.91.0`. It pins the upstream
+  prebuilt library that `build.yml` downloads. Source-built Castlabs libraries
+  are checked against `C2PA_SOURCE_BUILD_VERSION=0.92.0-dev` instead.
+
+### Offset-aware fragment verification
 
 - Adds optional bindings for `c2pa_reader_with_fragment_at_offset` and
   `c2pa_reader_fragment_at_offset_supported`, `has_fragment_at_offset()`, and
@@ -9,7 +39,7 @@
   offset. Native libraries without the exports still import; the API raises
   `C2paError.NotSupported`.
 
-## Unreleased: functional trusted-processor VSI API
+### Functional trusted-processor VSI API
 
 - Replaces the unshipped counter/result scaffold with
   `TrustedVsiSession.sign_sig_structure(sig_structure, sequence_number)
@@ -27,13 +57,14 @@
 - Capability probes require the exact functional symbol set, native version,
   and complete capability mask. Older native libraries fail closed.
 - Adds non-publishing Linux/Windows source and installed-wheel qualification.
-  Functional artifacts use the unreleased source identity `0.37.13.dev0`
-  (historically staged as `0.37.9.dev0` against native `3569fb86`). Immutable
-  dev5 release facts, pins and artifact names remain unchanged. Functional
-  native qualification is required, never an optional skip.
-- Pairs with the consolidated native `0.92.0-dev`
-  (`castlabs/c2pa-rs@6b506352`, Rust 1.96.0) and integrates single-file ladder
-  signing (`Builder.sign_ladder`). Ladder signing now propagates
+  Functional artifacts use the source identity, `0.37.13.dev1` for this
+  release (before it `0.37.13.dev0`, and historically `0.37.9.dev0` against
+  native `3569fb86`). Immutable dev5 release facts, pins and artifact names
+  remain unchanged. Functional native qualification is required, never an
+  optional skip.
+- First paired with the consolidated native `0.92.0-dev`
+  (`castlabs/c2pa-rs@6b506352`, Rust 1.96.0), now `3328b2b4`. Integrates
+  single-file ladder signing (`Builder.sign_ladder`). Ladder signing now propagates
   DynamicAssertion and claim-signer interrupt exceptions like the other Builder
   paths. Consume-first FFI calls (Reader/Builder `with_*`) no longer treat a
   registry rejection of another argument as proof the managed handle was

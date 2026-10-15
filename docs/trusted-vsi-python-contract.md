@@ -3,10 +3,12 @@
 Status: integrated, unreleased PR4 review changes requiring native trusted-VSI
 contract revision 3 (state version 3 and typed expert VSI payloads), following
 `c2pa-rs`
-`docs/trusted-vsi-native-contract.md`. The Python identity is `0.37.13.dev0`;
-immutable dev5 release inputs and artifacts are unchanged. The paired source
-workflow pins native `a6d4cdcc05638ee8dd0afce7fa5c850d7031a80c` for the
-integrated revision-3 qualification batch. Select a reviewed local library with
+`docs/trusted-vsi-native-contract.md`. The Python identity is `0.37.13.dev1`,
+prepared as the Castlabs VSI prerelease on native
+`3328b2b440fd07d9f857cbefa3c6d565093425de`; immutable dev5 release inputs and
+artifacts are unchanged. The paired source workflow pins the same native commit
+(previously `a6d4cdcc05638ee8dd0afce7fa5c850d7031a80c`) for revision-3
+qualification. Select a reviewed local library with
 `C2PA_LIBRARY_NAME` for integration tests. Version `0.92.0-dev` and mask 63 do not establish contract
 identity; Python now requires the explicit native contract-revision probe.
 Local source and installed-wheel checks passed; hosted results must be recorded
