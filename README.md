@@ -103,12 +103,14 @@ make build-from-source C2PA_RS_PATH=$C2PA_RS_PATH
 
 ### Unreleased trusted-processor API qualification
 
-The [trusted-processor target API](docs/usage.md#trusted-processor-vsi-unreleased-disabled)
-is disabled and separate from complete-buffer VSI and immutable dev5. Expert
-signing accepts only exact `Sig_structure` bytes and targets a frozen
-`TrustedVsiSignResult` (64-byte signature, uint32 sequence, optional inclusive
-maximum). Every trusted probe remains false, import makes no native trusted
-capability call, and session construction/operations fail before side effects.
+The [trusted-processor API](docs/usage.md#trusted-processor-vsi-unreleased-functional-api)
+is separate from complete-buffer VSI and immutable dev5. It is first released in
+`0.37.13.dev1`. Its probes are true only on a native library reporting trusted
+contract revision 3 and capability mask 63 (the pinned release native does);
+otherwise every probe is false and session construction/operations fail before
+side effects. Expert signing accepts only exact `Sig_structure` bytes and returns
+the 64-byte signature; the earlier `TrustedVsiSignResult` was removed. Import
+makes no native trusted capability call.
 
 `build.yml` runs baseline-gated tests against its upstream downloaded native
 library (`-k "not paired"`). Separately, both it and the dedicated workflow use
