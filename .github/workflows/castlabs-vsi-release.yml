@@ -432,6 +432,8 @@ jobs:
           python -m venv "${RUNNER_TEMP}/wheel-test"
           "${RUNNER_TEMP}/wheel-test/bin/python" -m pip install --upgrade pip
           "${RUNNER_TEMP}/wheel-test/bin/python" -m pip install release-out/*.whl
+          # pytest is no longer a runtime dependency of the wheel (upstream 4d909cf).
+          "${RUNNER_TEMP}/wheel-test/bin/python" -m pip install pytest==8.4.1
           "${RUNNER_TEMP}/wheel-test/bin/python" -m pytest -q \
             c2pa-python/tests/test_castlabs_release_smoke.py
           if [[ "${{ matrix.python }}" == "3.10" ]]; then
@@ -476,6 +478,7 @@ jobs:
           & "$env:RUNNER_TEMP\wheel-test\Scripts\python.exe" -m pip install --upgrade pip
           $wheel = (Get-ChildItem release-out/*.whl).FullName
           & "$env:RUNNER_TEMP\wheel-test\Scripts\python.exe" -m pip install $wheel
+          & "$env:RUNNER_TEMP\wheel-test\Scripts\python.exe" -m pip install pytest==8.4.1
           & "$env:RUNNER_TEMP\wheel-test\Scripts\python.exe" -m pytest -q `
             c2pa-python/tests/test_castlabs_release_smoke.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

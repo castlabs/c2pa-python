@@ -71,6 +71,41 @@ VSI line. The immutable `0.37.8.dev5` release inputs and artifacts
   retained, and registry tags are recognized only as the error prefix (a tag
   quoted inside another error's payload no longer establishes ownership).
 
+## Version 0.37.12.dev4
+
+Supersedes the published 0.37.12.dev3 (which remains unchanged). Native
+`castlabs/c2pa-rs` `e1cc897d5c04d11e7773f54a659f98ec89ae224f` makes `Reader.crjson()`
+conform to the published crJSON 2.4 schema: `validationResults.specVersion`
+reports `2.4.0` (the validator's C2PA version) instead of `2.3.0`, and the
+post-2.4 `isUpdateManifest` / `isCompressedManifest` manifest fields are no
+longer emitted.
+
+## Version 0.37.12.dev3
+
+Supersedes 0.37.12.dev2 (run `35997070721`, cancelled before publication): the
+native source is re-pinned to `6fa3e01097a87ee9265c97e00d9ec12be3052288`, whose
+only change over dev2's `6ca7fb16` aligns c2patool CLI tests with contentauth
+main, so native qualification passes on both platforms.
+
+### 0.37.12.dev2 (not released)
+
+Castlabs Conformance Program 0.2 / C2PA 2.4 candidate prerelease. Successor to
+0.37.12.dev1, whose tag-triggered run `35961050991` built both platforms but
+failed installed-wheel tests (pytest no longer a runtime dependency) and whose
+native source failed one upstream test under `http_reqwest_blocking`; no dev1
+draft or GitHub release was created.
+
+- Native `castlabs/c2pa-rs` `6ca7fb168b10bde7a1ef8bb8e577ffbae73233c7` (dev3: `6fa3e010`): the
+  live-video VSI line merged with contentauth main `6c92bc32` (C2PA 2.4
+  validation), plus the single-file fMP4 Merkle and TFRA fixes.
+- `verify.validation_time` (RFC 3339) selects the evaluation instant for
+  certificate, chain and OCSP decisions and the reported `validationTime`.
+- Purpose-scoped trust anchors (`trust.anchors` with `trust_kind`
+  `manifest`/`tsa`/`cawg`) and `verify.strict_trust_purposes`.
+- `Reader.crjson()` is checked: exporter failures raise instead of `{}`.
+- 2.4 `specVersion` in `claim_generator_info` serializes correctly, and the
+  default EKU allow-list survives context trust settings.
+
 ## Version 0.37.8.dev5
 
 ### Breaking changes

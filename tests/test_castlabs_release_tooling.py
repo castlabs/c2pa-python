@@ -383,6 +383,20 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
     assert release_workflow.count('CASTLABS_RELEASE_SMOKE_REQUIRED: "1"') == 2
     assert release_workflow.count("CASTLABS_RELEASE_EXPECTED_VERSION: 0.37.13.dev1") == 2
     assert release_workflow.count("C2PA_SOURCE_BUILD_VERSION: 0.92.0-dev") == 2
+    # pytest is not a wheel runtime dependency: both clean installed-wheel
+    # environments install it after the wheel, before running pytest.
+    linux_install = '"${RUNNER_TEMP}/wheel-test/bin/python" -m pip install release-out/*.whl\n'
+    linux_pytest = '"${RUNNER_TEMP}/wheel-test/bin/python" -m pip install pytest==8.4.1\n'
+    windows_install = '& "$env:RUNNER_TEMP\\wheel-test\\Scripts\\python.exe" -m pip install $wheel\n'
+    windows_pytest = '& "$env:RUNNER_TEMP\\wheel-test\\Scripts\\python.exe" -m pip install pytest==8.4.1\n'
+    for install, pytest_install, run in (
+        (linux_install, linux_pytest, '"${RUNNER_TEMP}/wheel-test/bin/python" -m pytest'),
+        (windows_install, windows_pytest, '& "$env:RUNNER_TEMP\\wheel-test\\Scripts\\python.exe" -m pytest'),
+    ):
+        assert release_workflow.count(pytest_install) == 1
+        assert (release_workflow.index(install)
+                < release_workflow.index(pytest_install)
+                < release_workflow.index(run))
     # The pinned native exports offset-aware fragment verification.
     assert '"fragment at offset": has_fragment_at_offset,' in smoke
     assert "pytest.skip(" in smoke
