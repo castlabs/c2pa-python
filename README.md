@@ -206,6 +206,10 @@ can restore a callback-backed session without invoking the key. See
 
 `has_fragmented_files()` reports whether the loaded native library contains the Castlabs fragmented file APIs. When available, `Builder.sign_fragmented()` signs an initialization segment and its media-fragment glob, while `Reader.from_fragmented_files()` validates the signed file set. Standard upstream native binaries remain importable; unavailable operations raise `C2paError.NotSupported`. See [Using the Python library](docs/usage.md#fragmented-bmff-file-sets).
 
+## Byte-range fragments of single-file fragmented MP4
+
+`has_fragment_at_offset()` reports whether the loaded native library exports `c2pa_reader_with_fragment_at_offset` and its probe returns true. When available, `Reader.from_fragment_at_offset(format, init_stream, fragment_stream, fragment_offset, context=None)` (or `Reader.with_fragment_at_offset(...)` on an existing reader) verifies one byte-range slice of a signed single-file fragmented MP4 at its absolute offset in the original file. A wrong cut or offset yields an `Invalid` reader with `assertion.bmffHash.mismatch` rather than an exception. Older native libraries remain importable; the methods raise `C2paError.NotSupported` before touching native state. See [Using the Python library](docs/usage.md#byte-range-fragments-of-single-file-fragmented-mp4).
+
 ## Examples
 
 See the [`examples` directory](https://github.com/castlabs/c2pa-python/tree/feat/live-video-vsi/examples) for some helpful examples:

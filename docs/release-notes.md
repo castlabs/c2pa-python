@@ -1,5 +1,14 @@
 # Release notes
 
+## Unreleased: offset-aware fragment verification
+
+- Adds optional bindings for `c2pa_reader_with_fragment_at_offset` and
+  `c2pa_reader_fragment_at_offset_supported`, `has_fragment_at_offset()`, and
+  `Reader.from_fragment_at_offset()` / `Reader.with_fragment_at_offset()` to
+  verify a byte-range fragment of a single-file fragmented MP4 at its absolute
+  offset. Native libraries without the exports still import; the API raises
+  `C2paError.NotSupported`.
+
 ## Unreleased: functional trusted-processor VSI API
 
 - Replaces the unshipped counter/result scaffold with
