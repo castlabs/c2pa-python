@@ -1,5 +1,18 @@
 # Release notes
 
+## Planned: signer-aligned release versions
+
+Decided 2026-10-16, effective from the next release built for a signer release
+(signer `1.0.8` uses `0.37.13.dev2`). Such releases use a PEP 440 local version
+naming the signer version, `<castlabs-base>+signer.<signer-version>[.<n>]`, for
+example `0.37.14+signer.1.0.9`, tagged `castlabs-v0.37.14+signer.1.0.9`. They are
+final, immutable GitHub releases (`prerelease=false`), not published to PyPI
+(local versions are rejected there). Development builds keep `.devN` versions,
+and the development line moves to the next `.devN` series after each aligned
+release. A signer retry under a new version gets a new `+signer` release.
+Release-tooling changes (escaped tag trigger, prerelease flag, artifact names,
+PyPI workflow limited to `.devN`) land with that release.
+
 ## Version 0.37.13.dev2
 
 Castlabs VSI prerelease (tag `castlabs-v0.37.13.dev2`, released from
