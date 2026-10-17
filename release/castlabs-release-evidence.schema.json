@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/castlabs/c2pa-python/blob/feat/live-video-vsi/release/castlabs-release-evidence.schema.json",
+  "$id": "https://github.com/castlabs/c2pa-python/blob/feat/trusted-vsi-functional/release/castlabs-release-evidence.schema.json",
   "title": "Castlabs c2pa-python release evidence",
   "type": "object",
   "additionalProperties": false,
@@ -13,7 +13,7 @@
       "properties": {
         "type": {"enum": ["native-bundle", "wheel-bundle"]},
         "package": {"const": "c2pa-python"},
-        "version": {"const": "0.37.8.dev5"},
+        "version": {"const": "0.37.13+signer.1.0.8"},
         "file": {"type": "string", "minLength": 1},
         "size": {"type": "integer", "minimum": 1},
         "sha256": {"$ref": "#/$defs/sha256"},
@@ -49,9 +49,9 @@
           "properties": {
             "repository": {"const": "castlabs/c2pa-rs"},
             "url": {"const": "https://github.com/castlabs/c2pa-rs.git"},
-            "commit": {"const": "9b80687f386f2b373fd1ac9c705d8e61a07b608e"},
-            "version": {"const": "0.91.0-dev"},
-            "cargoLockSha256": {"const": "c4554b8fd3a1d3a1dc00482546750a40b06d0e5a86c9e66f4830c63fbd0df70f"}
+            "commit": {"const": "6021100cc5060b06061ca15b634281cfeb97c718"},
+            "version": {"const": "0.92.0-dev"},
+            "cargoLockSha256": {"const": "ff5cf2de2403ff491957fc8a2206c289203d2799a30425bd615f7c9e69974a8f"}
           }
         }
       }
@@ -90,7 +90,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["target", "rustToolchain", "cargoCommand", "cargoTreeCommand", "noDefaultFeatures", "features", "resolvedFeatureReportSha256", "sourceDateEpoch", "cargoBuildJobs", "cargoIncremental", "pythonHashSeed", "container"],
       "properties": {
-        "target": {"enum": ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]}, "rustToolchain": {"const": "1.88.0"},
+        "target": {"enum": ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]}, "rustToolchain": {"const": "1.96.0"},
         "cargoCommand": {"type": "array", "minItems": 12, "items": {"type": "string"}}, "noDefaultFeatures": {"const": true},
         "cargoTreeCommand": {"type": "array", "minItems": 16, "items": {"type": "string"}},
         "features": {"const": ["rust_native_crypto", "http", "add_thumbnails", "file_io", "unstable_live_video"]}, "resolvedFeatureReportSha256": {"$ref": "#/$defs/sha256"},
