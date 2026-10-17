@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing immutable Castlabs prerelease tag
+        description: Existing immutable Castlabs dev-only prerelease tag (no +signer releases)
         required: true
         default: castlabs-v0.37.13.dev2
         type: string
@@ -26,6 +26,13 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - name: Reject non-development release tags before checkout
+        shell: bash
+        env:
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          [[ "$INPUT_RELEASE_TAG" =~ ^castlabs-v[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$ ]]
+
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: castlabs/c2pa-python
@@ -85,7 +92,7 @@ jobs:
           cmp dist/c2pa_python-0.37.13.dev2-py3-none-win_amd64.whl \
             download/c2pa_python-0.37.13.dev2-py3-none-win_amd64.whl
           python3 -m pip install packaging==25.0 twine==6.2.0
-          python3 -c 'from packaging.version import Version; v=Version("0.37.13.dev2"); assert v.is_prerelease and str(v)=="0.37.13.dev2"'
+          python3 -c 'from packaging.version import Version; v=Version("0.37.13.dev2"); assert v.is_devrelease and v.local is None and str(v)=="0.37.13.dev2"'
           python3 -m twine check dist/*.whl
 
       - name: Preflight retry-safe PyPI upload set

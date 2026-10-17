@@ -1,6 +1,6 @@
 """Build source-paired functional test artifacts, never release/publish dev5.
 
-The development version is applied only in a temporary source staging tree.
+The source-aligned identity or a future development version is applied only in a temporary source staging tree.
 The repository's version and immutable release inputs are left untouched.
 """
 
@@ -31,10 +31,14 @@ def source_version(root: Path = ROOT) -> str:
 
 def functional_version(value: str, root: Path = ROOT) -> str:
     version = Version(value)
-    if (not version.is_devrelease or version <= Version("0.37.8.dev5")
-            or version.release == (0, 37, 8)):
+    if version <= Version("0.37.8.dev5") or version.release == (0, 37, 8):
         raise ValueError("functional version must be a newer development series than 0.37.8")
     minimum = Version(source_version(root))
+    # A final version is allowed only for this checkout's signer-aligned identity.
+    aligned_source = (version == minimum and not minimum.is_prerelease
+                      and minimum.local is not None and minimum.local.startswith("signer."))
+    if not version.is_devrelease and not aligned_source:
+        raise ValueError("functional version must be development or the exact signer-aligned source identity")
     if version < minimum:
         raise ValueError(
             f"functional version {version} must not be older than the source "

@@ -1,19 +1,26 @@
 # Trusted VSI Python Contract
 
-Status: integrated, unreleased PR4 review changes requiring native trusted-VSI
+Status: signer 1.0.8 candidate preparation requiring native trusted-VSI
 contract revision 3 (state version 3 and typed expert VSI payloads), following
 `c2pa-rs`
-`docs/trusted-vsi-native-contract.md`. The Python identity is `0.37.13.dev2`,
-prepared as the Castlabs VSI prerelease on native
-`afd6fffe5a066e0b5b1a14f3f8c7ac189e7f0c95`; immutable dev5 release inputs and
-artifacts are unchanged. The paired source workflow pins the same native commit
+`docs/trusted-vsi-native-contract.md`. The prepared Python identity is
+`0.37.13+signer.1.0.8`, with intended tag `castlabs-v0.37.13+signer.1.0.8` for a
+final, immutable GitHub-only release (`prerelease=false`), not PyPI. This is
+preparation only, not Python qualification or publication. Native inputs select
+`6021100cc5060b06061ca15b634281cfeb97c718`; immutable historical release inputs and
+artifacts are unchanged. Its `Cargo.lock` SHA-256 is
+`ff5cf2de2403ff491957fc8a2206c289203d2799a30425bd615f7c9e69974a8f`.
+The combined native #27/#28/#29 source passed focused CI; complete native bundle
+and Python/native artifact qualification remain release gates. The paired
+source workflow pins this same native commit
 (previously `3328b2b440fd07d9f857cbefa3c6d565093425de` for the unpublished
 0.37.13.dev1 and `a6d4cdcc05638ee8dd0afce7fa5c850d7031a80c` before it) for revision-3
 qualification. Select a reviewed local library with
 `C2PA_LIBRARY_NAME` for integration tests. Version `0.92.0-dev` and mask 63 do not establish contract
 identity; Python now requires the explicit native contract-revision probe.
-Local source and installed-wheel checks passed; hosted results must be recorded
-against the final source SHAs before claiming Linux/Windows qualification.
+Earlier local source and installed-wheel checks do not qualify this candidate;
+hosted results must be recorded against the final source SHAs before claiming
+Linux/Windows qualification.
 Prior results and machine-local provenance are archived in
 [review verification](archive/trusted-vsi-review-verification.md).
 
@@ -240,18 +247,23 @@ CBOR, BMFF or validation results.
 
 ## Qualification Identity
 
-`scripts/build_trusted_vsi_functional.py --library <exact-native-library> --out
-<empty-dir>` first requires all probes true against that library, then builds a
-NON-PUBLISHING wheel and sdist in a temporary staging copy with
-`FUNCTIONAL_BUILD_VERSION` (default: the checkout's source identity
-`0.37.13.dev2`; rejects `0.37.8.*`, dev5, release versions and anything older
-than the source identity, including `0.37.13.dev1`, `0.37.13.dev0` and the historical
-`0.37.9.dev0`). `C2PA_SOURCE_BUILD_VERSION=0.92.0-dev` identifies the native
-library only. The release lock and tooling now match this source
-(`castlabs-v0.37.13.dev2`); the immutable dev5 release remains historical.
+The paired workflow requires all probes true against its exact native library,
+then builds a NON-PUBLISHING wheel and sdist in a temporary source copy retaining
+the source version `0.37.13+signer.1.0.8`. It stages only the paired native into
+that copy, not the checkout or a release artifact directory. Its version variables
+and the release lock/tooling match this identity. `C2PA_SOURCE_BUILD_VERSION=0.92.0-dev`
+identifies the native library only; it does not attest a commit or qualification.
+
+`scripts/build_trusted_vsi_functional.py` accepts the checkout's exact
+signer-aligned source identity or a future development version. It rejects
+arbitrary final versions, dev5/`0.37.8.*`, and versions older than the checkout.
+The paired workflow uses that existing builder's isolated staging and capability
+probes without selecting a future development identity. The next development
+series is future work after publication. Historical dev5 and dev2
+releases/tags/evidence are unchanged.
 
 `scripts/qualify_trusted_vsi_functional.py --wheel <whl> --venv <new-dir>
---version 0.37.13.dev2` installs the wheel into an isolated venv, strips
+--version 0.37.13+signer.1.0.8` installs the wheel into an isolated venv, strips
 `PYTHONPATH`/`C2PA_LIBRARY_NAME`, and runs `test_trusted_vsi_api.py`,
 `test_fragmented_files.py`, `test_sign_ladder.py`,
 `test_native_ownership.py` and `test_native_ownership_opaque.py` with `C2PA_TRUSTED_VSI_ABI_REQUIRED=1`,
@@ -264,15 +276,15 @@ Paired tests require the full native library and FAIL under
 `C2PA_TRUSTED_VSI_ABI_REQUIRED=1` (all Linux/Windows qualification jobs); they
 skip only in ad-hoc local runs. `.github/workflows/trusted-vsi-paired.yml`
 builds the native with Rust 1.96.0 from castlabs/c2pa-rs
-`afd6fffe5a066e0b5b1a14f3f8c7ac189e7f0c95`, the same commit as the
-`castlabs-v0.37.13.dev2` release lock (trusted contract revision 3, mask 63,
+`6021100cc5060b06061ca15b634281cfeb97c718`, the same commit as the
+`castlabs-v0.37.13+signer.1.0.8` preparation lock (trusted contract revision 3, mask 63,
 offset-aware fragment exports). It sets `C2PA_FRAGMENT_OFFSET_REQUIRED=1`, so a
 native library without the fragment-offset probe fails rather than skips. Older
 pins (`6b506352`, `203dc08d`, `5c186c07`) emitted state version 2 and lacked the
 revision probe; they cannot qualify this gate. No tests or capability gates are
 weakened.
 
-## PR4 CI Gate
+## CI And Publication Hold
 
 At head `12d265db92e8dcbf80b8255278e9a7fc5945f750`, Build run
 `36810322522` completed its version/format/tooling jobs but skipped the paired
@@ -281,12 +293,12 @@ and no labels; the source gate already accepts `COLLABORATOR` and `MEMBER`.
 The retained run metadata does not establish the event-time association, so this
 is not evidence that the current MEMBER condition is wrong. No author gate is
 broadened here (in particular no speculative OWNER exception or fork secrets).
-Do NOT apply the maintainer `safe to test` label or run paired CI expecting it to
-pass until the final native revision is integrated and pinned in the separate
-authorized integration step. The unchanged older native pin and the new
-revision-3 gate are intentionally incompatible. Only after integration
-should a maintainer review the head, apply the existing label to trigger the
-`labeled` event, and confirm required jobs actually ran. This task does not post
-labels, dispatch CI, or repin. A green workflow with skipped test jobs is not
-qualification, and local targeted older-library compatibility checks do not lift
-the integration hold.
+The candidate remains on hold until CI qualifies the exact Python/native pair
+and its installed wheels. Selecting native `6021100c` does not establish that
+paired qualification. Artifact builds still require `feat/trusted-vsi-functional`
+(manual runs must use its full tip SHA and ref) or the exact aligned tag; the
+preparation branch `release/signer-1.0.8` is not an allowed artifact-release source.
+The non-publishing paired path can test a reviewed preparation SHA before that
+integration. A maintainer must review the head, retain the existing author/label
+gate, and confirm required jobs actually ran. This preparation does not tag or
+publish. A green workflow with skipped test jobs is not qualification.

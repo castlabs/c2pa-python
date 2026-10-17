@@ -46,7 +46,9 @@ from c2pa import (
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
-EXPECTED_VERSION = os.environ.get("CASTLABS_RELEASE_EXPECTED_VERSION", "0.37.13.dev2")
+EXPECTED_VERSION = os.environ.get(
+    "CASTLABS_RELEASE_EXPECTED_VERSION", "0.37.13+signer.1.0.8"
+)
 REQUIRED_CAPABILITIES = {
     "dynamic assertions": has_dynamic_assertions,
     "fragmented files": has_fragmented_files,

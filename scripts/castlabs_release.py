@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Hermetic release helpers for the Castlabs VSI prerelease."""
+"""Hermetic release helpers for the Castlabs VSI release."""
 
 from __future__ import annotations
 
@@ -26,26 +26,27 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / "release" / "castlabs-vsi-inputs.lock.json"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-RELEASE_VERSION = "0.37.13.dev2"
-RUST_COMMIT = "afd6fffe5a066e0b5b1a14f3f8c7ac189e7f0c95"
-CARGO_LOCK_SHA256 = "f7022b3e05c2dc2080946064b386b293b29c3a60ca9daf344e1b4e3fc398c370"
+RELEASE_VERSION = "0.37.13+signer.1.0.8"
+RUST_COMMIT = "6021100cc5060b06061ca15b634281cfeb97c718"
+CARGO_LOCK_SHA256 = "ff5cf2de2403ff491957fc8a2206c289203d2799a30425bd615f7c9e69974a8f"
 RUST_TOOLCHAIN = "1.96.0"
 MANYLINUX_IMAGE = "quay.io/pypa/manylinux_2_28_x86_64"
 MANYLINUX_DIGEST = (
     "sha256:0d9c2a66a745961947a8cecbe217ca0a7ee7a5849ba2517f20f9581d18444977"
 )
-RELEASE_TAG = "castlabs-v0.37.13.dev2"
+RELEASE_TAG = f"castlabs-v{RELEASE_VERSION}"
 RELEASE_NAME = f"Castlabs c2pa-python {RELEASE_VERSION} (VSI)"
 RELEASE_BODY_MARKER = f"castlabs-vsi-release:{RELEASE_VERSION}"
-RELEASE_IDENTITY_TEXT = f"Castlabs c2pa-python {RELEASE_VERSION} immutable prerelease"
+RELEASE_IDENTITY_TEXT = f"Castlabs c2pa-python {RELEASE_VERSION} immutable release"
 RELEASE_BODY = (
     f"{RELEASE_BODY_MARKER}\n\n"
     f"{RELEASE_IDENTITY_TEXT}. Trusted-processor VSI line (native contract "
-    "revision 3, capability mask 63) on castlabs/c2pa-rs afd6fffe (0.92.0-dev, "
+    "revision 3, capability mask 63) on castlabs/c2pa-rs 6021100c (0.92.0-dev, "
     "Rust 1.96.0), merged with the Conformance Program 0.2 / C2PA 2.4 line: "
     "crJSON 2.4 output with checked export, caller-controlled validation time, "
     "offset-aware single-file fMP4 fragment verification and the default EKU "
-    "trust-policy fix. Successor to dev1 run 38786913569; no dev1 release. See "
+    "trust-policy fix, generic BMFF hash exclusions, ZIP 9.0.4 remediation and "
+    "verified VSI init refreshes. Signer-aligned 1.0.8 release, GitHub only (not PyPI). See "
     "the attached schema-2 evidence and SHA-256 sidecars."
 )
 
@@ -222,12 +223,12 @@ def validate_lock(lock: dict[str, Any]) -> None:
     if set(lock) != required or lock.get("schemaVersion") != 1:
         fail("release lock does not match schema version 1")
     if lock["package"] != {"name": "c2pa-python", "version": RELEASE_VERSION}:
-        fail("release lock package identity is not 0.37.13.dev2")
+        fail(f"release lock package identity is not {RELEASE_VERSION}")
     if lock["pythonSource"] != {
         "repository": "castlabs/c2pa-python",
         "url": "https://github.com/castlabs/c2pa-python.git",
         "releaseBranch": "feat/trusted-vsi-functional",
-        "releaseTag": "castlabs-v0.37.13.dev2",
+        "releaseTag": RELEASE_TAG,
     }:
         fail("unexpected c2pa-python release source policy")
     rust = lock["rustSource"]
@@ -556,6 +557,7 @@ def wheel_details_bytes(
     native_members: list[tuple[str, bytes]] = []
     metadata_members: list[bytes] = []
     wheel_members: list[bytes] = []
+    expected_dist_info = f"c2pa_python-{RELEASE_VERSION}.dist-info"
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
         names: set[str] = set()
         for info in archive.infolist():
@@ -574,8 +576,12 @@ def wheel_details_bytes(
             if member.parts[:2] == ("c2pa", "libs"):
                 native_members.append((info.filename, contents))
             if info.filename.endswith(".dist-info/METADATA"):
+                if member.parts != (expected_dist_info, "METADATA"):
+                    fail(f"unexpected wheel dist-info directory: {info.filename}")
                 metadata_members.append(contents)
             if info.filename.endswith(".dist-info/WHEEL"):
+                if member.parts != (expected_dist_info, "WHEEL"):
+                    fail(f"unexpected wheel dist-info directory: {info.filename}")
                 wheel_members.append(contents)
     if len(native_members) != 1:
         fail(f"wheel must contain exactly one native library: {name}")
@@ -1163,8 +1169,8 @@ def validate_release_identity(
         fail("GitHub release response has the wrong release ID")
     if release_data.get("draft") is not True:
         fail("GitHub release is published; refusing to modify it")
-    if release_data.get("prerelease") is not True:
-        fail("GitHub draft is not marked as a prerelease")
+    if release_data.get("prerelease") is not False:
+        fail("GitHub draft must have prerelease=false for the signer-aligned release")
     if release_data.get("name") != RELEASE_NAME:
         fail("GitHub draft has the wrong release name")
     normalized_body = normalize_release_body(release_data.get("body"))
@@ -1469,6 +1475,8 @@ def command_verify_draft_release(args: argparse.Namespace) -> None:
 def pypi_missing_wheels(
     wheels_dir: Path, http_status: int, response: dict[str, Any] | None
 ) -> tuple[dict[str, Path], list[str]]:
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+", RELEASE_VERSION):
+        fail("PyPI promotion accepts dev-only X.Y.Z.devN versions, not aligned releases")
     wheels = exact_files(wheels_dir, expected_wheel_names(), "PyPI wheel inputs")
     if http_status == 404:
         return wheels, sorted(wheels)

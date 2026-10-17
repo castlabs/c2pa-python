@@ -1,17 +1,47 @@
 # Release notes
 
-## Planned: signer-aligned release versions
+## Version 0.37.13+signer.1.0.8 (Preparation Only)
 
-Decided 2026-10-16, effective from the next release built for a signer release
-(signer `1.0.8` uses `0.37.13.dev2`). Such releases use a PEP 440 local version
+The updated signer `1.0.8` dependency uses the prepared package version
+`0.37.13+signer.1.0.8` and intended tag `castlabs-v0.37.13+signer.1.0.8`.
+This is not a qualified or published Python release. No tag or publication is
+part of this preparation; paired Linux/Windows CI must qualify the exact sources.
+
+- Native inputs select `castlabs/c2pa-rs`
+  `6021100cc5060b06061ca15b634281cfeb97c718`, with `Cargo.lock` SHA-256
+  `ff5cf2de2403ff491957fc8a2206c289203d2799a30425bd615f7c9e69974a8f`.
+  This combines #27 generic BMFF exclusions, ZIP 9.0.4 and WASI fixes with #28
+  verified VSI init refreshes and #29's native CLI update timelines. The Python
+  runtime API is unchanged; the CLI is built separately by the signer from this
+  same native SHA. Exact-source focused native CI passed; complete native bundle
+  and Python/native artifact qualification remain release gates.
+- Rust `1.96.0`, native `0.92.0-dev`, trusted contract revision 3, capability
+  mask 63, feature selection and hermetic/evidence/ownership controls are unchanged.
+  `c2pa-native-version.txt` remains the independent upstream prebuilt pin.
+- Final GitHub release policy is `prerelease=false`, still created as a draft
+  for operator finalization. The literal `+` is escaped in the GitHub tag trigger,
+  retained in wheel/dist-info/bundle identities, and percent-encoded in asset
+  upload query parameters. PyPI is dev-only and rejects aligned releases.
+- `feat/trusted-vsi-functional` remains the locked source branch; arbitrary branch
+  artifact builds are not authorized. Final Python-source review and CI
+  qualification are required before tagging.
+- The qualification builder accepts the exact signer-aligned source identity or
+  a future development version, not arbitrary final versions. The next
+  development series is future work after publication, not a repository version
+  switch in this candidate.
+
+### Signer-aligned version policy
+
+Decided 2026-10-16 and applied here to the updated signer `1.0.8` dependency.
+Such releases use a PEP 440 local version
 naming the signer version, `<castlabs-base>+signer.<signer-version>[.<n>]`, for
 example `0.37.14+signer.1.0.9`, tagged `castlabs-v0.37.14+signer.1.0.9`. They are
 final, immutable GitHub releases (`prerelease=false`), not published to PyPI
 (local versions are rejected there). Development builds keep `.devN` versions,
-and the development line moves to the next `.devN` series after each aligned
-release. A signer retry under a new version gets a new `+signer` release.
-Release-tooling changes (escaped tag trigger, prerelease flag, artifact names,
-PyPI workflow limited to `.devN`) land with that release.
+and moving the development line to the next `.devN` series is follow-up work
+after each aligned release. A signer retry under a new version gets a new
+`+signer` release. Historical release sections below describe their original
+identities and inputs; they are not repinned for this candidate.
 
 ## Version 0.37.13.dev2
 
