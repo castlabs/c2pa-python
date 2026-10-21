@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / "release" / "castlabs-vsi-inputs.lock.json"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-RELEASE_VERSION = "0.37.13+signer.1.0.8"
+RELEASE_VERSION = "0.37.13+signer.1.0.9"
 RUST_COMMIT = "6021100cc5060b06061ca15b634281cfeb97c718"
 CARGO_LOCK_SHA256 = "ff5cf2de2403ff491957fc8a2206c289203d2799a30425bd615f7c9e69974a8f"
 RUST_TOOLCHAIN = "1.96.0"
@@ -46,7 +46,8 @@ RELEASE_BODY = (
     "crJSON 2.4 output with checked export, caller-controlled validation time, "
     "offset-aware single-file fMP4 fragment verification and the default EKU "
     "trust-policy fix, generic BMFF hash exclusions, ZIP 9.0.4 remediation and "
-    "verified VSI init refreshes. Signer-aligned 1.0.8 release, GitHub only (not PyPI). See "
+    "verified VSI init refreshes. Signer-aligned 1.0.9 release, GitHub only (not PyPI); "
+    "Python runtime and native source are unchanged from 0.37.13+signer.1.0.8. See "
     "the attached schema-2 evidence and SHA-256 sidecars."
 )
 

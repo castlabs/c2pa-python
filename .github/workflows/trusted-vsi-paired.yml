@@ -35,9 +35,9 @@ jobs:
       C2PA_REQUIRE_SIGN_LADDER: "1"
       C2PA_REQUIRE_FRAGMENTED_FILES: "1"
       C2PA_FRAGMENT_OFFSET_REQUIRED: "1"
-      FUNCTIONAL_BUILD_VERSION: 0.37.13+signer.1.0.8
+      FUNCTIONAL_BUILD_VERSION: 0.37.13+signer.1.0.9
       # The release smoke asserts the installed distribution version.
-      CASTLABS_RELEASE_EXPECTED_VERSION: 0.37.13+signer.1.0.8
+      CASTLABS_RELEASE_EXPECTED_VERSION: 0.37.13+signer.1.0.9
     steps:
       - name: Require a full Python source SHA
         shell: bash
@@ -52,7 +52,7 @@ jobs:
         with:
           repository: castlabs/c2pa-rs
           # Revision-3 trusted VSI plus offset-aware fragment verification:
-          # the same native commit the 0.37.13+signer.1.0.8 release lock pins. This job
+          # the same native commit the 0.37.13+signer.1.0.9 release lock pins. This job
           # is qualification-only and never produces release artifacts.
           ref: 6021100cc5060b06061ca15b634281cfeb97c718
           path: paired-rust

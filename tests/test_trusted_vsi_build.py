@@ -16,7 +16,7 @@ SPEC.loader.exec_module(functional_build)
 
 
 @pytest.mark.parametrize("version", [
-    "0.37.13+signer.1.0.8", "0.37.14.dev0", "0.37.14.dev1", "0.38.0.dev1", "1.0.dev0+local",
+    "0.37.13+signer.1.0.9", "0.37.14.dev0", "0.37.14.dev1", "0.38.0.dev1", "1.0.dev0+local",
 ])
 def test_functional_source_or_future_development_version(version):
     assert functional_build.functional_version(version) == version
@@ -29,15 +29,18 @@ def test_functional_source_or_future_development_version(version):
     "0.37.9.dev0", "0.37.12.dev0", "0.37.13.dev0", "0.37.13.dev1",
     # Conformance-line prereleases merged into this line are older too.
     "0.37.12.dev4",
-    "0.37.13.dev2", "0.37.13.dev3", "0.37.13", "0.37.13+signer.1.0.9",
-    "0.37.13+signer.1.0.8.1", "0.37.14+signer.1.0.8",
+    "0.37.13.dev2", "0.37.13.dev3", "0.37.13",
+    # The published 1.0.8 identity is historical; other final labels are not
+    # this checkout's signer-aligned source identity.
+    "0.37.13+signer.1.0.8", "0.37.13+signer.1.0.10",
+    "0.37.13+signer.1.0.9.1", "0.37.14+signer.1.0.9",
 ])
 def test_functional_build_rejects_release_or_dev5_identity(version):
     with pytest.raises(ValueError):
         functional_build.functional_version(version)
 
 
-@pytest.mark.parametrize("selected_version", ["0.37.13+signer.1.0.8", "0.37.14.dev0"])
+@pytest.mark.parametrize("selected_version", ["0.37.13+signer.1.0.9", "0.37.14.dev0"])
 def test_staged_sdist_uses_new_version_without_touching_dev5_checkout(tmp_path, selected_version):
     import subprocess
     import sys
@@ -71,13 +74,13 @@ def test_staged_sdist_uses_new_version_without_touching_dev5_checkout(tmp_path, 
     after = {name: (ROOT / name).read_bytes() for name in before}
     assert after == before
     # The checkout keeps its own source identity; staging never rewrites it.
-    assert 'version = "0.37.13+signer.1.0.8"' in before["pyproject.toml"].decode()
+    assert 'version = "0.37.13+signer.1.0.9"' in before["pyproject.toml"].decode()
 
 
 def test_default_build_version_is_the_source_identity(monkeypatch):
     monkeypatch.delenv("FUNCTIONAL_BUILD_VERSION", raising=False)
-    assert functional_build.source_version() == "0.37.13+signer.1.0.8"
-    assert functional_build.functional_version(functional_build.source_version()) == "0.37.13+signer.1.0.8"
+    assert functional_build.source_version() == "0.37.13+signer.1.0.9"
+    assert functional_build.functional_version(functional_build.source_version()) == "0.37.13+signer.1.0.9"
 
 
 @pytest.mark.parametrize("version", ["0.37.13", "0.37.13+vendor.1"])

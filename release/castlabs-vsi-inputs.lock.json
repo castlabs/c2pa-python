@@ -2,13 +2,13 @@
   "schemaVersion": 1,
   "package": {
     "name": "c2pa-python",
-    "version": "0.37.13+signer.1.0.8"
+    "version": "0.37.13+signer.1.0.9"
   },
   "pythonSource": {
     "repository": "castlabs/c2pa-python",
     "url": "https://github.com/castlabs/c2pa-python.git",
     "releaseBranch": "feat/trusted-vsi-functional",
-    "releaseTag": "castlabs-v0.37.13+signer.1.0.8"
+    "releaseTag": "castlabs-v0.37.13+signer.1.0.9"
   },
   "rustSource": {
     "repository": "castlabs/c2pa-rs",

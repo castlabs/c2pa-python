@@ -53,8 +53,8 @@ def _posix_bash() -> str:
 def test_signer_aligned_release_version_is_consistent():
     # The release identity is consistent across the tooling, lock and source,
     # while validate-sources retains the strict release-branch/tag policy.
-    assert release.RELEASE_VERSION == "0.37.13+signer.1.0.8"
-    assert release.RELEASE_TAG == "castlabs-v0.37.13+signer.1.0.8"
+    assert release.RELEASE_VERSION == "0.37.13+signer.1.0.9"
+    assert release.RELEASE_TAG == "castlabs-v0.37.13+signer.1.0.9"
     assert release.load_lock()["package"]["version"] == release.RELEASE_VERSION
     assert "immutable release" in release.RELEASE_IDENTITY_TEXT
     assert "not PyPI" in release.RELEASE_BODY
@@ -199,7 +199,7 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
         in release_workflow
     )
     assert (
-        "c2pa_python-0.37.13+signer.1.0.8-py3-none-manylinux_2_28_x86_64.whl" in release_workflow
+        "c2pa_python-0.37.13+signer.1.0.9-py3-none-manylinux_2_28_x86_64.whl" in release_workflow
     )
     assert release_workflow.count("verify-wheel-native") == 2
     assert release_workflow.index("--only-plat --plat manylinux_2_28_x86_64") < (
@@ -462,6 +462,10 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
     # The unpublished dev1 tag is never a trigger, gate or source ref again.
     assert "0.37.13.dev1" not in release_workflow
     assert "0.37.13.dev1" not in pypi_workflow
+    # The published immutable 1.0.8 identity is never a trigger, gate,
+    # artifact name or qualification version of the 1.0.9 workflows.
+    assert "signer.1.0.8" not in release_workflow
+    assert "signer.1.0.8" not in paired_workflow
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "failed prerelease workflow run `34030865864`" in readme
     assert "No dev1 draft or GitHub release was created" in readme
@@ -478,7 +482,8 @@ def test_release_workflows_are_pinned_bounded_and_do_not_drift_from_helper(
     release_notes = (ROOT / "docs" / "release-notes.md").read_text(
         encoding="utf-8"
     )
-    assert "## Version 0.37.13+signer.1.0.8 (Preparation Only)" in release_notes
+    assert "## Version 0.37.13+signer.1.0.9 (Preparation Only)" in release_notes
+    assert "## Version 0.37.13+signer.1.0.8\n" in release_notes
     assert "### 0.37.13.dev1 (not released)" in release_notes
     assert "Dev4 and earlier accepted\n  undersized callback outputs" in release_notes
     assert "breaking strictness\n  change" in release_notes
@@ -507,10 +512,12 @@ def test_upload_query_preserves_local_version_identifiers():
 
 
 @pytest.mark.parametrize("event, ref", [
-    ("manual", "refs/heads/release/signer-1.0.8"),
+    ("manual", "refs/heads/release/signer-1.0.9"),
     ("manual", "refs/heads/main"),
-    ("manual", "refs/tags/castlabs-v0.37.13+signer.1.0.8"),
+    ("manual", "refs/tags/castlabs-v0.37.13+signer.1.0.9"),
     ("tag", "refs/tags/castlabs-v0.37.13.dev2"),
+    # The published 1.0.8 tag can never satisfy the 1.0.9 release lock.
+    ("tag", "refs/tags/castlabs-v0.37.13+signer.1.0.8"),
 ])
 def test_aligned_release_does_not_relax_source_ref_policy(monkeypatch, tmp_path, event, ref):
     monkeypatch.setattr(release, "project_version", lambda root: release.RELEASE_VERSION)
@@ -901,7 +908,7 @@ def test_wheel_local_version_filename_metadata_and_dist_info(tmp_path, target, p
     assert release.wheel_details(wheel, target, "3.10")["file"] == wheel.name
     with zipfile.ZipFile(wheel) as archive:
         assert f"c2pa_python-{release.RELEASE_VERSION}.dist-info/METADATA" in archive.namelist()
-    for version in ("0.37.13", "0.37.13.dev2", "0.37.13_signer.1.0.8"):
+    for version in ("0.37.13", "0.37.13.dev2", "0.37.13+signer.1.0.8", "0.37.13_signer.1.0.9"):
         _write_wheel(wheel, target, b"native", dist_info=f"c2pa_python-{version}.dist-info")
         with pytest.raises(SystemExit, match="unexpected wheel dist-info directory"):
             release.wheel_details(wheel, target, "3.10")
@@ -1380,7 +1387,7 @@ def development_release(monkeypatch):
 
 
 @pytest.mark.parametrize("version", [
-    "0.37.13+signer.1.0.8", "0.37.13.dev2+signer.1.0.8",
+    "0.37.13+signer.1.0.9", "0.37.13.dev2+signer.1.0.9", "0.37.13+signer.1.0.8",
     "0.37.13", "0.37.13rc1", "0.37.13.dev2junk",
 ])
 def test_pypi_rejects_non_development_versions_before_reading_wheels(

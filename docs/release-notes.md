@@ -1,11 +1,36 @@
 # Release notes
 
-## Version 0.37.13+signer.1.0.8 (Preparation Only)
+## Version 0.37.13+signer.1.0.9 (Preparation Only)
 
-The updated signer `1.0.8` dependency uses the prepared package version
-`0.37.13+signer.1.0.8` and intended tag `castlabs-v0.37.13+signer.1.0.8`.
+The signer `1.0.9` dependency uses the prepared package version
+`0.37.13+signer.1.0.9` and intended tag `castlabs-v0.37.13+signer.1.0.9`.
 This is not a qualified or published Python release. No tag or publication is
 part of this preparation; paired Linux/Windows CI must qualify the exact sources.
+
+- Only the signer-aligned release identity changes. The Python runtime API,
+  native `castlabs/c2pa-rs` `6021100cc5060b06061ca15b634281cfeb97c718`,
+  `Cargo.lock` SHA-256
+  `ff5cf2de2403ff491957fc8a2206c289203d2799a30425bd615f7c9e69974a8f`, Rust
+  `1.96.0`, native `0.92.0-dev`, trusted contract revision 3, capability mask 63,
+  feature selection and hermetic/evidence/ownership controls are unchanged from
+  `0.37.13+signer.1.0.8`. The base stays `0.37.13` because neither line changed.
+- The package, lock, schemas, release helper, tag trigger (literal `+` escaped),
+  wheel/bundle names, tests and current docs select the new identity. The
+  workflows no longer reference the published 1.0.8 identity.
+- The published `0.37.13+signer.1.0.8` tag, release, assets and evidence stay
+  unchanged and are not relabeled; the 1.0.9 assets must be built, validated and
+  attested from their own tagged bytes. GitHub only, never PyPI.
+
+## Version 0.37.13+signer.1.0.8
+
+Published immutable GitHub-only release `castlabs-v0.37.13+signer.1.0.8` (release
+ID `415634231`, `prerelease=false`), tagged at Python source
+`abc9a034ec82ba54552f9927d6affc993b25b6c1` and built by tagged run `39010024287`.
+It was not published to PyPI. The preparation notes below describe its original
+inputs.
+
+The updated signer `1.0.8` dependency used the package version
+`0.37.13+signer.1.0.8` and tag `castlabs-v0.37.13+signer.1.0.8`.
 
 - Native inputs select `castlabs/c2pa-rs`
   `6021100cc5060b06061ca15b634281cfeb97c718`, with `Cargo.lock` SHA-256
@@ -32,10 +57,10 @@ part of this preparation; paired Linux/Windows CI must qualify the exact sources
 
 ### Signer-aligned version policy
 
-Decided 2026-10-16 and applied here to the updated signer `1.0.8` dependency.
+Decided 2026-10-16 and applied to the signer `1.0.8` and `1.0.9` dependencies.
 Such releases use a PEP 440 local version
 naming the signer version, `<castlabs-base>+signer.<signer-version>[.<n>]`, for
-example `0.37.14+signer.1.0.9`, tagged `castlabs-v0.37.14+signer.1.0.9`. They are
+example `0.37.13+signer.1.0.9`, tagged `castlabs-v0.37.13+signer.1.0.9`. They are
 final, immutable GitHub releases (`prerelease=false`), not published to PyPI
 (local versions are rejected there). Development builds keep `.devN` versions,
 and moving the development line to the next `.devN` series is follow-up work
