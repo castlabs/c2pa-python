@@ -1,5 +1,39 @@
 # Release notes
 
+## Version 0.37.13+signer.1.0.10 (Preparation Only)
+
+The signer `1.0.10` dependency is prepared as `0.37.13+signer.1.0.10`, with
+intended tag `castlabs-v0.37.13+signer.1.0.10`. This is not a qualified or
+published release. The draft PR remains blocked on native review/merge and
+exact-source Python/native Linux/Windows qualification. No tag, release or
+publication is part of this preparation.
+
+- Native inputs select `castlabs/c2pa-rs`
+  `f7a95223d61257c80c2e49909b4643482b95662c` from public
+  [PR #31](https://github.com/castlabs/c2pa-rs/pull/31), based on
+  `6021100cc5060b06061ca15b634281cfeb97c718`. Native `Cargo.lock` is unchanged:
+  SHA-256 `ff5cf2de2403ff491957fc8a2206c289203d2799a30425bd615f7c9e69974a8f`.
+- VSI receivers check session-key lifetime at their current validation time,
+  within inclusive bounds `[createdAt, createdAt + validityPeriod]`. Expired
+  live media fails with `livevideo.segment.invalid` even with an in-window
+  protected `iat`. Optional `iat` is still parsed and rejected if malformed,
+  but is not the lifetime clock. Sender explicit-time refusal is unchanged.
+- The native VSI clock override is test-only (`#[cfg(test)]`), not exposed by
+  Python. `verify.validation_time` does not override VSI lifetime validation.
+  Python native fixtures now share current-time windows across each session
+  set; an expired-key test covers sender refusal before callback use. Receiver
+  expiry/boundary qualification remains native because Python has no VSI
+  segment validator.
+- No public Python API changes. The base version stays `0.37.13`; Rust
+  `1.96.0`, native `0.92.0-dev`, trusted contract revision 3, capability mask 63,
+  build features and release safety controls are unchanged.
+- Published `0.37.13+signer.1.0.9` and earlier tags, releases, artifacts and
+  evidence remain immutable and must not be relabeled. Historical preparation
+  sections below retain their original inputs and status at the time written.
+  New artifacts and evidence require their own qualified source bytes. GitHub
+  only, never PyPI; `feat/trusted-vsi-functional` remains the authorized
+  artifact-release source branch, not `release/signer-1.0.10`.
+
 ## Version 0.37.13+signer.1.0.9 (Preparation Only)
 
 The signer `1.0.9` dependency uses the prepared package version

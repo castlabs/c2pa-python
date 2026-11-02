@@ -2,18 +2,18 @@
   "schemaVersion": 1,
   "package": {
     "name": "c2pa-python",
-    "version": "0.37.13+signer.1.0.9"
+    "version": "0.37.13+signer.1.0.10"
   },
   "pythonSource": {
     "repository": "castlabs/c2pa-python",
     "url": "https://github.com/castlabs/c2pa-python.git",
     "releaseBranch": "feat/trusted-vsi-functional",
-    "releaseTag": "castlabs-v0.37.13+signer.1.0.9"
+    "releaseTag": "castlabs-v0.37.13+signer.1.0.10"
   },
   "rustSource": {
     "repository": "castlabs/c2pa-rs",
     "url": "https://github.com/castlabs/c2pa-rs.git",
-    "commit": "6021100cc5060b06061ca15b634281cfeb97c718",
+    "commit": "f7a95223d61257c80c2e49909b4643482b95662c",
     "version": "0.92.0-dev",
     "cargoLockSha256": "ff5cf2de2403ff491957fc8a2206c289203d2799a30425bd615f7c9e69974a8f"
   },

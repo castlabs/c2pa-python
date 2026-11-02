@@ -27,16 +27,20 @@ All of `Builder`, `Reader`, `Signer`, `Context`, and `Settings` support context 
 ## Trusted-processor VSI (unreleased functional API)
 
 `TrustedVsiSession` is separate from complete-buffer
-`LiveVideoVsiSession`. It requires the complete functional 0.92.0-dev native ABI
-and capability mask 63. Older libraries import normally but do not advertise
+`LiveVideoVsiSession`. The `0.37.13+signer.1.0.10` preparation pins native
+`f7a95223d61257c80c2e49909b4643482b95662c` and requires the complete functional
+0.92.0-dev native ABI, trusted contract revision 3 and capability mask 63.
+This is preparation only, pending native review/merge and paired qualification.
+Older libraries import normally but do not advertise
 trusted functionality; construction fails before inspecting arguments or
 invoking callbacks. These changes are not in immutable dev5 artifacts.
 
 Expert mode uses `sign_sig_structure(sig_structure: bytes, sequence_number: int)
 -> bytes`. The trusted processor supplies the uint32 sequence as metadata and
 owns media ordering, MFHD/VSI equality, and EMSG construction. Native validates
-canonical framing and signs the original bytes without decoding the opaque
-payload. The result is exactly 64 raw signature bytes, not a sequence result.
+canonical framing, the typed VSI payload and protected integer `iat` within
+the session-key window, then signs the original bytes unchanged. The result
+is exactly 64 raw signature bytes, not a sequence result.
 Expert callback metadata has no event ID or exhaustion, even at UINT32_MAX.
 
 Composed mode reserves a full EMSG at the supplied sequence/time and finalizes
@@ -45,6 +49,15 @@ for full UUID boxes. Explicit public-state export/import preserves pending
 reservations; preflight validates without key use or state mutation. Native
 owns all state validation and cryptography, while the coordinator owns durable
 operation identities and provider retry enforcement.
+
+Receiver validation uses the native validator's current time, within inclusive
+bounds `[createdAt, createdAt + validityPeriod]`, not the protected `iat` value.
+An expired key fails with `livevideo.segment.invalid` even if `iat` is inside
+its former window. Optional `iat` must still be well formed. Sender explicit-time
+signing and preflight continue to refuse signing times outside the key window.
+Python has no VSI segment validator or receiver-clock override:
+`verify.validation_time` does not override this check, and the native injected
+VSI clock is test-only. An old `iat` is not an archival-validation workaround.
 
 See the [Python contract](trusted-vsi-python-contract.md) for exact constructor
 options, mode names, callback ownership, error behavior, and qualification commands.

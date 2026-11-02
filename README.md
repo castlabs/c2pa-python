@@ -101,33 +101,40 @@ make build-from-source C2PA_RS_PATH=$C2PA_RS_PATH
 
 ## Castlabs VSI release process
 
-### Signer 1.0.9 preparation only
+### Signer 1.0.10 preparation only
 
-The candidate package identity is `0.37.13+signer.1.0.9`, with intended tag
-`castlabs-v0.37.13+signer.1.0.9`. This is preparation, not a qualified or
+The candidate package identity is `0.37.13+signer.1.0.10`, with intended tag
+`castlabs-v0.37.13+signer.1.0.10`. This is preparation, not a qualified or
 published candidate. The signer-aligned version is a PEP 440 local version for
 a final, immutable **GitHub-only** release (`prerelease=false`), never PyPI.
 The next development series is future work after publication; it is not selected
 or applied in this candidate.
 
-Only the release identity changes from the published immutable
-`0.37.13+signer.1.0.8` (tag `castlabs-v0.37.13+signer.1.0.8`, source
-`abc9a034ec82ba54552f9927d6affc993b25b6c1`, release ID `415634231`), which stays
-unchanged. The Python runtime and the combined #27/#28/#29 native source
-`6021100cc5060b06061ca15b634281cfeb97c718`, with `Cargo.lock` SHA-256
-`ff5cf2de2403ff491957fc8a2206c289203d2799a30425bd615f7c9e69974a8f`, are the same
-in the lock, schemas, helper, workflows, tests and current docs. Python/native
-qualification of this exact identity remains a publication/adoption gate, and
-1.0.8 assets or evidence must not be relabeled. Integrate and review the Python
+The Python public API and base version `0.37.13` are unchanged. Active inputs
+select native `f7a95223d61257c80c2e49909b4643482b95662c` from public
+[castlabs/c2pa-rs #31](https://github.com/castlabs/c2pa-rs/pull/31), based on
+`6021100cc5060b06061ca15b634281cfeb97c718`. Native `Cargo.lock` is unchanged,
+with SHA-256 `ff5cf2de2403ff491957fc8a2206c289203d2799a30425bd615f7c9e69974a8f`.
+VSI receivers now check session-key lifetime at current validation time with
+inclusive bounds, not at the protected `iat`; expired live media fails.
+Malformed `iat` still fails, and sender explicit-time refusal is unchanged.
+Python `verify.validation_time` is not a VSI clock override.
+
+The draft PR is blocked on native review/merge and exact-source Python/native
+Linux/Windows qualification. Published `0.37.13+signer.1.0.9` and earlier
+tags, releases, artifacts and evidence stay immutable and must not be relabeled.
+This includes `0.37.13+signer.1.0.8` (tag `castlabs-v0.37.13+signer.1.0.8`, source
+`abc9a034ec82ba54552f9927d6affc993b25b6c1`, release ID `415634231`).
+Integrate and review the Python
 source on `feat/trusted-vsi-functional` and record CI evidence against its final
 full SHA before any tag or publication. The local preparation branch
-`release/signer-1.0.9` is not an authorized artifact-release source.
+`release/signer-1.0.10` is not an authorized artifact-release source.
 
 ### Unreleased trusted-processor API qualification
 
 The [trusted-processor API](docs/usage.md#trusted-processor-vsi-unreleased-functional-api)
 is separate from complete-buffer VSI and immutable dev5. The current prepared
-release identity is `0.37.13+signer.1.0.9`. Its probes are true only on a native library reporting trusted
+release identity is `0.37.13+signer.1.0.10`. Its probes are true only on a native library reporting trusted
 contract revision 3 and capability mask 63;
 otherwise every probe is false and session construction/operations fail before
 side effects. Expert signing accepts only exact `Sig_structure` bytes and returns
@@ -140,7 +147,7 @@ library (`-k "not paired"`). Separately, both it and the dedicated workflow use
 Linux/Windows source builds and the full focused `tests/test_trusted_vsi_api.py`
 with `C2PA_TRUSTED_VSI_ABI_REQUIRED=1`. Missing reduced ABI symbols fail rather
 than skip. The paired Rust source is pinned to
-`castlabs/c2pa-rs@6021100cc5060b06061ca15b634281cfeb97c718`, the merged #27/#28/#29
+`castlabs/c2pa-rs@f7a95223d61257c80c2e49909b4643482b95662c`, the #31 candidate
 source selected by the candidate release lock; the job logs resolved Python/Rust SHAs. The
 paired job is qualification only and is not release-artifact evidence.
 
@@ -174,7 +181,7 @@ imports (`python setup.py egg_info`, without a native download or wheel build).
 
 ### Immutable Castlabs VSI release process
 
-The dedicated [`Castlabs VSI release`](.github/workflows/castlabs-vsi-release.yml) workflow is prepared to build version `0.37.13+signer.1.0.9` for Linux x86-64 and Windows x86-64. It does not call `scripts/download_artifacts.py`: both native libraries are compiled with Cargo `--locked` and `CARGO_BUILD_JOBS=1` from the exact [Castlabs c2pa-rs](https://github.com/castlabs/c2pa-rs) commit in [`release/castlabs-vsi-inputs.lock.json`](release/castlabs-vsi-inputs.lock.json). The lock also fixes the Rust 1.96.0 toolchain coordinated with c2pa-rs qualification, checksum-verified rustup installers, no-default-feature set, target set, and the Linux manylinux container digest. The legacy `build.yml` explicitly excludes `castlabs-v*` tag pushes and guards its jobs and PyPI publisher against manual dispatch on those tags; the dedicated workflow alone owns them. Ordinary non-Castlabs tag releases retain the legacy behavior, while manual legacy publication additionally requires `refs/heads/main` and a final `X.Y.Z` package version.
+The dedicated [`Castlabs VSI release`](.github/workflows/castlabs-vsi-release.yml) workflow is prepared to build version `0.37.13+signer.1.0.10` for Linux x86-64 and Windows x86-64. It does not call `scripts/download_artifacts.py`: both native libraries are compiled with Cargo `--locked` and `CARGO_BUILD_JOBS=1` from the exact [Castlabs c2pa-rs](https://github.com/castlabs/c2pa-rs) commit in [`release/castlabs-vsi-inputs.lock.json`](release/castlabs-vsi-inputs.lock.json). The lock also fixes the Rust 1.96.0 toolchain coordinated with c2pa-rs qualification, checksum-verified rustup installers, no-default-feature set, target set, and the Linux manylinux container digest. The legacy `build.yml` explicitly excludes `castlabs-v*` tag pushes and guards its jobs and PyPI publisher against manual dispatch on those tags; the dedicated workflow alone owns them. Ordinary non-Castlabs tag releases retain the legacy behavior, while manual legacy publication additionally requires `refs/heads/main` and a final `X.Y.Z` package version.
 
 The immutable `castlabs-v0.37.8.dev1` tag records failed prerelease workflow run `34030865864`. Linux compiled successfully but its combined DynamicAssertion-plus-VSI smoke used a 5-byte callback result for a 64-byte reservation and later failed with `assertion.bmffHash.mismatch`; Windows compiled successfully and failed only in platform-sensitive wheel metadata parsing. The Linux failure was an undersized callback contract violation, not an inherent incompatibility between DynamicAssertions and VSI. No dev1 draft or GitHub release was created, and the tag remains unchanged.
 
@@ -188,7 +195,7 @@ The immutable `castlabs-v0.37.13.dev1` tag (source `78771fa`, native `3328b2b4`)
 
 Release controls:
 
-- Before publication, configure `castlabs-v0.37.13+signer.1.0.9` as a protected tag and require approval for the `castlabs-vsi-release` environment. The workflow's single-quoted tag filter escapes the literal `+` as `\+`; wheel filenames and dist-info directories retain `+`, and upload query parameters percent-encode it as `%2B`.
+- Before publication, configure `castlabs-v0.37.13+signer.1.0.10` as a protected tag and require approval for the `castlabs-vsi-release` environment. The workflow's single-quoted tag filter escapes the literal `+` as `\+`; wheel filenames and dist-info directories retain `+`, and upload query parameters percent-encode it as `%2B`.
 - A tag run accepts only that exact tag. A manual run accepts only a full 40-character SHA equal to the tip of `feat/trusted-vsi-functional` and is build/test-only; draft release creation and provenance signing require the exact protected tag-triggered run.
 - Source checkout URLs, full SHAs, package/native versions, and the pinned `Cargo.lock` SHA-256 are asserted before each build.
 - The Linux wheel is built and repaired in the digest-pinned `manylinux_2_28_x86_64` image. Every wheel is tested without capability skips on clean Python 3.10 through 3.13; Python 3.10 also runs the broader unit and fragmented-file suites.
@@ -198,7 +205,7 @@ Release controls:
 
 Intermediate Actions artifacts expire after seven days. A draft resume always rebuilds both platforms and requires byte-identical output for every already-uploaded asset; rerunning only an expired release job cannot recover its inputs, so rerun the complete tag workflow. If reproducibility or an operator mistake leaves a mismatched prior draft, the workflow preserves it and reports failure. Inspect it manually before any operator-authorized deletion of that exact draft and rerun the complete protected-tag workflow. Never delete a published release or use clobber to repair a mismatch.
 
-`tests/test_castlabs_release_smoke.py` is intentionally gated for ordinary contributors because upstream native binaries do not provide every Castlabs capability. Bare pytest skips that module unless `CASTLABS_RELEASE_SMOKE_REQUIRED=1` is set. The dedicated wheel-test jobs always set it; with the gate enabled, package version, dynamic assertions, fragmented files, offset-aware fragment verification, VSI callback signing, recovery, explicit time, and MFHD probing are hard assertions with no capability skip. Contributors with a qualified installed wheel can run the same gate explicitly with `CASTLABS_RELEASE_SMOKE_REQUIRED=1 python -m pytest -q tests/test_castlabs_release_smoke.py`. `CASTLABS_RELEASE_EXPECTED_VERSION` exists only for testing an already-built prior candidate during release-pipeline repair; the dedicated tagged workflow explicitly fixes it to `0.37.13+signer.1.0.9`.
+`tests/test_castlabs_release_smoke.py` is intentionally gated for ordinary contributors because upstream native binaries do not provide every Castlabs capability. Bare pytest skips that module unless `CASTLABS_RELEASE_SMOKE_REQUIRED=1` is set. The dedicated wheel-test jobs always set it; with the gate enabled, package version, dynamic assertions, fragmented files, offset-aware fragment verification, VSI callback signing, recovery, explicit time, and MFHD probing are hard assertions with no capability skip. Contributors with a qualified installed wheel can run the same gate explicitly with `CASTLABS_RELEASE_SMOKE_REQUIRED=1 python -m pytest -q tests/test_castlabs_release_smoke.py`. `CASTLABS_RELEASE_EXPECTED_VERSION` exists only for testing an already-built prior candidate during release-pipeline repair; the dedicated tagged workflow explicitly fixes it to `0.37.13+signer.1.0.10`.
 
 At the pinned c2pa-rs commit, VSI initialization signs through `Builder::from_shared_context`, so it inherits DynamicAssertions registered on the Context's claim signer. The common Python callback bridge enforces `reserve_size` as the exact serialized CBOR size for every signing path. The earlier `assertion.bmffHash.mismatch` came from returning only 5 bytes for a 64-byte reservation; it was not an inherent DynamicAssertion-plus-VSI incompatibility. The release smoke now returns valid exact-size CBOR, requires clean Reader validation for both standalone image and combined VSI init signing, and exercises combined media signing and recovery without an xfail.
 
