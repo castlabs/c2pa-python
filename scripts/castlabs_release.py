@@ -27,8 +27,8 @@ LOCK_PATH = ROOT / "release" / "castlabs-vsi-inputs.lock.json"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 RELEASE_VERSION = "0.37.13+signer.1.0.10"
-RUST_COMMIT = "f7a95223d61257c80c2e49909b4643482b95662c"
-CARGO_LOCK_SHA256 = "ff5cf2de2403ff491957fc8a2206c289203d2799a30425bd615f7c9e69974a8f"
+RUST_COMMIT = "11f121244a2e063b2f0535554ae3d761c4b015d6"
+CARGO_LOCK_SHA256 = "10fcb5c1c096ed573f687faef9a104eeff6d4883484a45efb843624c16606a48"
 RUST_TOOLCHAIN = "1.96.0"
 MANYLINUX_IMAGE = "quay.io/pypa/manylinux_2_28_x86_64"
 MANYLINUX_DIGEST = (
@@ -41,7 +41,7 @@ RELEASE_IDENTITY_TEXT = f"Castlabs c2pa-python {RELEASE_VERSION} immutable relea
 RELEASE_BODY = (
     f"{RELEASE_BODY_MARKER}\n\n"
     f"{RELEASE_IDENTITY_TEXT}. Trusted-processor VSI line (native contract "
-    "revision 3, capability mask 63) on castlabs/c2pa-rs f7a95223 (0.92.0-dev, "
+    "revision 3, capability mask 63) on castlabs/c2pa-rs 11f12124 (0.92.0-dev, "
     "Rust 1.96.0), merged with the Conformance Program 0.2 / C2PA 2.4 line: "
     "crJSON 2.4 output with checked export, caller-controlled certificate validation time, "
     "offset-aware single-file fMP4 fragment verification and the default EKU "
@@ -49,7 +49,10 @@ RELEASE_BODY = (
     "verified VSI init refreshes. VSI receivers check session-key lifetime at current "
     "validation time, with inclusive bounds; protected iat is checked for shape, not "
     "used as the clock. Expired live media fails validation; sender explicit-time "
-    "refusal is unchanged. Signer-aligned 1.0.10 release, GitHub only (not PyPI); "
+    "refusal is unchanged. Dependency patches select rustls-webpki 0.103.16, "
+    "webpki-roots 1.0.10 and tokio 1.53.3. crypto-bigint 0.5.5 remains unfixed "
+    "and the existing RSA cargo-deny ignore remains; this is not an audit-clean claim. "
+    "Signer-aligned 1.0.10 release, GitHub only (not PyPI); "
     "the Python public API and base version 0.37.13 are unchanged. See "
     "the attached schema-2 evidence and SHA-256 sidecars."
 )

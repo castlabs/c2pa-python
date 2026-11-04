@@ -28,9 +28,14 @@ All of `Builder`, `Reader`, `Signer`, `Context`, and `Settings` support context 
 
 `TrustedVsiSession` is separate from complete-buffer
 `LiveVideoVsiSession`. The `0.37.13+signer.1.0.10` preparation pins native
-`f7a95223d61257c80c2e49909b4643482b95662c` and requires the complete functional
+`11f121244a2e063b2f0535554ae3d761c4b015d6` and requires the complete functional
 0.92.0-dev native ABI, trusted contract revision 3 and capability mask 63.
 This is preparation only, pending native review/merge and paired qualification.
+Its native lock updates `rustls-webpki` to 0.103.16, `webpki-roots` to 1.0.10
+and `tokio` to 1.53.3; `crypto-bigint` 0.5.5 remains unfixed and the existing
+RSA `cargo-deny` ignore remains. This is not an audit-clean claim. The
+[historical qualification receipt](trusted-vsi-python-contract.md#historical-qualification-receipt)
+does not qualify this new native pin.
 Older libraries import normally but do not advertise
 trusted functionality; construction fails before inspecting arguments or
 invoking callbacks. These changes are not in immutable dev5 artifacts.

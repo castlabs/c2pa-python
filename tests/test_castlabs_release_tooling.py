@@ -72,9 +72,9 @@ def test_release_lock_and_schemas_are_valid_json():
     assert lock["rustSource"]["commit"] == release.RUST_COMMIT
     assert lock["rustSource"]["cargoLockSha256"] == release.CARGO_LOCK_SHA256
     assert lock["rustToolchain"]["channel"] == "1.96.0"
-    assert release.RUST_COMMIT == "f7a95223d61257c80c2e49909b4643482b95662c"
+    assert release.RUST_COMMIT == "11f121244a2e063b2f0535554ae3d761c4b015d6"
     assert release.CARGO_LOCK_SHA256 == (
-        "ff5cf2de2403ff491957fc8a2206c289203d2799a30425bd615f7c9e69974a8f"
+        "10fcb5c1c096ed573f687faef9a104eeff6d4883484a45efb843624c16606a48"
     )
     assert lock["rustSource"]["version"] == "0.92.0-dev"
     assert lock["pythonSource"]["releaseBranch"] == "feat/trusted-vsi-functional"
@@ -84,6 +84,11 @@ def test_release_lock_and_schemas_are_valid_json():
     ):
         schema = json.loads((ROOT / "release" / name).read_text(encoding="utf-8"))
         assert schema["$schema"].endswith("2020-12/schema")
+        if name == "castlabs-vsi-inputs.schema.json":
+            rust_source = schema["$defs"]["rustSource"]["properties"]
+        else:
+            rust_source = schema["properties"]["sources"]["properties"]["c2paRs"]["properties"]
+        assert {key: value["const"] for key, value in rust_source.items()} == lock["rustSource"]
     if importlib.util.find_spec("jsonschema") is not None:
         import jsonschema
 

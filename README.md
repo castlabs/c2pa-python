@@ -111,10 +111,14 @@ The next development series is future work after publication; it is not selected
 or applied in this candidate.
 
 The Python public API and base version `0.37.13` are unchanged. Active inputs
-select native `f7a95223d61257c80c2e49909b4643482b95662c` from public
+select native `11f121244a2e063b2f0535554ae3d761c4b015d6` from public
 [castlabs/c2pa-rs #31](https://github.com/castlabs/c2pa-rs/pull/31), based on
-`6021100cc5060b06061ca15b634281cfeb97c718`. Native `Cargo.lock` is unchanged,
-with SHA-256 `ff5cf2de2403ff491957fc8a2206c289203d2799a30425bd615f7c9e69974a8f`.
+`6021100cc5060b06061ca15b634281cfeb97c718`. Native `Cargo.lock` now has
+SHA-256 `10fcb5c1c096ed573f687faef9a104eeff6d4883484a45efb843624c16606a48`.
+Three dependency patches select `rustls-webpki` 0.103.16, `webpki-roots` 1.0.10
+and `tokio` 1.53.3. `crypto-bigint` 0.5.5 remains unfixed and the existing RSA
+`cargo-deny` ignore remains; this is not an audit-clean claim. Native `0.92.0-dev`,
+Rust `1.96.0`, build features and trusted ABI revision 3 / mask 63 are unchanged.
 VSI receivers now check session-key lifetime at current validation time with
 inclusive bounds, not at the protected `iat`; expired live media fails.
 Malformed `iat` still fails, and sender explicit-time refusal is unchanged.
@@ -147,9 +151,15 @@ library (`-k "not paired"`). Separately, both it and the dedicated workflow use
 Linux/Windows source builds and the full focused `tests/test_trusted_vsi_api.py`
 with `C2PA_TRUSTED_VSI_ABI_REQUIRED=1`. Missing reduced ABI symbols fail rather
 than skip. The paired Rust source is pinned to
-`castlabs/c2pa-rs@f7a95223d61257c80c2e49909b4643482b95662c`, the #31 candidate
+`castlabs/c2pa-rs@11f121244a2e063b2f0535554ae3d761c4b015d6`, the #31 candidate
 source selected by the candidate release lock; the job logs resolved Python/Rust SHAs. The
 paired job is qualification only and is not release-artifact evidence.
+
+The [historical qualification receipt](docs/trusted-vsi-python-contract.md#historical-qualification-receipt)
+for run `41531470285` records an earlier Python/native pair, not qualification
+of the current pins. Normal PR synchronization runs the existing paired workflow
+subject to its unchanged author/label gate; this source preparation does not
+manually build native code or dispatch qualification.
 
 For the dedicated workflow, manually select the trusted-API workflow revision,
 set `trusted_vsi_only=true`, and supply its full Python `source_sha`. This path

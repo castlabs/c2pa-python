@@ -9,10 +9,18 @@ exact-source Python/native Linux/Windows qualification. No tag, release or
 publication is part of this preparation.
 
 - Native inputs select `castlabs/c2pa-rs`
-  `f7a95223d61257c80c2e49909b4643482b95662c` from public
+  `11f121244a2e063b2f0535554ae3d761c4b015d6` from public
   [PR #31](https://github.com/castlabs/c2pa-rs/pull/31), based on
-  `6021100cc5060b06061ca15b634281cfeb97c718`. Native `Cargo.lock` is unchanged:
-  SHA-256 `ff5cf2de2403ff491957fc8a2206c289203d2799a30425bd615f7c9e69974a8f`.
+  `6021100cc5060b06061ca15b634281cfeb97c718`. Native `Cargo.lock` now has
+  SHA-256 `10fcb5c1c096ed573f687faef9a104eeff6d4883484a45efb843624c16606a48`.
+- Three dependency patches select `rustls-webpki` 0.103.16, `webpki-roots` 1.0.10
+  and `tokio` 1.53.3. `crypto-bigint` 0.5.5 remains unfixed and the existing RSA
+  `cargo-deny` ignore remains; this is not an audit-clean claim.
+- [Historical qualification run `41531470285`](trusted-vsi-python-contract.md#historical-qualification-receipt)
+  records Python `4619e789f932945cc587e60863558f476b4c93ba` with native
+  `f7a95223d61257c80c2e49909b4643482b95662c`, not qualification of the new pins.
+  Normal PR synchronization may automatically run the existing paired workflow;
+  this preparation does not manually build native code or dispatch qualification.
 - VSI receivers check session-key lifetime at their current validation time,
   within inclusive bounds `[createdAt, createdAt + validityPeriod]`. Expired
   live media fails with `livevideo.segment.invalid` even with an in-window
