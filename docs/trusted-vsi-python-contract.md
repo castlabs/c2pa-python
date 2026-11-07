@@ -1,18 +1,24 @@
 # Trusted VSI Python Contract
 
-Status: signer 1.0.9 candidate preparation requiring native trusted-VSI
+Status: signer 1.0.10 candidate preparation requiring native trusted-VSI
 contract revision 3 (state version 3 and typed expert VSI payloads), following
 `c2pa-rs`
 `docs/trusted-vsi-native-contract.md`. The prepared Python identity is
-`0.37.13+signer.1.0.9`, with intended tag `castlabs-v0.37.13+signer.1.0.9` for a
+`0.37.13+signer.1.0.10`, with intended tag `castlabs-v0.37.13+signer.1.0.10` for a
 final, immutable GitHub-only release (`prerelease=false`), not PyPI. This is
 preparation only, not Python qualification or publication. Native inputs select
-`6021100cc5060b06061ca15b634281cfeb97c718`, unchanged from the published
-`0.37.13+signer.1.0.8`; immutable historical release inputs and artifacts are
-unchanged. Its `Cargo.lock` SHA-256 is
-`ff5cf2de2403ff491957fc8a2206c289203d2799a30425bd615f7c9e69974a8f`.
-The combined native #27/#28/#29 source passed focused CI; complete native bundle
-and Python/native artifact qualification remain release gates. The paired
+`11f121244a2e063b2f0535554ae3d761c4b015d6` from public
+[castlabs/c2pa-rs #31](https://github.com/castlabs/c2pa-rs/pull/31), based on
+`6021100cc5060b06061ca15b634281cfeb97c718`. Published `0.37.13+signer.1.0.9`
+and earlier release inputs, artifacts and evidence remain immutable. The
+native `Cargo.lock` SHA-256 is now
+`10fcb5c1c096ed573f687faef9a104eeff6d4883484a45efb843624c16606a48`.
+Three dependency patches select `rustls-webpki` 0.103.16, `webpki-roots` 1.0.10
+and `tokio` 1.53.3. `crypto-bigint` 0.5.5 remains unfixed and the existing RSA
+`cargo-deny` ignore remains; this is not an audit-clean claim. Rust `1.96.0`,
+native `0.92.0-dev`, features and the trusted ABI are unchanged.
+The draft PR is blocked on native review/merge and exact-source native bundle
+and Python/native artifact qualification. The paired
 source workflow pins this same native commit
 (previously `3328b2b440fd07d9f857cbefa3c6d565093425de` for the unpublished
 0.37.13.dev1 and `a6d4cdcc05638ee8dd0afce7fa5c850d7031a80c` before it) for revision-3
@@ -136,14 +142,16 @@ Removed without aliases: `TrustedVsiPrehashedSession`, `TrustedVsiSignResult`,
   sequence), `manifestId` (the pinned init ID), and `bmffHash` (the exact native
   SHA-256 media-template map with a 32-byte hash), plus optional valid
   `manifestUri` hashed-URI map. Protected headers require canonical matching
-  integer `alg` and integer `iat` within the configured key window. Payload
+  integer `alg` and integer `iat` within the configured key window (sender-side
+  refusal, unchanged). Payload
   field order need not be canonical. Native signs the original bytes unchanged
   and keeps no expert media counter. A detached signerBinding certificate bstr
   is not an expert VSI payload. Static validation checks shape/types but cannot
   check a particular session's manifest ID or key validity window.
 - Composed: reserve requires `sequence_number == next_sequence_number`
   (initially `min`); events start at 1; timing values must be positive. Reserve
-  signs nothing. Finalize advances counters or exhausts without wrapping.
+  signs nothing and refuses an explicit signing time outside the key window.
+  Finalize advances counters or exhausts without wrapping.
 - The trusted processor hashes final-placement bytes with the reserved box
   installed (`trusted_vsi_hash_template` + 32-byte SHA-256 `hash`). Only
   `video/mp4` is supported. There is no C/Python hash helper; this is the
@@ -169,6 +177,17 @@ Removed without aliases: `TrustedVsiPrehashedSession`, `TrustedVsiSignResult`,
   `{1: alg, "iat": iat}`, unprotected `{4: kid}`, payload
   `{sequenceNumber, manifestId, bmffHash}`, where `bmffHash` equals the canonical
   hash input exactly, plus the signature over `["Signature1", protected, b"", payload]`.
+- Receiver lifetime: native `LiveVideoValidator` uses its current time within
+  inclusive bounds `[createdAt, createdAt + validityPeriod]`. Before creation or
+  after expiry, media fails with `livevideo.segment.invalid`. Optional protected
+  `iat` is parsed (malformed values still fail), but its value does not select
+  or relax this clock. An old in-window `iat` cannot rescue expired live media.
+  The native clock override is `#[cfg(test)]` only; Python's
+  `verify.validation_time` does not override VSI lifetime validation. Paired
+  Python fixtures sample current time once for the session set and share the
+  resulting key window across restored sessions. Receiver expiry and exact
+  inclusive-boundary tests remain in native qualification; the Python expired-key
+  negative test checks the separate sender explicit-time refusal.
 - After a failure once an external signing call began, the session is blocked.
   Discard it, construct a NEW session and `import_state()` the durable
   PRE-operation record. Operation-ID/same-input retry enforcement belongs to the
@@ -250,7 +269,7 @@ CBOR, BMFF or validation results.
 
 The paired workflow requires all probes true against its exact native library,
 then builds a NON-PUBLISHING wheel and sdist in a temporary source copy retaining
-the source version `0.37.13+signer.1.0.9`. It stages only the paired native into
+the source version `0.37.13+signer.1.0.10`. It stages only the paired native into
 that copy, not the checkout or a release artifact directory. Its version variables
 and the release lock/tooling match this identity. `C2PA_SOURCE_BUILD_VERSION=0.92.0-dev`
 identifies the native library only; it does not attest a commit or qualification.
@@ -264,7 +283,7 @@ series is future work after publication. Historical dev5 and dev2
 releases/tags/evidence are unchanged.
 
 `scripts/qualify_trusted_vsi_functional.py --wheel <whl> --venv <new-dir>
---version 0.37.13+signer.1.0.9` installs the wheel into an isolated venv, strips
+--version 0.37.13+signer.1.0.10` installs the wheel into an isolated venv, strips
 `PYTHONPATH`/`C2PA_LIBRARY_NAME`, and runs `test_trusted_vsi_api.py`,
 `test_fragmented_files.py`, `test_sign_ladder.py`,
 `test_native_ownership.py` and `test_native_ownership_opaque.py` with `C2PA_TRUSTED_VSI_ABI_REQUIRED=1`,
@@ -277,13 +296,26 @@ Paired tests require the full native library and FAIL under
 `C2PA_TRUSTED_VSI_ABI_REQUIRED=1` (all Linux/Windows qualification jobs); they
 skip only in ad-hoc local runs. `.github/workflows/trusted-vsi-paired.yml`
 builds the native with Rust 1.96.0 from castlabs/c2pa-rs
-`6021100cc5060b06061ca15b634281cfeb97c718`, the same commit as the
-`castlabs-v0.37.13+signer.1.0.9` preparation lock (trusted contract revision 3, mask 63,
+`11f121244a2e063b2f0535554ae3d761c4b015d6`, the same commit as the
+`castlabs-v0.37.13+signer.1.0.10` preparation lock (trusted contract revision 3, mask 63,
 offset-aware fragment exports). It sets `C2PA_FRAGMENT_OFFSET_REQUIRED=1`, so a
 native library without the fragment-offset probe fails rather than skips. Older
 pins (`6b506352`, `203dc08d`, `5c186c07`) emitted state version 2 and lacked the
 revision probe; they cannot qualify this gate. No tests or capability gates are
 weakened.
+
+### Historical Qualification Receipt
+
+[Run `41531470285`](https://github.com/castlabs/c2pa-python/actions/runs/41531470285)
+is the historical qualification receipt for Python
+`4619e789f932945cc587e60863558f476b4c93ba` paired with native
+`f7a95223d61257c80c2e49909b4643482b95662c`, whose `Cargo.lock` SHA-256 was
+`ff5cf2de2403ff491957fc8a2206c289203d2799a30425bd615f7c9e69974a8f`.
+It is not qualification of native `11f121244a2e063b2f0535554ae3d761c4b015d6`,
+the updated lock or the new Python source bytes. The receipt must not be
+relabeled as evidence for those inputs. Fresh exact-source Linux/Windows and
+installed-wheel qualification remains required; no wheel or binary digest is
+claimed by this source preparation.
 
 ## CI And Publication Hold
 
@@ -295,11 +327,14 @@ The retained run metadata does not establish the event-time association, so this
 is not evidence that the current MEMBER condition is wrong. No author gate is
 broadened here (in particular no speculative OWNER exception or fork secrets).
 The candidate remains on hold until CI qualifies the exact Python/native pair
-and its installed wheels. Selecting native `6021100c` does not establish that
+and its installed wheels. Selecting native `11f12124` does not establish that
 paired qualification. Artifact builds still require `feat/trusted-vsi-functional`
 (manual runs must use its full tip SHA and ref) or the exact aligned tag; the
-preparation branch `release/signer-1.0.9` is not an allowed artifact-release source.
+preparation branch `release/signer-1.0.10` is not an allowed artifact-release source.
 The non-publishing paired path can test a reviewed preparation SHA before that
 integration. A maintainer must review the head, retain the existing author/label
 gate, and confirm required jobs actually ran. This preparation does not tag or
 publish. A green workflow with skipped test jobs is not qualification.
+Normal PR synchronization may automatically run the existing paired workflow
+under its unchanged author/label gate. This preparation performs no manual
+native build or qualification dispatch.

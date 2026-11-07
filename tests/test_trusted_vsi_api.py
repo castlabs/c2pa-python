@@ -10,6 +10,7 @@ native qualification.
 import asyncio
 import ctypes
 from dataclasses import FrozenInstanceError
+from datetime import datetime, timezone
 import gc
 import hashlib
 import inspect
@@ -34,7 +35,10 @@ import c2pa.c2pa as bindings
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
-IAT = 1789041600
+# Sample once for this fixture set: restored sessions must have identical time
+# inputs. Production VSI validation has no Python historical-clock override.
+IAT = int(datetime.now(timezone.utc).timestamp())
+CREATED_AT = datetime.fromtimestamp(IAT - 43200, timezone.utc).isoformat().replace("+00:00", "Z")
 OP = c2pa.TrustedVsiOperation
 KIND = c2pa.TrustedVsiInputKind
 PROBES = [getattr(c2pa, name) for name in (
@@ -415,7 +419,7 @@ def scripted(monkeypatch):
     native.install(monkeypatch, "session_create_callback_v1", create)
     session = c2pa.TrustedVsiSession(
         context, {"format": "video/mp4"}, "es256", b"\xa1\x01\x02", b"kid", 3,
-        "2026-09-10T00:00:00Z", 86400, callback, mode="expert_sig_structure",
+        CREATED_AT, 86400, callback, mode="expert_sig_structure",
         reservation_nonce="0" * 32, signing_time_unix_seconds=IAT, sequence_max=9)
     yield native, session, context, calls, behaviour
     session.close()
@@ -430,7 +434,7 @@ def test_scripted_constructor_marshals_exact_order_and_options(scripted):
     assert args[2] == c2pa.C2paSigningAlg.ES256
     assert bytes(args[3]) == b"\xa1\x01\x02" and args[4] == 3
     assert bytes(args[5]) == b"kid" and args[6] == 3
-    assert args[7:10] == (3, b"2026-09-10T00:00:00Z", 86400)
+    assert args[7:10] == (3, CREATED_AT.encode(), 86400)
     assert json.loads(args[10]) == {"mode": "expert_sig_structure", "reservation_nonce": "0" * 32,
                                     "signing_time_unix_seconds": IAT, "sequence_max": 9}
     assert args[11] is None and isinstance(args[12], bindings.TrustedVsiSignCallbackV1)
@@ -566,7 +570,7 @@ def test_scripted_constructor_rejects_bad_options_before_native(monkeypatch, scr
     options.update(kwargs)
     with pytest.raises(error):
         c2pa.TrustedVsiSession(context, {"format": "video/mp4"}, "es256", b"k", b"kid", 3,
-                               "2026-09-10T00:00:00Z", 86400, lambda *a: b"", **options)
+                               CREATED_AT, 86400, lambda *a: b"", **options)
     assert len(native.calls) == count
 
 
@@ -612,7 +616,7 @@ def test_scripted_wrappers_store_base_exceptions_return_minus_one_and_reraise(
                    lambda *args: setattr(native, "callback", args[-1]) or native.handle)
     session = c2pa.TrustedVsiSession(
         context, {"format": "video/mp4"}, "es256", b"k", b"kid", 1,
-        "2026-09-10T00:00:00Z", 86400, fail if which == "vsi" else (lambda *a: b"S" * 64),
+        CREATED_AT, 86400, fail if which == "vsi" else (lambda *a: b"S" * 64),
         mode="expert_sig_structure", reservation_nonce="0" * 32, signing_time_unix_seconds=IAT)
     context.close()
     gc.collect()
@@ -730,7 +734,7 @@ def sessions(paired_native):
     resources = []
     def create(mode="expert_sig_structure", algorithm="ed25519", minimum=1,
                maximum=None, callback=None, claim_callback=None, dynamic=None,
-               public_cose_key=None, **overrides):
+               public_cose_key=None, created_at=CREATED_AT, **overrides):
         kid = b"functional-python-session"
         if algorithm == "ed25519":
             key = ed25519.Ed25519PrivateKey.from_private_bytes(bytes([7]) * 32)
@@ -772,7 +776,7 @@ def sessions(paired_native):
                 "actions": [{"action": "c2pa.created", "digitalSourceType": "http://c2pa.org/digitalsourcetype/empty"}]
             }}]}, algorithm,
             public_cose_key if public_cose_key is not None else cbor2.dumps(cose, canonical=True), kid,
-            minimum, "2026-09-10T00:00:00Z", 86400, signing, **options)
+            minimum, created_at, 86400, signing, **options)
         resources.append(session)
         assert calls == []
         return session, calls, key, context
@@ -1224,7 +1228,7 @@ def test_paired_import_rejects_mismatched_claim_and_da_declarations(paired_nativ
         session = c2pa.TrustedVsiSession(
             context, {"claim_version": 2, "format": "video/mp4"}, "ed25519",
             cbor2.dumps({1: 1, 2: kid, 3: -8, -1: 6, -2: public}, canonical=True), kid,
-            1, "2026-09-10T00:00:00Z", 86400, vsi, mode="expert_sig_structure",
+            1, CREATED_AT, 86400, vsi, mode="expert_sig_structure",
             reservation_nonce="0123456789abcdef0123456789abcdef", signing_time_unix_seconds=IAT)
         resources.append(session)
         return session
@@ -1350,6 +1354,17 @@ def test_paired_expert_rejects_signed_identity_and_time_mismatch_without_callbac
     assert not session.status().blocked
 
 
+@pytest.mark.parametrize("mode", ["expert_sig_structure", "signer_composed_emsg"])
+def test_paired_expired_key_refused_at_explicit_signing_time(sessions, mode):
+    """Sender refusal, not receiver qualification (no Python VSI validator)."""
+    expired_created_at = datetime.fromtimestamp(IAT - 172800, timezone.utc).isoformat().replace("+00:00", "Z")
+    callback = Mock(side_effect=AssertionError("expired key used before validation"))
+    with pytest.raises(c2pa.C2paError, match="outside its published validity period"):
+        sessions(mode=mode, created_at=expired_created_at, callback=callback,
+                 signing_time_unix_seconds=IAT)
+    callback.assert_not_called()
+
+
 @pytest.mark.parametrize("version", [1, 2])
 def test_paired_old_state_versions_rejected_before_mutation(sessions, version):
     original, _, _, _ = sessions()
@@ -1391,7 +1406,7 @@ def test_scripted_reentrant_close_retains_thunks_until_free_and_then_collects(mo
                    lambda *args: setattr(native, "callback", weakref.proxy(args[-1])) or native.handle)
     session = c2pa.TrustedVsiSession(
         context, {"format": "video/mp4"}, "es256", b"k", b"kid", 1,
-        "2026-09-10T00:00:00Z", 86400, callback, mode="expert_sig_structure",
+        CREATED_AT, 86400, callback, mode="expert_sig_structure",
         reservation_nonce="0" * 32, signing_time_unix_seconds=IAT)
     holder["session"] = session
     claim_ref = weakref.ref(session._signer_callback_cb)
@@ -1660,13 +1675,13 @@ def _actual_native_reentrant_close(kind):
         if kind == "trusted":
             resource = c2pa.TrustedVsiSession(
                 context, manifest, "ed25519", cose, b"kid", 1,
-                "2026-09-10T00:00:00Z", 86400, vsi, mode="expert_sig_structure",
+                CREATED_AT, 86400, vsi, mode="expert_sig_structure",
                 reservation_nonce="0" * 32, signing_time_unix_seconds=IAT)
             resource.reserve_init_uuid()
         else:
             resource = c2pa.LiveVideoVsiSession.from_callback(
                 manifest, context, vsi, "ed25519", cose,
-                b"kid", 1, "2026-09-10T00:00:00Z", 86400, clock=lambda: IAT)
+                b"kid", 1, CREATED_AT, 86400, clock=lambda: IAT)
         holder["resource"] = resource
         context.close()
         if kind == "trusted":

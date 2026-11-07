@@ -1,5 +1,47 @@
 # Release notes
 
+## Version 0.37.13+signer.1.0.10 (Preparation Only)
+
+The signer `1.0.10` dependency is prepared as `0.37.13+signer.1.0.10`, with
+intended tag `castlabs-v0.37.13+signer.1.0.10`. This is not a qualified or
+published release. The draft PR remains blocked on native review/merge and
+exact-source Python/native Linux/Windows qualification. No tag, release or
+publication is part of this preparation.
+
+- Native inputs select `castlabs/c2pa-rs`
+  `11f121244a2e063b2f0535554ae3d761c4b015d6` from public
+  [PR #31](https://github.com/castlabs/c2pa-rs/pull/31), based on
+  `6021100cc5060b06061ca15b634281cfeb97c718`. Native `Cargo.lock` now has
+  SHA-256 `10fcb5c1c096ed573f687faef9a104eeff6d4883484a45efb843624c16606a48`.
+- Three dependency patches select `rustls-webpki` 0.103.16, `webpki-roots` 1.0.10
+  and `tokio` 1.53.3. `crypto-bigint` 0.5.5 remains unfixed and the existing RSA
+  `cargo-deny` ignore remains; this is not an audit-clean claim.
+- [Historical qualification run `41531470285`](trusted-vsi-python-contract.md#historical-qualification-receipt)
+  records Python `4619e789f932945cc587e60863558f476b4c93ba` with native
+  `f7a95223d61257c80c2e49909b4643482b95662c`, not qualification of the new pins.
+  Normal PR synchronization may automatically run the existing paired workflow;
+  this preparation does not manually build native code or dispatch qualification.
+- VSI receivers check session-key lifetime at their current validation time,
+  within inclusive bounds `[createdAt, createdAt + validityPeriod]`. Expired
+  live media fails with `livevideo.segment.invalid` even with an in-window
+  protected `iat`. Optional `iat` is still parsed and rejected if malformed,
+  but is not the lifetime clock. Sender explicit-time refusal is unchanged.
+- The native VSI clock override is test-only (`#[cfg(test)]`), not exposed by
+  Python. `verify.validation_time` does not override VSI lifetime validation.
+  Python native fixtures now share current-time windows across each session
+  set; an expired-key test covers sender refusal before callback use. Receiver
+  expiry/boundary qualification remains native because Python has no VSI
+  segment validator.
+- No public Python API changes. The base version stays `0.37.13`; Rust
+  `1.96.0`, native `0.92.0-dev`, trusted contract revision 3, capability mask 63,
+  build features and release safety controls are unchanged.
+- Published `0.37.13+signer.1.0.9` and earlier tags, releases, artifacts and
+  evidence remain immutable and must not be relabeled. Historical preparation
+  sections below retain their original inputs and status at the time written.
+  New artifacts and evidence require their own qualified source bytes. GitHub
+  only, never PyPI; `feat/trusted-vsi-functional` remains the authorized
+  artifact-release source branch, not `release/signer-1.0.10`.
+
 ## Version 0.37.13+signer.1.0.9 (Preparation Only)
 
 The signer `1.0.9` dependency uses the prepared package version
