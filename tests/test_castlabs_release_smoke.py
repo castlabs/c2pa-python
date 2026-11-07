@@ -34,6 +34,7 @@ from c2pa import (
     Settings,
     Signer,
     has_dynamic_assertions,
+    has_fragment_at_offset,
     has_fragmented_files,
     has_live_video_vsi,
     has_live_video_vsi_callbacks,
@@ -45,10 +46,13 @@ from c2pa import (
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
-EXPECTED_VERSION = os.environ.get("CASTLABS_RELEASE_EXPECTED_VERSION", "0.37.8.dev5")
+EXPECTED_VERSION = os.environ.get(
+    "CASTLABS_RELEASE_EXPECTED_VERSION", "0.37.13+signer.1.0.10"
+)
 REQUIRED_CAPABILITIES = {
     "dynamic assertions": has_dynamic_assertions,
     "fragmented files": has_fragmented_files,
+    "fragment at offset": has_fragment_at_offset,
     "live-video VSI": has_live_video_vsi,
     "VSI callbacks": has_live_video_vsi_callbacks,
     "VSI recovery": has_live_video_vsi_recovery,
@@ -276,7 +280,7 @@ def test_vsi_callback_recovery_explicit_iat_and_mfhd_round_trip():
     media = _unsigned_media()
     first_sequence = moof_sequence_number(media)
     assert first_sequence > 0
-    signing_time = 1_700_000_000
+    signing_time = int(datetime.now(timezone.utc).timestamp())
     created_at = (
         datetime.fromtimestamp(signing_time - 60, timezone.utc)
         .isoformat()
@@ -346,7 +350,12 @@ def test_dynamic_assertion_claim_signer_with_vsi_init_regression():
 
     media = _unsigned_media()
     first_sequence = moof_sequence_number(media)
-    signing_time = 1_700_000_000
+    signing_time = int(datetime.now(timezone.utc).timestamp())
+    created_at = (
+        datetime.fromtimestamp(signing_time - 60, timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
     def make_session(session_callback):
         return LiveVideoVsiSession.from_callback(
@@ -360,7 +369,7 @@ def test_dynamic_assertion_claim_signer_with_vsi_init_regression():
             _cose_key(private_key, kid),
             kid,
             first_sequence,
-            "2023-11-14T22:12:20Z",
+            created_at,
             3600,
         )
 

@@ -4,5 +4,8 @@ include README.md
 include requirements.txt
 include scripts/download_artifacts.py
 include scripts/castlabs_release.py
+include scripts/build_trusted_vsi_functional.py
+include scripts/qualify_trusted_vsi_functional.py
+include docs/trusted-vsi-python-contract.md
 recursive-include release *.json
 recursive-include src/c2pa *.py
