@@ -101,11 +101,10 @@ make build-from-source C2PA_RS_PATH=$C2PA_RS_PATH
 
 ## Castlabs VSI release process
 
-### Signer 1.0.10 preparation only
+### Signer 1.0.10
 
-The candidate package identity is `0.37.13+signer.1.0.10`, with intended tag
-`castlabs-v0.37.13+signer.1.0.10`. This is preparation, not a qualified or
-published candidate. The signer-aligned version is a PEP 440 local version for
+The package identity is `0.37.13+signer.1.0.10`, released from tag
+`castlabs-v0.37.13+signer.1.0.10`. The signer-aligned version is a PEP 440 local version for
 a final, immutable **GitHub-only** release (`prerelease=false`), never PyPI.
 The next development series is future work after publication; it is not selected
 or applied in this candidate.
@@ -120,16 +119,15 @@ audit exceptions) and [#33](https://github.com/castlabs/c2pa-rs/pull/33)
 `6021100cc5060b06061ca15b634281cfeb97c718`. Native `Cargo.lock` now has
 SHA-256 `10fcb5c1c096ed573f687faef9a104eeff6d4883484a45efb843624c16606a48`.
 Three dependency patches select `rustls-webpki` 0.103.16, `webpki-roots` 1.0.10
-and `tokio` 1.53.3. `crypto-bigint` 0.5.5 remains unfixed and the existing RSA
-`cargo-deny` ignore remains; this is not an audit-clean claim. Native `0.92.0-dev`,
+and `tokio` 1.53.3. The bundled native library still contains RUSTSEC-2026-0387 (`crypto-bigint` 0.5.5, accepted until review on 2026-12-04) and RUSTSEC-2023-0071 (`rsa`); see the [native audit exceptions](https://github.com/castlabs/c2pa-rs/blob/9842d981997840ff8787005b8146a2f07a58431c/docs/security/native-1.0.10-audit-exceptions.md). This is not an audit-clean claim. Native `0.92.0-dev`,
 Rust `1.96.0`, build features and trusted ABI revision 3 / mask 63 are unchanged.
 VSI receivers now check session-key lifetime at current validation time with
 inclusive bounds, not at the protected `iat`; expired live media fails.
 Malformed `iat` still fails, and sender explicit-time refusal is unchanged.
 Python `verify.validation_time` is not a VSI clock override.
 
-The draft PR is blocked on native review/merge and exact-source Python/native
-Linux/Windows qualification. Published `0.37.13+signer.1.0.9` and earlier
+Native `9842d98` is merged (castlabs/c2pa-rs #31, #34, #33). Paired qualification for this Python source with that native passed on Linux and Windows in [run 42782411039](https://github.com/castlabs/c2pa-python/actions/runs/42782411039). The release is built and tested from the `castlabs-v0.37.13+signer.1.0.10` tag push, which creates a draft GitHub release; publishing it is the last step.
+Published `0.37.13+signer.1.0.9` and earlier
 tags, releases, artifacts and evidence stay immutable and must not be relabeled.
 This includes `0.37.13+signer.1.0.8` (tag `castlabs-v0.37.13+signer.1.0.8`, source
 `abc9a034ec82ba54552f9927d6affc993b25b6c1`, release ID `415634231`).
@@ -162,8 +160,8 @@ paired job is qualification only and is not release-artifact evidence.
 The [historical qualification receipt](docs/trusted-vsi-python-contract.md#historical-qualification-receipt)
 for run `41531470285` records an earlier Python/native pair, not qualification
 of the current pins. Normal PR synchronization runs the existing paired workflow
-subject to its unchanged author/label gate; this source preparation does not
-manually build native code or dispatch qualification.
+subject to its unchanged author/label gate; the current pair was qualified by the
+manual dispatch [run 42782411039](https://github.com/castlabs/c2pa-python/actions/runs/42782411039).
 
 For the dedicated workflow, manually select the trusted-API workflow revision,
 set `trusted_vsi_only=true`, and supply its full Python `source_sha`. This path

@@ -30,10 +30,10 @@ All of `Builder`, `Reader`, `Signer`, `Context`, and `Settings` support context 
 `LiveVideoVsiSession`. The `0.37.13+signer.1.0.10` preparation pins native
 `9842d981997840ff8787005b8146a2f07a58431c` and requires the complete functional
 0.92.0-dev native ABI, trusted contract revision 3 and capability mask 63.
-This is preparation only, pending native review/merge and paired qualification.
+The native is merged and this pair passed paired qualification in
+[run 42782411039](https://github.com/castlabs/c2pa-python/actions/runs/42782411039).
 Its native lock updates `rustls-webpki` to 0.103.16, `webpki-roots` to 1.0.10
-and `tokio` to 1.53.3; `crypto-bigint` 0.5.5 remains unfixed and the existing
-RSA `cargo-deny` ignore remains. This is not an audit-clean claim. The
+and `tokio` to 1.53.3; The bundled native library still contains RUSTSEC-2026-0387 (`crypto-bigint` 0.5.5, accepted until review on 2026-12-04) and RUSTSEC-2023-0071 (`rsa`); see the [native audit exceptions](https://github.com/castlabs/c2pa-rs/blob/9842d981997840ff8787005b8146a2f07a58431c/docs/security/native-1.0.10-audit-exceptions.md). This is not an audit-clean claim. The
 [historical qualification receipt](trusted-vsi-python-contract.md#historical-qualification-receipt)
 does not qualify this new native pin.
 Older libraries import normally but do not advertise
