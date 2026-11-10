@@ -34,6 +34,7 @@ from c2pa import (
     Settings,
     Signer,
     has_dynamic_assertions,
+    has_fragment_at_offset,
     has_fragmented_files,
     has_live_video_vsi,
     has_live_video_vsi_callbacks,
@@ -45,10 +46,13 @@ from c2pa import (
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
-EXPECTED_VERSION = os.environ.get("CASTLABS_RELEASE_EXPECTED_VERSION", "0.37.8.dev5")
+EXPECTED_VERSION = os.environ.get(
+    "CASTLABS_RELEASE_EXPECTED_VERSION", "0.37.13+signer.1.0.10"
+)
 REQUIRED_CAPABILITIES = {
     "dynamic assertions": has_dynamic_assertions,
     "fragmented files": has_fragmented_files,
+    "fragment at offset": has_fragment_at_offset,
     "live-video VSI": has_live_video_vsi,
     "VSI callbacks": has_live_video_vsi_callbacks,
     "VSI recovery": has_live_video_vsi_recovery,
@@ -276,7 +280,7 @@ def test_vsi_callback_recovery_explicit_iat_and_mfhd_round_trip():
     media = _unsigned_media()
     first_sequence = moof_sequence_number(media)
     assert first_sequence > 0
-    signing_time = 1_700_000_000
+    signing_time = int(datetime.now(timezone.utc).timestamp())
     created_at = (
         datetime.fromtimestamp(signing_time - 60, timezone.utc)
         .isoformat()
@@ -346,7 +350,12 @@ def test_dynamic_assertion_claim_signer_with_vsi_init_regression():
 
     media = _unsigned_media()
     first_sequence = moof_sequence_number(media)
-    signing_time = 1_700_000_000
+    signing_time = int(datetime.now(timezone.utc).timestamp())
+    created_at = (
+        datetime.fromtimestamp(signing_time - 60, timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
     def make_session(session_callback):
         return LiveVideoVsiSession.from_callback(
@@ -360,7 +369,7 @@ def test_dynamic_assertion_claim_signer_with_vsi_init_regression():
             _cose_key(private_key, kid),
             kid,
             first_sequence,
-            "2023-11-14T22:12:20Z",
+            created_at,
             3600,
         )
 
@@ -442,3 +451,47 @@ def test_fragmented_file_round_trip():
                 assert active["title"] == "Castlabs release fragmented smoke"
     finally:
         signer.close()
+
+
+def test_soft_binding_byte_array_is_stored_as_a_cbor_byte_string():
+    """The 1.0.10 native stores a JSON soft-binding byte array as a CBOR byte
+    string (castlabs/c2pa-rs #33). Reader JSON renders bytes and arrays alike,
+    so this checks the signed manifest bytes: ``"value": h'0080ff'`` (CBOR
+    ``65 'value' 43 00 80 ff``), not the array ``[0, 128, 255]``."""
+    definition = _manifest_definition(
+        "Castlabs release soft-binding smoke", format="image/jpeg"
+    )
+    definition["assertions"].append({
+        "label": "c2pa.soft-binding",
+        "data": {
+            "alg": "com.castlabs.release-smoke",
+            "blocks": [{"scope": {}, "value": [0, 128, 255]}],
+        },
+    })
+    # The test algorithm is not in the C2PA registry, which post-sign
+    # validation would refuse; this checks only the stored encoding.
+    settings = Settings()
+    settings.set("verify.verify_after_sign", "false")
+    try:
+        context = Context(settings=settings)
+    finally:
+        settings.close()
+    signer = _manifest_signer()
+    try:
+        builder = Builder(definition, context=context)
+        try:
+            builder.set_no_embed()
+            manifest = bytes(builder.sign(
+                signer, "image/jpeg",
+                io.BytesIO((FIXTURES / "A.jpg").read_bytes()), io.BytesIO(),
+            ))
+        finally:
+            builder.close()
+    finally:
+        signer.close()
+        context.close()
+    assert b"c2pa.soft-binding" in manifest
+    assert b"\x65value\x43\x00\x80\xff" in manifest, (
+        "soft-binding value is not a CBOR byte string; the native lacks c2pa-rs #33"
+    )
+    assert b"\x65value\x83\x00\x18\x80\x18\xff" not in manifest

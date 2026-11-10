@@ -160,9 +160,16 @@ Create and configure settings independently of a `Context`:
 | `Settings.from_json(json_str)` | Create settings from a JSON string. Raises `C2paError` on parse error. |
 | `Settings.from_dict(config)` | Create settings from a Python dictionary. |
 | `set(path, value)` | Set a single value by dot-separated path (for example, `"verify.verify_after_sign"`). Value must be a string. Returns `self` for chaining. |
-| `update(data)` | Merge configuration into existing settings. `data` can be a JSON string or a dict. Later keys override earlier ones. |
+| `update(data)` | Merge configuration into existing settings. `data` can be a JSON string or a dict. Later scalar values override earlier ones; `trust.anchors` entries accumulate and deduplicate. |
 
-The `set()` and `update()` methods can be chained for incremental configuration. When using multiple configuration methods, later calls override earlier ones (last call wins when the same setting is set multiple times).
+The `set()` and `update()` methods can be chained for incremental configuration.
+Scalar properties use the last value set. With native SDK 0.91, `update()` merges
+`trust.anchors` by complete entry equality, not by `trust_uri`: updating an entry
+with different certificates or policy does not remove the old entry. An empty
+anchor list does not clear existing trust. For trust removal or replacement,
+construct fresh `Settings` from the complete intended configuration and create
+a new `Context`. Existing contexts, readers, and builders retain their copied
+configuration; do not reuse them when applying a reduced trust policy.
 
 ```py
 from c2pa import Settings
@@ -263,7 +270,6 @@ The Settings JSON has this top-level structure:
 {
   "version": 1,
   "trust": { ... },
-  "cawg_trust": { ... },
   "core": { ... },
   "verify": { ... },
   "builder": { ... },
@@ -276,7 +282,7 @@ The settings format is **JSON** only. Pass JSON strings to `Settings.from_json()
 
 > [!NOTE]
 > - All properties are optional. If you don't specify a value, the SDK uses the default value.
-> - If you specify a value of `null` (or `None` in a dict), the property is explicitly set to `null`, not the default. This distinction is important when you want to override a default behavior.
+> - `null` (or `None` in a dict) is accepted only for nullable properties. Do not use it as a general reset operation; use fresh settings when removing trust.
 > - For Boolean values, use JSON Booleans `true`/`false` in JSON strings, or Python `True`/`False` in dicts.
 
 The settings JSON schema is shared across all C2PA SDKs (Rust, C/C++, Python, and so on). For a complete reference to all properties, see the [SDK object reference - Settings](https://opensource.contentauthenticity.org/docs/manifest/json-ref/settings-schema).
@@ -285,11 +291,10 @@ The settings JSON schema is shared across all C2PA SDKs (Rust, C/C++, Python, an
 |----------|-------------|
 | `version` | Settings format version (integer). The default and only supported value is 1. |
 | [`builder`](https://opensource.contentauthenticity.org/docs/manifest/json-ref/settings-schema#buildersettings) | Configuration for Builder. |
-| [`cawg_trust`](https://opensource.contentauthenticity.org/docs/manifest/json-ref/settings-schema#trust) | Configuration for CAWG trust lists. |
 | [`cawg_x509_signer`](https://opensource.contentauthenticity.org/docs/manifest/json-ref/settings-schema#signersettings) | Configuration for the CAWG x.509 signer. |
 | [`core`](https://opensource.contentauthenticity.org/docs/manifest/json-ref/settings-schema#core) | Configuration for core features. |
 | [`signer`](https://opensource.contentauthenticity.org/docs/manifest/json-ref/settings-schema#signersettings) | Configuration for the base C2PA signer. |
-| [`trust`](https://opensource.contentauthenticity.org/docs/manifest/json-ref/settings-schema#trust) | Configuration for C2PA trust lists. |
+| [`trust`](https://opensource.contentauthenticity.org/docs/manifest/json-ref/settings-schema#trust) | Purpose-tagged manifest, CAWG, and TSA trust lists. |
 | [`verify`](https://opensource.contentauthenticity.org/docs/manifest/json-ref/settings-schema#verify) | Configuration for verification (validation). |
 
 ### Default configuration
@@ -330,13 +335,6 @@ The settings JSON schema is shared across all C2PA SDKs (Rust, C/C++, Python, an
       "quality": "medium"
     }
   },
-  "cawg_trust": {
-    "verify_trust_list": true,
-    "user_anchors": null,
-    "trust_anchors": null,
-    "trust_config": null,
-    "allowed_list": null
-  },
   "cawg_x509_signer": null,
   "core": {
     "merkle_tree_chunk_size_in_kb": null,
@@ -347,10 +345,8 @@ The settings JSON schema is shared across all C2PA SDKs (Rust, C/C++, Python, an
   },
   "signer": null,
   "trust": {
-    "user_anchors": null,
-    "trust_anchors": null,
-    "trust_config": null,
-    "allowed_list": null
+    "anchors": null,
+    "trust_config": null
   },
   "verify": {
     "verify_after_reading": true,
@@ -367,41 +363,77 @@ The settings JSON schema is shared across all C2PA SDKs (Rust, C/C++, Python, an
 
 ### Trust
 
-The [`trust` properties](https://opensource.contentauthenticity.org/docs/manifest/json-ref/settings-schema/#trust) control which certificates are trusted when validating C2PA manifests.
+The following schema applies to the upstream-integrated native SDK 0.91 source
+baseline. It does not describe or change the immutable dev5 native artifacts.
+Use `trust.anchors` for all certificate trust purposes; the old `cawg_trust`
+section and top-level `trust.allowed_list` are not the typed configuration.
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `trust.user_anchors` | string | Additional user-provided root certificates (PEM format). Adds custom certificate authorities without replacing the SDK's built-in trust anchors. Recommended for development. |
-| `trust.trust_anchors` | string | Default trust anchor root certificates (PEM format). **Replaces** the SDK's built-in trust anchors entirely. |
-| `trust.trust_config` | string | Allowed Extended Key Usage (EKU) OIDs. Controls which certificate purposes are accepted (for example, `1.3.6.1.4.1.311.76.59.1.9` for document signing). |
-| `trust.allowed_list` | string | Explicitly allowed certificates (PEM format). Trusted regardless of chain validation. Use for development/testing to bypass chain validation. |
+| `trust.anchors` | array | Purpose-tagged trust entries. No certificate anchors are configured by default in the production library. |
+| `trust.trust_config` | string or null | Global allowed Extended Key Usage (EKU) OIDs, newline-separated. Preserve your existing policy during migration. |
+| `trust.anchors[].trust_kind` | string | Required purpose: `"manifest"`, `"cawg"`, or `"tsa"` (lowercase). |
+| `trust.anchors[].trust_anchors` | string | Required PEM certificate bundle; may be empty for an entry that only configures other trust policy. |
+| `trust.anchors[].trust_uri` | string or null | Optional trust-list identifier. Not a replacement key for updates. |
+| `trust.anchors[].trust_config` | string or null | Per-entry EKU policy; overlays the global policy for manifest trust and overrides it for CAWG trust. |
+| `trust.anchors[].allowed_list` | string or null | Explicitly allowed certificates. Preserve only existing, intentional allow-list membership; do not use this to repair trust failures. |
+| `trust.anchors[].trusted_ica_issuers` | array of strings or null | Explicit trusted ICA issuer DIDs for CAWG entries. Empty by default; a valid self-signature alone does not establish issuer trust. |
 
-Use `user_anchors` to add your test root CA without replacing the SDK's default trust store:
+Trust your test root CA for manifest signatures:
 
 ```py
 with open("test-ca.pem", "r") as f:
     test_root_ca = f.read()
 
-ctx = Context.from_dict({"trust": {"user_anchors": test_root_ca}})
+ctx = Context.from_dict({"trust": {"anchors": [{
+    "trust_kind": "manifest",
+    "trust_anchors": test_root_ca,
+    "trust_uri": "urn:example:test-manifest-roots"
+}]}})
 reader = Reader("signed_asset.jpg", context=ctx)
 ```
 
-Use `allowed_list` to bypass chain validation entirely for quick testing:
+Configure each intended purpose explicitly. A publisher identity root should not
+implicitly become a claim-signing root or a TSA root:
 
 ```py
-with open("test_cert.pem", "r") as f:
-    test_cert = f.read()
+with open("publisher-roots.pem", "r") as f:
+    publisher_roots = f.read()
+with open("tsa-roots.pem", "r") as f:
+    tsa_roots = f.read()
 
-ctx = Context.from_dict({"trust": {"allowed_list": test_cert}})
-reader = Reader("signed_asset.jpg", context=ctx)
+ctx = Context.from_dict({"trust": {"anchors": [
+    {"trust_kind": "manifest", "trust_anchors": test_root_ca},
+    {"trust_kind": "cawg", "trust_anchors": publisher_roots},
+    {"trust_kind": "tsa", "trust_anchors": tsa_roots}
+]}})
 ```
+
+When migrating legacy `trust.trust_anchors` / `trust.user_anchors`, preserve
+the original manifest and timestamp trust memberships and EKUs explicitly.
+The native legacy conversion creates manifest entries only. If the old bundle
+also authorized TSA chains, retain that membership in a `tsa` entry. Migrate
+CAWG roots and allowed certificates to `cawg` entries without widening their
+purposes. Do not disable `verify_trust` or `verify_timestamp_trust`, add an
+allow-list, or enable revocation fetching merely to make migrated tests pass.
+
+To remove all explicitly configured trust, use `Settings.from_dict({"trust":
+{"anchors": []}})` and construct a new `Context` from it. To remove only some
+entries, supply the complete retained list to fresh settings instead. Reapply
+the other intended settings too, rather than inheriting old trust accidentally.
 
 ### CAWG trust
 
-The `cawg_trust` properties configure CAWG (Creator Assertions Working Group) validation of identity assertions in C2PA manifests. It has the same properties as [`trust`](https://opensource.contentauthenticity.org/docs/manifest/json-ref/settings-schema/#trust).
+Entries with `trust_kind: "cawg"` configure CAWG (Creator Assertions Working
+Group) identity validation. Certificate trust and explicitly trusted ICA issuer
+DIDs are separate policy inputs; include only identities your application
+already authorizes.
 
 > [!NOTE]
-> CAWG trust settings are only used when processing identity assertions with X.509 certificates. If your workflow doesn't use CAWG identity assertions, these settings have no effect.
+> Native baseline `e0f980ec` fixes cross-purpose trust leakage found during
+> integration. The unchanged Python regressions now reject manifest trust from
+> `cawg`-only or `tsa`-only configurations. Earlier 0.91 source snapshots are not
+> qualified for this isolation; see [baseline qualification](upstream-integration-baseline.md).
 
 ### Core
 
@@ -515,14 +547,14 @@ ctx = Context.from_dict({
 
 ### Development environment with test certificates
 
-During development, you often need to trust self-signed or custom CA certificates with looser verification:
+During development, explicitly trust the test CA without disabling verification:
 
 ```py
 with open("test-ca.pem", "r") as f:
     test_ca = f.read()
 
 ctx = Context.from_dict({
-    "trust": {"user_anchors": test_ca},
+    "trust": {"anchors": [{"trust_kind": "manifest", "trust_anchors": test_ca}]},
     "verify": {
         "verify_after_reading": True,
         "verify_after_sign": True,
@@ -576,7 +608,7 @@ with open("trust-anchors.pem", "r") as f:
 
 ctx = Context.from_dict({
     "trust": {
-        "trust_anchors": trust_anchors,
+        "anchors": [{"trust_kind": "manifest", "trust_anchors": trust_anchors}],
         "trust_config": "1.3.6.1.5.5.7.3.4\n1.3.6.1.5.5.7.3.36"
     },
     "core": {"backing_store_memory_threshold_in_mb": 1024},
