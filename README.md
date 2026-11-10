@@ -111,8 +111,12 @@ The next development series is future work after publication; it is not selected
 or applied in this candidate.
 
 The Python public API and base version `0.37.13` are unchanged. Active inputs
-select native `11f121244a2e063b2f0535554ae3d761c4b015d6` from public
-[castlabs/c2pa-rs #31](https://github.com/castlabs/c2pa-rs/pull/31), based on
+select native `9842d981997840ff8787005b8146a2f07a58431c`, the
+`feat/trusted-vsi-functional` head with
+[castlabs/c2pa-rs #31](https://github.com/castlabs/c2pa-rs/pull/31) (receiver-time
+VSI key lifetime), [#34](https://github.com/castlabs/c2pa-rs/pull/34) (time-boxed
+audit exceptions) and [#33](https://github.com/castlabs/c2pa-rs/pull/33)
+(soft-binding JSON byte values as CBOR byte strings), based on
 `6021100cc5060b06061ca15b634281cfeb97c718`. Native `Cargo.lock` now has
 SHA-256 `10fcb5c1c096ed573f687faef9a104eeff6d4883484a45efb843624c16606a48`.
 Three dependency patches select `rustls-webpki` 0.103.16, `webpki-roots` 1.0.10
@@ -151,7 +155,7 @@ library (`-k "not paired"`). Separately, both it and the dedicated workflow use
 Linux/Windows source builds and the full focused `tests/test_trusted_vsi_api.py`
 with `C2PA_TRUSTED_VSI_ABI_REQUIRED=1`. Missing reduced ABI symbols fail rather
 than skip. The paired Rust source is pinned to
-`castlabs/c2pa-rs@11f121244a2e063b2f0535554ae3d761c4b015d6`, the #31 candidate
+`castlabs/c2pa-rs@9842d981997840ff8787005b8146a2f07a58431c` (#31, #34 and #33)
 source selected by the candidate release lock; the job logs resolved Python/Rust SHAs. The
 paired job is qualification only and is not release-artifact evidence.
 

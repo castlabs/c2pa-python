@@ -54,7 +54,7 @@ jobs:
           # Revision-3 trusted VSI plus offset-aware fragment verification:
           # the same native commit the 0.37.13+signer.1.0.10 release lock pins. This job
           # is qualification-only and never produces release artifacts.
-          ref: 11f121244a2e063b2f0535554ae3d761c4b015d6
+          ref: 9842d981997840ff8787005b8146a2f07a58431c
           path: paired-rust
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:

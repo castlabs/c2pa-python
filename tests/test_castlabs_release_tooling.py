@@ -72,7 +72,7 @@ def test_release_lock_and_schemas_are_valid_json():
     assert lock["rustSource"]["commit"] == release.RUST_COMMIT
     assert lock["rustSource"]["cargoLockSha256"] == release.CARGO_LOCK_SHA256
     assert lock["rustToolchain"]["channel"] == "1.96.0"
-    assert release.RUST_COMMIT == "11f121244a2e063b2f0535554ae3d761c4b015d6"
+    assert release.RUST_COMMIT == "9842d981997840ff8787005b8146a2f07a58431c"
     assert release.CARGO_LOCK_SHA256 == (
         "10fcb5c1c096ed573f687faef9a104eeff6d4883484a45efb843624c16606a48"
     )

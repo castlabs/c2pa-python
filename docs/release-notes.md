@@ -9,8 +9,11 @@ exact-source Python/native Linux/Windows qualification. No tag, release or
 publication is part of this preparation.
 
 - Native inputs select `castlabs/c2pa-rs`
-  `11f121244a2e063b2f0535554ae3d761c4b015d6` from public
-  [PR #31](https://github.com/castlabs/c2pa-rs/pull/31), based on
+  `9842d981997840ff8787005b8146a2f07a58431c`, the `feat/trusted-vsi-functional` head with
+  [PR #31](https://github.com/castlabs/c2pa-rs/pull/31),
+  [#34](https://github.com/castlabs/c2pa-rs/pull/34) and
+  [#33](https://github.com/castlabs/c2pa-rs/pull/33) (soft-binding JSON byte
+  arrays and `b64'…'` values stored as CBOR byte strings), based on
   `6021100cc5060b06061ca15b634281cfeb97c718`. Native `Cargo.lock` now has
   SHA-256 `10fcb5c1c096ed573f687faef9a104eeff6d4883484a45efb843624c16606a48`.
 - Three dependency patches select `rustls-webpki` 0.103.16, `webpki-roots` 1.0.10

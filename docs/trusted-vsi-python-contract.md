@@ -7,8 +7,9 @@ contract revision 3 (state version 3 and typed expert VSI payloads), following
 `0.37.13+signer.1.0.10`, with intended tag `castlabs-v0.37.13+signer.1.0.10` for a
 final, immutable GitHub-only release (`prerelease=false`), not PyPI. This is
 preparation only, not Python qualification or publication. Native inputs select
-`11f121244a2e063b2f0535554ae3d761c4b015d6` from public
-[castlabs/c2pa-rs #31](https://github.com/castlabs/c2pa-rs/pull/31), based on
+`9842d981997840ff8787005b8146a2f07a58431c`, the
+`feat/trusted-vsi-functional` head with
+[castlabs/c2pa-rs #31](https://github.com/castlabs/c2pa-rs/pull/31), #34 and #33, based on
 `6021100cc5060b06061ca15b634281cfeb97c718`. Published `0.37.13+signer.1.0.9`
 and earlier release inputs, artifacts and evidence remain immutable. The
 native `Cargo.lock` SHA-256 is now
@@ -296,7 +297,7 @@ Paired tests require the full native library and FAIL under
 `C2PA_TRUSTED_VSI_ABI_REQUIRED=1` (all Linux/Windows qualification jobs); they
 skip only in ad-hoc local runs. `.github/workflows/trusted-vsi-paired.yml`
 builds the native with Rust 1.96.0 from castlabs/c2pa-rs
-`11f121244a2e063b2f0535554ae3d761c4b015d6`, the same commit as the
+`9842d981997840ff8787005b8146a2f07a58431c`, the same commit as the
 `castlabs-v0.37.13+signer.1.0.10` preparation lock (trusted contract revision 3, mask 63,
 offset-aware fragment exports). It sets `C2PA_FRAGMENT_OFFSET_REQUIRED=1`, so a
 native library without the fragment-offset probe fails rather than skips. Older
@@ -311,7 +312,7 @@ is the historical qualification receipt for Python
 `4619e789f932945cc587e60863558f476b4c93ba` paired with native
 `f7a95223d61257c80c2e49909b4643482b95662c`, whose `Cargo.lock` SHA-256 was
 `ff5cf2de2403ff491957fc8a2206c289203d2799a30425bd615f7c9e69974a8f`.
-It is not qualification of native `11f121244a2e063b2f0535554ae3d761c4b015d6`,
+It is not qualification of native `9842d981997840ff8787005b8146a2f07a58431c`,
 the updated lock or the new Python source bytes. The receipt must not be
 relabeled as evidence for those inputs. Fresh exact-source Linux/Windows and
 installed-wheel qualification remains required; no wheel or binary digest is
@@ -327,7 +328,7 @@ The retained run metadata does not establish the event-time association, so this
 is not evidence that the current MEMBER condition is wrong. No author gate is
 broadened here (in particular no speculative OWNER exception or fork secrets).
 The candidate remains on hold until CI qualifies the exact Python/native pair
-and its installed wheels. Selecting native `11f12124` does not establish that
+and its installed wheels. Selecting native `9842d981` does not establish that
 paired qualification. Artifact builds still require `feat/trusted-vsi-functional`
 (manual runs must use its full tip SHA and ref) or the exact aligned tag; the
 preparation branch `release/signer-1.0.10` is not an allowed artifact-release source.

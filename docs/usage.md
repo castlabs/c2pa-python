@@ -28,7 +28,7 @@ All of `Builder`, `Reader`, `Signer`, `Context`, and `Settings` support context 
 
 `TrustedVsiSession` is separate from complete-buffer
 `LiveVideoVsiSession`. The `0.37.13+signer.1.0.10` preparation pins native
-`11f121244a2e063b2f0535554ae3d761c4b015d6` and requires the complete functional
+`9842d981997840ff8787005b8146a2f07a58431c` and requires the complete functional
 0.92.0-dev native ABI, trusted contract revision 3 and capability mask 63.
 This is preparation only, pending native review/merge and paired qualification.
 Its native lock updates `rustls-webpki` to 0.103.16, `webpki-roots` to 1.0.10

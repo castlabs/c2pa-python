@@ -72,7 +72,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: castlabs/c2pa-rs
-          ref: 11f121244a2e063b2f0535554ae3d761c4b015d6
+          ref: 9842d981997840ff8787005b8146a2f07a58431c
           fetch-depth: 1
           path: c2pa-rs
 
@@ -123,7 +123,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: castlabs/c2pa-rs
-          ref: 11f121244a2e063b2f0535554ae3d761c4b015d6
+          ref: 9842d981997840ff8787005b8146a2f07a58431c
           fetch-depth: 1
           path: c2pa-rs
 
@@ -278,7 +278,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: castlabs/c2pa-rs
-          ref: 11f121244a2e063b2f0535554ae3d761c4b015d6
+          ref: 9842d981997840ff8787005b8146a2f07a58431c
           fetch-depth: 1
           path: c2pa-rs
 

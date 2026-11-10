@@ -49,7 +49,7 @@
           "properties": {
             "repository": {"const": "castlabs/c2pa-rs"},
             "url": {"const": "https://github.com/castlabs/c2pa-rs.git"},
-            "commit": {"const": "11f121244a2e063b2f0535554ae3d761c4b015d6"},
+            "commit": {"const": "9842d981997840ff8787005b8146a2f07a58431c"},
             "version": {"const": "0.92.0-dev"},
             "cargoLockSha256": {"const": "10fcb5c1c096ed573f687faef9a104eeff6d4883484a45efb843624c16606a48"}
           }
