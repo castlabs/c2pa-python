@@ -3,22 +3,21 @@
 Status: signer 1.0.10 candidate preparation requiring native trusted-VSI
 contract revision 3 (state version 3 and typed expert VSI payloads), following
 `c2pa-rs`
-`docs/trusted-vsi-native-contract.md`. The prepared Python identity is
-`0.37.13+signer.1.0.10`, with intended tag `castlabs-v0.37.13+signer.1.0.10` for a
-final, immutable GitHub-only release (`prerelease=false`), not PyPI. This is
-preparation only, not Python qualification or publication. Native inputs select
-`11f121244a2e063b2f0535554ae3d761c4b015d6` from public
-[castlabs/c2pa-rs #31](https://github.com/castlabs/c2pa-rs/pull/31), based on
+`docs/trusted-vsi-native-contract.md`. The Python identity is
+`0.37.13+signer.1.0.10`, released from tag `castlabs-v0.37.13+signer.1.0.10` as a
+final, immutable GitHub-only release (`prerelease=false`), not PyPI. Native inputs select
+`9842d981997840ff8787005b8146a2f07a58431c`, the
+`feat/trusted-vsi-functional` head with
+[castlabs/c2pa-rs #31](https://github.com/castlabs/c2pa-rs/pull/31), #34 and #33, based on
 `6021100cc5060b06061ca15b634281cfeb97c718`. Published `0.37.13+signer.1.0.9`
 and earlier release inputs, artifacts and evidence remain immutable. The
 native `Cargo.lock` SHA-256 is now
 `10fcb5c1c096ed573f687faef9a104eeff6d4883484a45efb843624c16606a48`.
 Three dependency patches select `rustls-webpki` 0.103.16, `webpki-roots` 1.0.10
-and `tokio` 1.53.3. `crypto-bigint` 0.5.5 remains unfixed and the existing RSA
-`cargo-deny` ignore remains; this is not an audit-clean claim. Rust `1.96.0`,
+and `tokio` 1.53.3. The bundled native library still contains RUSTSEC-2026-0387 (`crypto-bigint` 0.5.5, accepted until review on 2026-12-04) and RUSTSEC-2023-0071 (`rsa`); see the [native audit exceptions](https://github.com/castlabs/c2pa-rs/blob/9842d981997840ff8787005b8146a2f07a58431c/docs/security/native-1.0.10-audit-exceptions.md). This is not an audit-clean claim. Rust `1.96.0`,
 native `0.92.0-dev`, features and the trusted ABI are unchanged.
-The draft PR is blocked on native review/merge and exact-source native bundle
-and Python/native artifact qualification. The paired
+The native is merged, and paired qualification of this Python source with it
+passed in [run 42782411039](https://github.com/castlabs/c2pa-python/actions/runs/42782411039); the tag push builds and qualifies the release artifacts. The paired
 source workflow pins this same native commit
 (previously `3328b2b440fd07d9f857cbefa3c6d565093425de` for the unpublished
 0.37.13.dev1 and `a6d4cdcc05638ee8dd0afce7fa5c850d7031a80c` before it) for revision-3
@@ -296,7 +295,7 @@ Paired tests require the full native library and FAIL under
 `C2PA_TRUSTED_VSI_ABI_REQUIRED=1` (all Linux/Windows qualification jobs); they
 skip only in ad-hoc local runs. `.github/workflows/trusted-vsi-paired.yml`
 builds the native with Rust 1.96.0 from castlabs/c2pa-rs
-`11f121244a2e063b2f0535554ae3d761c4b015d6`, the same commit as the
+`9842d981997840ff8787005b8146a2f07a58431c`, the same commit as the
 `castlabs-v0.37.13+signer.1.0.10` preparation lock (trusted contract revision 3, mask 63,
 offset-aware fragment exports). It sets `C2PA_FRAGMENT_OFFSET_REQUIRED=1`, so a
 native library without the fragment-offset probe fails rather than skips. Older
@@ -311,7 +310,7 @@ is the historical qualification receipt for Python
 `4619e789f932945cc587e60863558f476b4c93ba` paired with native
 `f7a95223d61257c80c2e49909b4643482b95662c`, whose `Cargo.lock` SHA-256 was
 `ff5cf2de2403ff491957fc8a2206c289203d2799a30425bd615f7c9e69974a8f`.
-It is not qualification of native `11f121244a2e063b2f0535554ae3d761c4b015d6`,
+It is not qualification of native `9842d981997840ff8787005b8146a2f07a58431c`,
 the updated lock or the new Python source bytes. The receipt must not be
 relabeled as evidence for those inputs. Fresh exact-source Linux/Windows and
 installed-wheel qualification remains required; no wheel or binary digest is
@@ -327,7 +326,7 @@ The retained run metadata does not establish the event-time association, so this
 is not evidence that the current MEMBER condition is wrong. No author gate is
 broadened here (in particular no speculative OWNER exception or fork secrets).
 The candidate remains on hold until CI qualifies the exact Python/native pair
-and its installed wheels. Selecting native `11f12124` does not establish that
+and its installed wheels. Selecting native `9842d981` does not establish that
 paired qualification. Artifact builds still require `feat/trusted-vsi-functional`
 (manual runs must use its full tip SHA and ref) or the exact aligned tag; the
 preparation branch `release/signer-1.0.10` is not an allowed artifact-release source.
@@ -336,5 +335,5 @@ integration. A maintainer must review the head, retain the existing author/label
 gate, and confirm required jobs actually ran. This preparation does not tag or
 publish. A green workflow with skipped test jobs is not qualification.
 Normal PR synchronization may automatically run the existing paired workflow
-under its unchanged author/label gate. This preparation performs no manual
-native build or qualification dispatch.
+under its unchanged author/label gate; the current pair was qualified by the
+manual dispatch [run 42782411039](https://github.com/castlabs/c2pa-python/actions/runs/42782411039).

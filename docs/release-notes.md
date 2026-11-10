@@ -3,24 +3,25 @@
 ## Version 0.37.13+signer.1.0.10 (Preparation Only)
 
 The signer `1.0.10` dependency is prepared as `0.37.13+signer.1.0.10`, with
-intended tag `castlabs-v0.37.13+signer.1.0.10`. This is not a qualified or
-published release. The draft PR remains blocked on native review/merge and
-exact-source Python/native Linux/Windows qualification. No tag, release or
-publication is part of this preparation.
+tag `castlabs-v0.37.13+signer.1.0.10`. The native is merged, and paired
+Linux/Windows qualification of this Python source with it passed in
+[run 42782411039](https://github.com/castlabs/c2pa-python/actions/runs/42782411039). The tag push builds and tests the release wheels and creates a
+draft GitHub release; publishing that draft is the last step.
 
 - Native inputs select `castlabs/c2pa-rs`
-  `11f121244a2e063b2f0535554ae3d761c4b015d6` from public
-  [PR #31](https://github.com/castlabs/c2pa-rs/pull/31), based on
+  `9842d981997840ff8787005b8146a2f07a58431c`, the `feat/trusted-vsi-functional` head with
+  [PR #31](https://github.com/castlabs/c2pa-rs/pull/31),
+  [#34](https://github.com/castlabs/c2pa-rs/pull/34) and
+  [#33](https://github.com/castlabs/c2pa-rs/pull/33) (soft-binding JSON byte
+  arrays and `b64'…'` values stored as CBOR byte strings), based on
   `6021100cc5060b06061ca15b634281cfeb97c718`. Native `Cargo.lock` now has
   SHA-256 `10fcb5c1c096ed573f687faef9a104eeff6d4883484a45efb843624c16606a48`.
 - Three dependency patches select `rustls-webpki` 0.103.16, `webpki-roots` 1.0.10
-  and `tokio` 1.53.3. `crypto-bigint` 0.5.5 remains unfixed and the existing RSA
-  `cargo-deny` ignore remains; this is not an audit-clean claim.
+  and `tokio` 1.53.3. The bundled native library still contains RUSTSEC-2026-0387 (`crypto-bigint` 0.5.5, accepted until review on 2026-12-04) and RUSTSEC-2023-0071 (`rsa`); see the [native audit exceptions](https://github.com/castlabs/c2pa-rs/blob/9842d981997840ff8787005b8146a2f07a58431c/docs/security/native-1.0.10-audit-exceptions.md). This is not an audit-clean claim.
 - [Historical qualification run `41531470285`](trusted-vsi-python-contract.md#historical-qualification-receipt)
   records Python `4619e789f932945cc587e60863558f476b4c93ba` with native
   `f7a95223d61257c80c2e49909b4643482b95662c`, not qualification of the new pins.
-  Normal PR synchronization may automatically run the existing paired workflow;
-  this preparation does not manually build native code or dispatch qualification.
+  The current pair was qualified by the manual paired dispatch [run 42782411039](https://github.com/castlabs/c2pa-python/actions/runs/42782411039).
 - VSI receivers check session-key lifetime at their current validation time,
   within inclusive bounds `[createdAt, createdAt + validityPeriod]`. Expired
   live media fails with `livevideo.segment.invalid` even with an in-window
